@@ -1,7 +1,6 @@
-# wabot-go — WhatsApp Bot (Go + whatsmeow)
+# Flora GO 
 
 Bot WhatsApp modular berbasis Go, memakai library [whatsmeow](https://github.com/tulir/whatsmeow).
-Plugin baru otomatis terdaftar sendiri (self-registration) — tidak perlu edit `registry.go` tiap kali menambah command.
 
 ## Struktur Folder
 
