@@ -168,5 +168,4 @@ Panggilan WhatsApp memakai library [meowcaller](https://github.com/purpshell/meo
 - **Jangan hapus folder `data/`** di panel — di situ session login WhatsApp & database SQLite grup disimpan. Kalau dihapus, bot harus login ulang dari nol dan data grup hilang.
 - Nomor yang dipakai bot sebaiknya bukan nomor utama sehari-hari, untuk menghindari risiko banned mengganggu akun pribadi.
 - whatsmeow adalah library tidak resmi (reverse-engineered protokol WhatsApp Web) — pemakaian berlebihan/spam berisiko nomor terkena banned oleh WhatsApp.
-- Jika muncul log `fatal: couldn't find remote ref main` saat startup di panel, itu berasal dari sisa folder `.git/` bawaan egg dengan remote placeholder rusak, bukan dari `run.sh`/`run.js` — aman dihapus karena workflow deploy 100% lewat rclone, bukan git.
 - Pengecekan admin grup (`IsSenderAdmin`/`IsBotAdmin`) membandingkan JID lewat `.User`, nomor telepon, **dan** LID sekaligus untuk menghindari kegagalan akibat dual-format identitas WhatsApp (LID vs nomor telepon).

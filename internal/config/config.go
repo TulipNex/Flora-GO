@@ -31,6 +31,19 @@ const (
 	BotDescription = "Bot WhatsApp multifungsi yang dibangun dengan bahasa pemrograman Golang menggunakan library whatsmeow"
 )
 
+// ==========================
+// Metadata Sticker
+// ==========================
+// Dipakai sebagai nilai default oleh plugin .sticker dan .stickerwatermark
+// saat user tidak menentukan packname/author sendiri lewat command.
+const (
+	// StickerPackname adalah nama pack default yang muncul di stiker.
+	StickerPackname = "Flora GO"
+
+	// StickerAuthor adalah nama author/publisher default yang muncul di stiker.
+	StickerAuthor = "Mitra"
+)
+
 // Catatan:
 // - Konfigurasi statis/compile-time (identitas bot & owner) digabung di sini
 //   (config.go), menggantikan owner.go dan bot.go yang sebelumnya terpisah.

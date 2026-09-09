@@ -87,6 +87,15 @@ Write-Host ""
 
 # Fungsi untuk menggambar bar blok custom: BLOKBLOKBLOK----  20.6 MB / 29.1 MB   96 KiB/s   ETA 0:08
 # BarWidth tetap (20 blok), sisanya terisi karakter kosong berwarna abu-abu.
+#
+# PENTING: seluruh baris (carriage return + bar + teks + clear-to-end) ditulis
+# sebagai SATU string lewat [Console]::Write() dalam SATU panggilan. Versi
+# sebelumnya memakai beberapa panggilan Write-Host terpisah (satu per segmen
+# warna) — di terminal integrated VS Code, tiap panggilan Write-Host bisa
+# di-flush terpisah ke buffer, sehingga `r di awal tidak selalu "reset" posisi
+# kursor sebelum segmen berikutnya ditulis. Hasilnya baris menumpuk ke samping
+# alih-alih saling menimpa. Warna di sini memakai kode ANSI manual supaya tetap
+# satu string utuh.
 function Write-SyncBar {
     param(
         [double]$TransferredMB,
@@ -100,15 +109,18 @@ function Write-SyncBar {
     $filled = [Math]::Round($barWidth * $ratio)
     $empty = $barWidth - $filled
 
-    Write-Host "`r " -NoNewline
-    Write-Host ("$([char]0x2593)" * $filled) -NoNewline -ForegroundColor Green
-    Write-Host ("$([char]0x2593)" * $empty) -NoNewline -ForegroundColor DarkGray
+    $esc = [char]27
+    $green = "$esc[32m"
+    $gray = "$esc[90m"
+    $reset = "$esc[0m"
+    $clearEol = "$esc[0K"
+
+    $filledBlocks = "$([char]0x2593)" * $filled
+    $emptyBlocks = "$([char]0x2593)" * $empty
     $statsText = "  {0:N1}/{1:N1} MB   {2}   ETA {3}" -f $TransferredMB, $TotalMB, $Speed, $Eta
-    # `e[0K` (ANSI "erase to end of line") menghapus sisa karakter dari baris
-    # sebelumnya. PadRight(50) ditambahkan sebagai jaring pengaman kalau ANSI
-    # escape ini tidak didukung terminal tertentu (jarang terjadi di Windows
-    # Terminal/PowerShell modern, tapi lebih aman ada dua lapis).
-    Write-Host "$($statsText.PadRight(50))$([char]27)[0K" -NoNewline
+
+    $line = "`r $green$filledBlocks$gray$emptyBlocks$reset$statsText$clearEol"
+    [Console]::Write($line)
 }
 
 # --sftp-set-modtime=false        : beberapa server SFTP di Pterodactyl menolak set modtime, ini menghindari error terkait itu.
@@ -119,7 +131,8 @@ function Write-SyncBar {
 # --stats 250ms                    : rclone mencetak blok statistik tiap 250ms ke stderr (dengan newline asli, penting
 #                                    supaya ReadLine() tidak menunggu tanpa akhir). Setiap baris di-parse lalu
 #                                    digambar ulang sebagai bar blok di baris yang sama pakai `r.
-# -v                                : perlu supaya baris "Transferred:" per-file ikut tercetak, bukan cuma ringkasan akhir.
+# -vv                               : debug level, perlu supaya pesan error detail dari layer SFTP (mis. SSH_FX_FAILURE,
+#                                    permission denied) ikut tercetak ke stderr, bukan cuma exit code tanpa keterangan.
 $totalMB = $fileInfo.Length / 1MB
 $rcloneArgs = @(
     "copyto", $BinaryName, "$RemotePath$BinaryName",
@@ -130,7 +143,7 @@ $rcloneArgs = @(
     "--retries", "3",
     "--low-level-retries", "5",
     "--stats", "250ms",
-    "-v"
+    "-vv"
 )
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -139,10 +152,25 @@ $psi.Arguments = ($rcloneArgs | ForEach-Object { if ($_ -match '\s') { "`"$_`"" 
 $psi.RedirectStandardError = $true
 $psi.RedirectStandardOutput = $false
 $psi.UseShellExecute = $false
+# PENTING: ProcessStartInfo TIDAK otomatis mewarisi direktori kerja PowerShell
+# saat ini. Tanpa baris ini, rclone mencari $BinaryName relatif terhadap
+# direktori kerja default proses (biasanya home folder user Windows),
+# bukan folder project tempat script ini dijalankan — menyebabkan error
+# "directory not found" walau file binary-nya sebenarnya ada.
+$psi.WorkingDirectory = (Get-Location).Path
 
 $proc = New-Object System.Diagnostics.Process
 $proc.StartInfo = $psi
-[Console]::CursorVisible = $false
+# Dibungkus try-catch karena beberapa terminal (termasuk sebagian konfigurasi
+# integrated terminal) melempar exception saat CursorVisible diakses/diubah.
+# Kegagalan di sini tidak fatal — bar tetap jalan, hanya cursor tetap kedip.
+try { [Console]::CursorVisible = $false } catch {}
+
+# Semua baris stderr ditampung di sini. Baris statistik progres (yang cocok
+# regex di bawah) dipakai untuk menggambar bar; baris LAINNYA disimpan sebagai
+# kandidat pesan error, supaya kalau sync gagal kita punya sesuatu yang bisa
+# ditunjukkan ke user selain cuma "ExitCode != 0".
+$logLines = New-Object System.Collections.Generic.List[string]
 
 try {
     $proc.Start() | Out-Null
@@ -152,6 +180,7 @@ try {
     # di baris yang sama (pakai `r, tanpa pindah baris) supaya terlihat "hidup".
     while (-not $proc.StandardError.EndOfStream) {
         $line = $proc.StandardError.ReadLine()
+        $logLines.Add($line)
 
         # Contoh baris asli rclone: "Transferred:   	   13.145 MiB / 29.069 MiB, 45%, 92.481 KiB/s, ETA 28s"
         if ($line -match "Transferred:\s+([\d\.]+)\s*MiB\s*/\s*([\d\.]+)\s*MiB.*?,\s*([\d\.]+\s*\wiB/s),\s*ETA\s*(\S+)") {
@@ -172,14 +201,44 @@ try {
 finally {
     # Cursor selalu dikembalikan, bahkan kalau proses dihentikan paksa (Ctrl+C)
     # atau terjadi error tak terduga di tengah pembacaan output.
-    [Console]::CursorVisible = $true
+    try { [Console]::CursorVisible = $true } catch {}
 }
 
 Write-Host ""
 Write-Host ""
 
 if ($syncExitCode -ne 0) {
-    Write-Err "Sync gagal."
+    Write-Err "Sync gagal (exit code $syncExitCode)."
+    Write-Host ""
+
+    # Baris "penyebab error" = baris stderr yang BUKAN baris statistik biasa
+    # (Transferred/Elapsed time/Errors/Checks ringkasan), karena baris-baris
+    # itu normal muncul di setiap run sukses maupun gagal. Sisanya (mis. pesan
+    # "SSH_FX_FAILURE", "permission denied", "context deadline exceeded", dll)
+    # kemungkinan besar adalah pesan error sesungguhnya dari rclone.
+    $errorCandidates = $logLines | Where-Object {
+        $_.Trim() -ne "" -and
+        $_ -notmatch "^\s*Transferred:" -and
+        $_ -notmatch "^\s*Elapsed time:" -and
+        $_ -notmatch "^\s*Errors:\s*0" -and
+        $_ -notmatch "^\s*Checks:" -and
+        $_ -notmatch "^\s*Deleted:" -and
+        $_ -notmatch "^\s*Renamed:" -and
+        $_ -notmatch "^\s*Server side copies:"
+    }
+
+    if ($errorCandidates.Count -gt 0) {
+        Write-Host " Log penyebab error dari rclone:" -ForegroundColor Red
+        Write-Divider
+        foreach ($l in $errorCandidates) {
+            Write-Host " $l" -ForegroundColor DarkYellow
+        }
+        Write-Divider
+    } else {
+        Write-Host " (rclone tidak mengirim pesan error rinci meski sudah pakai -vv." -ForegroundColor DarkGray
+        Write-Host "  Kemungkinan koneksi terputus total sebelum sempat log apa pun.)" -ForegroundColor DarkGray
+    }
+    Write-Host ""
     exit 1
 }
 

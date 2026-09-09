@@ -8,8 +8,9 @@ import (
 
 // Command mendeskripsikan satu perintah bot.
 type Command struct {
-	Name        string // nama command tanpa prefix, misal "ping"
-	Description string // dipakai di menu bantuan
+	Name        string   // nama command tanpa prefix, misal "ping"
+	Aliases     []string // nama alternatif, misal []string{"s"} untuk "sticker"
+	Description string   // dipakai di menu bantuan
 	Handler     func(ctx context.Context, mctx *store.MessageContext) error
 }
 
@@ -22,9 +23,15 @@ func NewRegistry() *Registry {
 	return &Registry{commands: make(map[string]Command)}
 }
 
-// Register menambahkan satu command baru ke registry.
+// Register menambahkan satu command baru ke registry, sekaligus mendaftarkan
+// tiap Aliases sebagai key tambahan yang menunjuk ke command yang sama.
+// Command.All() memfilter alias secara otomatis (lihat All()), jadi menu.go
+// tidak perlu tahu-menahu soal alias.
 func (r *Registry) Register(cmd Command) {
 	r.commands[cmd.Name] = cmd
+	for _, alias := range cmd.Aliases {
+		r.commands[alias] = cmd
+	}
 }
 
 func (r *Registry) Get(name string) (Command, bool) {
@@ -32,9 +39,18 @@ func (r *Registry) Get(name string) (Command, bool) {
 	return cmd, ok
 }
 
-// All mengembalikan semua command terdaftar, dipakai oleh plugin menu.go
+// All mengembalikan semua command terdaftar, dipakai oleh plugin menu.go.
+// Hanya entry dengan key == cmd.Name yang dikembalikan (entry alias, key-nya
+// beda dari cmd.Name, difilter) supaya command dengan alias tidak muncul
+// dobel di menu.
 func (r *Registry) All() map[string]Command {
-	return r.commands
+	out := make(map[string]Command, len(r.commands))
+	for key, cmd := range r.commands {
+		if key == cmd.Name {
+			out[key] = cmd
+		}
+	}
+	return out
 }
 
 // --- Self-registration machinery ---

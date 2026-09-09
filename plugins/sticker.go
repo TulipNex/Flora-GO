@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"wabot-go/internal/config"
 	"wabot-go/internal/store"
 
 	"go.mau.fi/whatsmeow"
@@ -25,6 +26,7 @@ func init() {
 func RegisterSticker(r *Registry) {
 	r.Register(Command{
 		Name:        "sticker",
+		Aliases:     []string{"s"},
 		Description: "Ubah gambar/video (kirim langsung atau reply) jadi stiker",
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			img, vid, err := extractStickerMedia(mctx)
@@ -49,6 +51,19 @@ func RegisterSticker(r *Registry) {
 				return store.ReplyText(ctx, mctx, "❌ Gagal convert ke stiker: "+err.Error())
 			}
 
+			webpBytes, err = store.WriteStickerExif(webpBytes, config.StickerPackname, config.StickerAuthor)
+			if err != nil {
+				return store.ReplyText(ctx, mctx, "❌ Gagal set metadata stiker: "+err.Error())
+			}
+
+			// convertToStickerWebp sekarang selalu memad canvas ke 512x512
+			// transparan (bukan hanya scale sesuai rasio aspek), karena
+			// klien WhatsApp mengasumsikan canvas sticker persis 512x512 —
+			// canvas non-persegi bikin kontennya terlihat "dipaksa"/gepeng
+			// jadi 1:1 saat dirender. Jadi Width/Height selalu 512x512,
+			// tidak perlu dibaca dinamis dari file lagi.
+			stickerW, stickerH := 512, 512
+
 			uploaded, err := mctx.Client.Upload(ctx, webpBytes, whatsmeow.MediaImage)
 			if err != nil {
 				return store.ReplyText(ctx, mctx, "❌ Gagal upload stiker: "+err.Error())
@@ -63,6 +78,12 @@ func RegisterSticker(r *Registry) {
 					FileEncSHA256: uploaded.FileEncSHA256,
 					FileSHA256:    uploaded.FileSHA256,
 					FileLength:    proto.Uint64(uploaded.FileLength),
+					// Width/Height WAJIB diisi eksplisit — kalau kosong, klien
+					// WhatsApp (terutama Android) sering salah render area
+					// transparan dan menggambar latar hitam solid alih-alih
+					// transparan, walau file webp-nya sendiri sudah benar.
+					Width:  proto.Uint32(uint32(stickerW)),
+					Height: proto.Uint32(uint32(stickerH)),
 				},
 			})
 			if err == nil {
@@ -123,7 +144,21 @@ func convertToStickerWebp(input []byte, isVideo bool) ([]byte, error) {
 		return nil, err
 	}
 
-	scaleFilter := "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000"
+	// Scale ke maksimum 512x512 sambil pertahankan rasio aspek asli
+	// ("decrease" memastikan gambar diperkecil kalau lebih besar dari 512
+	// di salah satu sisi, tapi dibiarkan apa adanya kalau sudah lebih kecil),
+	// LALU di-pad ke canvas persis 512x512 dengan warna transparan
+	// (0x00000000), konten diposisikan di tengah.
+	//
+	// Padding ini WAJIB: klien WhatsApp (terutama Android) mengasumsikan
+	// canvas sticker persis 512x512. Kalau canvas hasil convert non-persegi
+	// (mis. 512x300 tanpa pad), klien akan menyesuaikan/stretch konten itu
+	// ke area render sticker yang persegi — hasilnya konten yang aslinya
+	// portrait/landscape terlihat gepeng/dipaksa jadi rasio 1:1. Dengan pad
+	// transparan, canvas selalu 512x512 tapi area kosong di luar konten
+	// asli tetap transparan sehingga wallpaper chat tetap terlihat tembus.
+	scaleFilter := "scale=512:512:force_original_aspect_ratio=decrease," +
+		"pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,format=rgba"
 
 	var cmd *exec.Cmd
 	if isVideo {
