@@ -15,6 +15,14 @@ import (
 	"wabot-go/internal/store"
 	"wabot-go/plugins"
 
+	// Side-effect import: menjalankan init() di masing-masing file tool AI,
+	// yang mendaftarkan dirinya ke internal/ai registry lewat RegisterTool.
+	// Tanpa baris import ini, tool-tool tersebut TIDAK akan pernah terdaftar
+	// meski file .go-nya ada di project (persis prinsip yang sama dengan
+	// kenapa plugins/ perlu di-import agar init() plugin jalan).
+	_ "wabot-go/internal/ai/tools/bridge"
+	_ "wabot-go/internal/ai/tools/native"
+
 	qrcode "github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
 	waLog "go.mau.fi/whatsmeow/util/log"
@@ -51,6 +59,30 @@ func main() {
 	// ==========================================================
 	if err := store.InitGroupDB("data/group.db"); err != nil {
 		panic(fmt.Sprintf("gagal inisialisasi group.db: %v", err))
+	}
+
+	// ==========================================================
+	// 0b. Siapkan database SQLite untuk histori percakapan AI (command
+	//     .ai + trigger natural). Terpisah dari group.db dan session.db.
+	// ==========================================================
+	if err := store.InitAIDB("data/ai.db"); err != nil {
+		panic(fmt.Sprintf("gagal inisialisasi ai.db: %v", err))
+	}
+
+	// ==========================================================
+	// 0c. Siapkan tabel fakta jangka panjang per-user (Fase 5, fact
+	//     extractor). Reuse koneksi ai.db yang sama, hanya menambah tabel.
+	// ==========================================================
+	if err := store.InitFactsDB(); err != nil {
+		panic(fmt.Sprintf("gagal inisialisasi facts DB: %v", err))
+	}
+
+	// ==========================================================
+	// 0d. Siapkan tabel setting provider/model AI aktif (fitur
+	//     multi-provider Gemini/OpenRouter). Reuse koneksi ai.db yang sama.
+	// ==========================================================
+	if err := store.InitAISettingsDB(); err != nil {
+		panic(fmt.Sprintf("gagal inisialisasi AI settings DB: %v", err))
 	}
 
 	// ==========================================================

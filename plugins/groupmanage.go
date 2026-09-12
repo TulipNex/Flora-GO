@@ -125,6 +125,15 @@ func requireGroupAdminGate(ctx context.Context, mctx *store.MessageContext) stri
 	return ""
 }
 
+// RequireGroupAdminGate adalah versi exported dari requireGroupAdminGate,
+// dibuat khusus supaya tool AI (internal/ai/tools/bridge) bisa memakai
+// validasi admin yang SAMA PERSIS dengan command .kick/.promote/.demote,
+// tanpa duplikasi logic. Perilaku command yang sudah ada TIDAK berubah —
+// ini murni pintu masuk tambahan ke fungsi private yang sama.
+func RequireGroupAdminGate(ctx context.Context, mctx *store.MessageContext) string {
+	return requireGroupAdminGate(ctx, mctx)
+}
+
 func handleKick(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireGroupAdminGate(ctx, mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
@@ -251,6 +260,14 @@ func parsePhoneToJID(raw string) (types.JID, error) {
 		}
 	}
 	return types.NewJID(cleaned, types.DefaultUserServer), nil
+}
+
+// ParsePhoneToJID adalah versi exported dari parsePhoneToJID, dibuat khusus
+// supaya tool AI (internal/ai/tools/bridge) bisa mem-validasi & mengubah
+// nomor telepon dari argumen tool jadi types.JID dengan logic yang SAMA
+// PERSIS dengan command .add — tanpa duplikasi.
+func ParsePhoneToJID(raw string) (types.JID, error) {
+	return parsePhoneToJID(raw)
 }
 
 func handleAdd(ctx context.Context, mctx *store.MessageContext) error {
