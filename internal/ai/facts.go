@@ -117,13 +117,21 @@ func ExtractFacts(ctx context.Context, provider ProviderAdapter, oldFactsJSON, t
 // FormatFactsForPrompt mengubah JSON fakta tersimpan jadi baris teks
 // singkat yang enak dibaca model saat disuntik ke system prompt utama.
 // Fakta kosong/tidak ada mengembalikan string kosong (tidak menyuntik apa-apa).
+//
+// Di-unmarshal ke map[string]interface{} (bukan map[string]string) karena
+// LLM tidak selalu patuh 100% pada instruksi "key-value string" di
+// factExtractionPrompt — kadang mengeluarkan angka (mis. "umur": 20) atau
+// array. Kalau dipaksa ke map[string]string, satu field seperti itu saja
+// membuat Unmarshal gagal dan SELURUH fakta (bukan cuma field itu) hilang
+// dari prompt, meski datanya sendiri tersimpan valid di DB (lihat
+// ExtractFacts yang memang sudah pakai interface{} sejak awal).
 func FormatFactsForPrompt(factsJSON string) string {
 	factsJSON = strings.TrimSpace(factsJSON)
 	if factsJSON == "" || factsJSON == "{}" {
 		return ""
 	}
 
-	var facts map[string]string
+	var facts map[string]interface{}
 	if err := json.Unmarshal([]byte(factsJSON), &facts); err != nil {
 		return ""
 	}
@@ -134,7 +142,7 @@ func FormatFactsForPrompt(factsJSON string) string {
 	var sb strings.Builder
 	sb.WriteString("Fakta yang sudah diketahui tentang user ini:\n")
 	for k, v := range facts {
-		sb.WriteString(fmt.Sprintf("- %s: %s\n", k, v))
+		sb.WriteString(fmt.Sprintf("- %s: %v\n", k, v))
 	}
 	return sb.String()
 }

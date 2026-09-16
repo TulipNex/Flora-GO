@@ -20,6 +20,28 @@ const IdleTimeout = 30 * time.Minute
 // Gemini tiap request (boros token).
 const historyLoadLimit = 20
 
+// BuildSessionKey membangun kunci sesi percakapan AI yang membedakan
+// konteks private dan grup, supaya histori tidak tercampur antara chat
+// private seseorang dengan chat mereka di dalam sebuah grup.
+//
+//   - Private (isGroup == false): kunci = senderJID saja, perilaku sama
+//     seperti sebelumnya (satu histori per orang untuk semua chat private).
+//   - Grup (isGroup == true): kunci = "<chatJID>:<senderJID>", sehingga
+//     tiap orang tetap punya histori terpisah miliknya sendiri, TAPI
+//     terpisah juga dari histori private-nya dan dari histori dia di
+//     grup lain. Ini bukan "satu ingatan bersama untuk seluruh grup" —
+//     tiap anggota grup tetap dilayani sebagai sesi masing-masing.
+//
+// Dipakai konsisten oleh plugins/ai.go (command & trigger AI) dan
+// internal/handler/handler.go (trigger natural), supaya kunci sesi yang
+// dibangun untuk pesan yang sama selalu identik di kedua jalur.
+func BuildSessionKey(isGroup bool, chatJID, senderJID string) string {
+	if !isGroup {
+		return senderJID
+	}
+	return chatJID + ":" + senderJID
+}
+
 type sessionEntry struct {
 	history      []Content
 	lastActiveAt time.Time

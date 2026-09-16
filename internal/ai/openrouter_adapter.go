@@ -99,6 +99,19 @@ type openAIError struct {
 	Code    interface{} `json:"code"`
 }
 
+// toolCallID mengembalikan ID asli sebuah FunctionCall/FunctionResponse
+// kalau ada, fallback ke Name kalau ID kosong. Fallback ini HANYA jaring
+// pengaman untuk histori lama yang tersimpan sebelum field ID ditambahkan
+// (baris SQLite lama, atau Part yang datang dari GeminiAdapter yang
+// memang tidak pernah mengisi ID) — untuk tool_call BARU dari OpenRouter/
+// NexaRouter, ID asli selalu ada dan dipakai apa adanya.
+func toolCallID(id, name string) string {
+	if id != "" {
+		return id
+	}
+	return name
+}
+
 // toOpenAIMessages mengkonversi []Content (format internal universal, dan
 // systemPrompt terpisah) menjadi []openAIMessage ala OpenAI. Ini kebalikan
 // dari GenerateRequest.SystemInstruction milik Gemini — OpenAI menaruh
@@ -126,7 +139,7 @@ func toOpenAIMessages(systemPrompt string, history []Content) []openAIMessage {
 					messages = append(messages, openAIMessage{
 						Role:       "tool",
 						Content:    string(result),
-						ToolCallID: p.FunctionResponse.Name, // lihat catatan di fromOpenAIMessage soal pemetaan ID
+						ToolCallID: toolCallID(p.FunctionResponse.ID, p.FunctionResponse.Name),
 						Name:       p.FunctionResponse.Name,
 					})
 					continue
@@ -147,7 +160,7 @@ func toOpenAIMessages(systemPrompt string, history []Content) []openAIMessage {
 				if p.FunctionCall != nil {
 					argsJSON, _ := json.Marshal(p.FunctionCall.Args)
 					toolCalls = append(toolCalls, openAIToolCall{
-						ID:   p.FunctionCall.Name, // lihat catatan di bawah
+						ID:   toolCallID(p.FunctionCall.ID, p.FunctionCall.Name),
 						Type: "function",
 						Function: openAIFunctionCall{
 							Name:      p.FunctionCall.Name,
@@ -168,20 +181,6 @@ func toOpenAIMessages(systemPrompt string, history []Content) []openAIMessage {
 
 	return messages
 }
-
-// Catatan soal ToolCallID: OpenAI mensyaratkan tool_call_id pada message
-// role="tool" cocok PERSIS dengan id yang diterbitkan assistant di
-// tool_calls sebelumnya. Struct ToolCall internal (provider.go) TIDAK
-// membawa field ID terpisah (didesain generik utk Gemini yang tidak
-// mengenal konsep ID ini) — jadi sebagai jembatan, adapter ini memakai
-// tc.Name sebagai pengganti ID pada kedua sisi (request tool_calls DAN
-// balasan tool result). Ini AMAN untuk pola pemakaian bot ini karena
-// loop.go men-dedup pemanggilan tool yang sama persis dalam satu giliran
-// (lihat seen[key] di loop.go) — tidak pernah ada dua tool_call dengan
-// Name identik aktif bersamaan yang butuh dibedakan lewat ID asli.
-// Kalau nanti loop.go direvisi untuk mengizinkan tool yang sama dipanggil
-// paralel dengan argumen beda dalam satu giliran, jembatan Name-sebagai-ID
-// ini perlu diganti dengan ID asli yang dibawa lewat field baru.
 
 // toOpenAITools mengkonversi []FunctionDecl (format internal, dipakai
 // bersama oleh Gemini & OpenRouter) menjadi []openAITool ala OpenAI.
@@ -205,12 +204,22 @@ func toOpenAITools(decls []FunctionDecl) []openAITool {
 
 // fromOpenAIMessage mengkonversi satu openAIMessage hasil balasan model
 // menjadi AgentResponse (format internal universal yang dipahami loop.go).
+//
+// ID tool_call asli (tc.ID, mis. "call_xyz...") disimpan apa adanya ke
+// ToolCall.ID — TIDAK lagi dibuang/diganti Name seperti sebelumnya. ID ini
+// nanti di-echo balik oleh loop.go saat menyusun ulang history (lewat
+// FunctionCall.ID dan FunctionResponse.ID), lalu dibaca lagi oleh
+// toOpenAIMessages di atas via toolCallID(). Ini memperbaiki potensi
+// tool_call_id mismatch/HTTP 400 kalau suatu saat model minta tool yang
+// sama 2x dengan argumen berbeda dalam satu giliran (dulu keduanya akan
+// dapat ID = Name yang identik dan ambigu bagi provider).
 func fromOpenAIMessage(msg openAIMessage) *AgentResponse {
 	var toolCalls []ToolCall
 	for _, tc := range msg.ToolCalls {
 		var args map[string]interface{}
 		_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
 		toolCalls = append(toolCalls, ToolCall{
+			ID:   tc.ID,
 			Name: tc.Function.Name,
 			Args: args,
 			// ThoughtSignature sengaja dibiarkan kosong — OpenAI-compatible

@@ -101,7 +101,15 @@ func handleCommand(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 // konteks ke AI — supaya user tidak perlu mengulang topik yang ingin
 // ditanyakan lebih lanjut.
 func handleAITrigger(client *whatsmeow.Client, evt *events.Message, text string) {
-	sessionKey := evt.Info.Sender.String()
+	// sessionKey dibangun lewat ai.BuildSessionKey yang sama dipakai
+	// plugins/ai.go (HandleAIMessage/processAITurn) — WAJIB identik supaya
+	// HasActiveSession di bawah mengecek kunci yang benar-benar dipakai
+	// GlobalSession.Append untuk menyimpan histori sesi ini. Sebelum
+	// perbaikan ini, di sini selalu memakai sender polos meski histori
+	// sungguhan disimpan dengan kunci gabungan chatJID:senderJID untuk
+	// pesan grup — akibatnya HasActive selalu salah (selalu dianggap
+	// idle) untuk sesi di dalam grup.
+	sessionKey := ai.BuildSessionKey(evt.Info.IsGroup, evt.Info.Chat.String(), evt.Info.Sender.String())
 
 	trigger := ai.DetectTrigger(ai.TriggerInput{
 		Text:             text,
@@ -134,42 +142,16 @@ func handleAITrigger(client *whatsmeow.Client, evt *events.Message, text string)
 
 // extractText mengambil teks dari berbagai tipe pesan (teks biasa, caption gambar, dll).
 //
-// Pesan yang dibungkus EphemeralMessage (mode "Pesan Sementara" di grup) atau
-// salah satu varian ViewOnceMessage (foto/video sekali lihat) TIDAK menaruh
-// isi aslinya langsung di evt.Message — melainkan satu-tiga layer di
-// dalamnya. Tanpa unwrap ini, semua getter di bawah (GetConversation,
-// GetExtendedTextMessage, dst) akan selalu mengembalikan nilai kosong untuk
-// pesan bertipe tersebut, sehingga bot terlihat "diam" total (command
-// maupun trigger AI tidak terpicu) di grup yang mengaktifkan Pesan
-// Sementara.
+// Pesan di-unwrap dulu lewat store.UnwrapMessage — WhatsApp membungkus isi
+// pesan asli satu-tiga layer di dalam EphemeralMessage ("Pesan Sementara" di
+// grup) atau ViewOnceMessage (foto/video sekali lihat), sehingga tanpa
+// unwrap ini semua getter di bawah akan selalu kosong untuk pesan bertipe
+// tersebut dan bot terlihat "diam" di grup yang mengaktifkan fitur itu.
+// Fungsi unwrap yang sama juga dipakai oleh ExtractStanzaID/
+// IsStickerMessage/IsMediaMessage di internal/store/trigger_extract.go
+// supaya perilakunya konsisten di semua jalur.
 func extractText(evt *events.Message) string {
-	msg := evt.Message
-	if msg == nil {
-		return ""
-	}
-
-	// Unwrap layer pembungkus sebelum ekstraksi normal.
-	if eph := msg.GetEphemeralMessage(); eph != nil {
-		msg = eph.GetMessage()
-	}
-	if msg == nil {
-		return ""
-	}
-	if vo := msg.GetViewOnceMessage(); vo != nil {
-		msg = vo.GetMessage()
-	}
-	if msg == nil {
-		return ""
-	}
-	if vo2 := msg.GetViewOnceMessageV2(); vo2 != nil {
-		msg = vo2.GetMessage()
-	}
-	if msg == nil {
-		return ""
-	}
-	if vo2e := msg.GetViewOnceMessageV2Extended(); vo2e != nil {
-		msg = vo2e.GetMessage()
-	}
+	msg := store.UnwrapMessage(evt.Message)
 	if msg == nil {
 		return ""
 	}

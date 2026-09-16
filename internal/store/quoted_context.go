@@ -8,30 +8,21 @@ import "go.mau.fi/whatsmeow/types/events"
 // ini bukan reply ke bot, atau kalau teks bubble-nya sudah terbuang dari
 // cache in-memory (lihat maxTrackedIDs di bot_message_tracker.go).
 //
-// Reply di WhatsApp SELALU masuk lewat ContextInfo pada ExtendedTextMessage
-// (pesan teks biasa dengan quote), konsisten dengan cara extractText()
-// (internal/handler/handler.go) membaca teks pesan masuk — reply murni
-// tanpa media tidak pernah muncul sebagai Conversation polos.
+// StanzaID diambil lewat ExtractStanzaID (trigger_extract.go) alih-alih
+// membaca ContextInfo sendiri di sini — sebelumnya fungsi ini hanya
+// mengecek GetExtendedTextMessage(), sehingga GAGAL mendeteksi reply yang:
+//   - dikirim di dalam grup ber-Pesan-Sementara/pesan sekali-lihat (belum
+//     di-unwrap), atau
+//   - disertai media (reply berupa gambar/video/audio/stiker/dokumen,
+//     bukan teks polos) — ContextInfo untuk kasus ini tersimpan di getter
+//     tipe media yang bersangkutan, bukan di ExtendedTextMessage.
+// ExtractStanzaID sudah menangani unwrap dan keenam tipe pesan tersebut,
+// jadi reuse di sini menghindari dua logika ekstraksi StanzaID yang bisa
+// diam-diam menyimpang lagi di masa depan.
 func GetQuotedBotText(evt *events.Message) string {
-	msg := evt.Message
-	if msg == nil {
-		return ""
-	}
-
-	ext := msg.GetExtendedTextMessage()
-	if ext == nil {
-		return ""
-	}
-
-	ctxInfo := ext.GetContextInfo()
-	if ctxInfo == nil {
-		return ""
-	}
-
-	stanzaID := ctxInfo.GetStanzaID()
+	stanzaID := ExtractStanzaID(evt)
 	if stanzaID == "" {
 		return ""
 	}
-
 	return GetBotMessageText(stanzaID)
 }

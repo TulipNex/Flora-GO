@@ -38,18 +38,26 @@ func RunAgentLoop(actx *AgentContext, provider ProviderAdapter, history []Conten
 		}
 
 		// Tambahkan giliran model (berisi permintaan tool) ke history,
-		// supaya Gemini "ingat" dia baru saja meminta tool tersebut.
-		// PENTING: ThoughtSignature WAJIB diikutsertakan apa adanya persis
-		// seperti yang dikembalikan model — Gemini (seri 2.5/3) menolak
-		// request berikutnya dengan error 400 kalau field ini hilang.
-		// Lihat catatan lengkap di types.go pada struct Part.
+		// supaya provider "ingat" dia baru saja meminta tool tersebut.
+		// PENTING dua hal WAJIB diikutsertakan apa adanya persis seperti
+		// yang dikembalikan model:
+		//   - ThoughtSignature (di Part): Gemini (seri 2.5/3) menolak
+		//     request berikutnya dengan error 400 kalau field ini hilang.
+		//   - ID (di FunctionCall): provider ber-gaya OpenAI
+		//     (OpenRouter/NexaRouter) mensyaratkan tool_call_id pada balasan
+		//     role="tool" cocok PERSIS dengan id yang diterbitkan di sini.
+		//     Untuk Gemini, ID selalu kosong ("") dan memang tidak
+		//     dipakai/tidak ikut termarshal ke request (lihat types.go,
+		//     tag json:"-").
+		// Lihat catatan lengkap di types.go pada Part/FunctionCall dan di
+		// provider_types.go pada struct ToolCall.
 		modelParts := make([]Part, 0, len(resp.ToolCalls)+1)
 		if resp.Text != "" {
 			modelParts = append(modelParts, Part{Text: resp.Text})
 		}
 		for _, tc := range resp.ToolCalls {
 			modelParts = append(modelParts, Part{
-				FunctionCall:     &FunctionCall{Name: tc.Name, Args: tc.Args},
+				FunctionCall:     &FunctionCall{ID: tc.ID, Name: tc.Name, Args: tc.Args},
 				ThoughtSignature: tc.ThoughtSignature,
 			})
 		}
@@ -75,6 +83,11 @@ func RunAgentLoop(actx *AgentContext, provider ProviderAdapter, history []Conten
 			}
 			responseParts = append(responseParts, Part{
 				FunctionResponse: &FunctionResponse{
+					// ID di-echo balik dari tc.ID (bukan lagi memakai Name
+					// sebagai pengganti ID) supaya adapter OpenAI-compatible
+					// bisa memasangkan balasan ini ke tool_call yang benar
+					// lewat tool_call_id asli. Lihat openrouter_adapter.go.
+					ID:       tc.ID,
 					Name:     tc.Name,
 					Response: map[string]interface{}{"result": output},
 				},

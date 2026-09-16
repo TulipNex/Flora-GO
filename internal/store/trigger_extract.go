@@ -5,8 +5,11 @@ import "go.mau.fi/whatsmeow/types/events"
 // ExtractStanzaID mengambil ContextInfo.StanzaID (ID pesan yang di-reply)
 // dari berbagai tipe pesan yang mendukung quote/reply.
 // Balikan "" berarti pesan ini bukan reply ke apa pun.
+//
+// Pesan di-unwrap dulu (lihat UnwrapMessage) supaya reply yang dikirim di
+// dalam grup ber-Pesan-Sementara / pesan sekali-lihat tetap terdeteksi.
 func ExtractStanzaID(evt *events.Message) string {
-	msg := evt.Message
+	msg := UnwrapMessage(evt.Message)
 	if msg == nil {
 		return ""
 	}
@@ -45,19 +48,27 @@ func IsReplyToBot(evt *events.Message) bool {
 }
 
 // IsStickerMessage mengecek apakah pesan ini berupa stiker.
+//
+// Pesan di-unwrap dulu (lihat UnwrapMessage) supaya stiker yang dikirim di
+// dalam grup ber-Pesan-Sementara / pesan sekali-lihat tetap terdeteksi.
 func IsStickerMessage(evt *events.Message) bool {
-	return evt.Message != nil && evt.Message.GetStickerMessage() != nil
+	msg := UnwrapMessage(evt.Message)
+	return msg != nil && msg.GetStickerMessage() != nil
 }
 
 // IsMediaMessage mengecek apakah pesan ini berupa media
 // (gambar, video, audio, atau dokumen) — dipakai untuk mendeteksi
 // "reply media tanpa caption" pada trigger AI.
+//
+// Pesan di-unwrap dulu (lihat UnwrapMessage) supaya media yang dikirim di
+// dalam grup ber-Pesan-Sementara / pesan sekali-lihat tetap terdeteksi.
 func IsMediaMessage(evt *events.Message) bool {
-	if evt.Message == nil {
+	msg := UnwrapMessage(evt.Message)
+	if msg == nil {
 		return false
 	}
-	return evt.Message.GetImageMessage() != nil ||
-		evt.Message.GetVideoMessage() != nil ||
-		evt.Message.GetAudioMessage() != nil ||
-		evt.Message.GetDocumentMessage() != nil
+	return msg.GetImageMessage() != nil ||
+		msg.GetVideoMessage() != nil ||
+		msg.GetAudioMessage() != nil ||
+		msg.GetDocumentMessage() != nil
 }

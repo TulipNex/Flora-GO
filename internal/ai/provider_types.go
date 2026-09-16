@@ -25,7 +25,18 @@ type AgentResponse struct {
 // ThoughtSignature dibawa apa adanya dari response provider (kalau ada)
 // supaya loop.go bisa echo balik field ini saat menyusun ulang history —
 // wajib untuk Gemini model seri 2.5/3, lihat catatan di types.go pada Part.
+//
+// ID dibawa apa adanya dari provider ber-gaya OpenAI (OpenRouter,
+// NexaRouter) yang menerbitkan tool_call id sendiri (mis. "call_xyz").
+// WAJIB di-echo balik persis sama di tool_call_id pada balasan role="tool"
+// — provider OpenAI-compatible yang ketat menolak permintaan berikutnya
+// kalau ID tidak cocok. Gemini tidak mengenal konsep ini sama sekali,
+// jadi untuk jalur Gemini field ini selalu kosong ("") — itu wajar dan
+// tidak dipakai/dibaca oleh gemini_adapter.go maupun loop.go untuk apa pun
+// selain diteruskan apa adanya (kalau kosong, adapter OpenAI-compatible
+// fallback ke Name, lihat catatan di openrouter_adapter.go).
 type ToolCall struct {
+	ID               string
 	Name             string
 	Args             map[string]interface{}
 	ThoughtSignature string

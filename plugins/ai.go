@@ -50,7 +50,12 @@ func handleAICommand(ctx context.Context, mctx *store.MessageContext) error {
 	}
 
 	if strings.EqualFold(text, "reset") {
-		ai.GlobalSession.Reset(mctx.Sender.String())
+		// Kunci sesi dibedakan private/grup (lihat ai.BuildSessionKey) —
+		// ".ai reset" yang diketik di dalam grup HANYA mereset histori
+		// sender itu di grup tersebut, tidak menyentuh histori private-nya
+		// atau histori dia di grup lain.
+		sessionKey := ai.BuildSessionKey(mctx.IsGroup(), mctx.Chat.String(), mctx.Sender.String())
+		ai.GlobalSession.Reset(sessionKey)
 		return store.ReplyText(ctx, mctx, "Oke, sesi percakapan sudah direset.")
 	}
 
@@ -106,8 +111,15 @@ func handleModelSubcommand(ctx context.Context, mctx *store.MessageContext) erro
 // Sejak Fase 5: balasan final dipecah jadi multi-bubble (lihat sendBubbles)
 // alih-alih satu ReplyText tunggal, dan fact extractor dipicu fire-and-forget
 // setiap beberapa giliran (lihat processAITurn).
+//
+// Kunci sesi PERCAKAPAN (histori chat) dibangun lewat ai.BuildSessionKey,
+// yang membedakan private vs grup: sender yang sama akan punya histori
+// TERPISAH antara chat private-nya dan chat dia di sebuah grup (dan
+// terpisah lagi per grup) — sebelumnya semua konteks ini keliru berbagi
+// satu histori yang sama karena kunci sesi hanya memakai sender JID.
 func HandleAIMessage(ctx context.Context, mctx *store.MessageContext, text string) error {
-	sessionKey := mctx.Sender.String()
+	isGroup := mctx.IsGroup()
+	sessionKey := ai.BuildSessionKey(isGroup, mctx.Chat.String(), mctx.Sender.String())
 
 	// Anti-spam: request yang datang terlalu cepat dari sender yang sama
 	// diabaikan diam-diam, tidak diproses dan tidak membalas apa-apa —
@@ -117,7 +129,7 @@ func HandleAIMessage(ctx context.Context, mctx *store.MessageContext, text strin
 		return nil
 	}
 
-	// Lock per-sender: memastikan giliran percakapan sender yang sama tidak
+	// Lock per-sesi: memastikan giliran percakapan sesi yang sama tidak
 	// pernah diproses tumpang tindih (mis. reply dua kali cepat beruntun).
 	resultText, err := ai.WithSenderLock(sessionKey, func() (string, error) {
 		return processAITurn(ctx, mctx, sessionKey, text)
@@ -182,6 +194,12 @@ func sendBubbles(ctx context.Context, mctx *store.MessageContext, text string) e
 // HandleAIMessage supaya bisa dibungkus ai.WithSenderLock dengan bersih
 // (closure murni menerima/mengembalikan (string, error), tanpa langsung
 // mengirim balasan dari dalam lock).
+//
+// sessionKey di sini sudah berupa kunci gabungan private/grup (lihat
+// ai.BuildSessionKey di HandleAIMessage) — dipakai untuk histori
+// percakapan (ai.GlobalSession). Fakta jangka panjang (fact extractor)
+// SENGAJA TETAP memakai mctx.Sender.String() murni, bukan sessionKey —
+// lihat catatan di pemanggilan ai.TriggerFactExtraction di bawah.
 func processAITurn(ctx context.Context, mctx *store.MessageContext, sessionKey, text string) (string, error) {
 	provider, err := ai.GetActiveProvider(ctx)
 	if err != nil {
@@ -239,11 +257,14 @@ func processAITurn(ctx context.Context, mctx *store.MessageContext, sessionKey, 
 	// yang sama (bukan selalu Gemini) — kalau OpenRouter sedang aktif,
 	// ekstraksi fakta ikut lewat OpenRouter juga, supaya tidak diam-diam
 	// tetap memanggil Gemini di belakang layar meski user sudah pindah
-	// provider. Sengaja pakai key SENDER (mctx.Sender.String()), bukan
-	// sessionKey — kebetulan sama persis untuk saat ini (sessionKey memang
-	// didefinisikan sebagai sender), tapi ditulis eksplisit supaya kalau
-	// nanti sessionKey berubah makna (mis. jadi per-chat untuk grup),
-	// fakta tetap konsisten per sender sesuai keputusan desain Fase 5.
+	// provider.
+	//
+	// SENGAJA memakai mctx.Sender.String() murni (bukan sessionKey yang
+	// sudah digabung dengan chatJID untuk grup) — fakta jangka panjang
+	// tentang seseorang memang didesain lintas-chat/grup (lihat keputusan
+	// Fase 5: "fakta user disimpan per sender, lintas semua chat/grup"),
+	// jadi harus TETAP satu kunci per orang meski histori PERCAKAPANNYA
+	// sekarang sudah dipisah per private/grup lewat sessionKey.
 	ai.TriggerFactExtraction(provider, mctx.Sender.String(), append(history, newTurn[1]))
 
 	return resultText, nil
