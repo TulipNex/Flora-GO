@@ -66,7 +66,16 @@ func handleAICommand(ctx context.Context, mctx *store.MessageContext) error {
 	quotedText := store.GetQuotedBotText(mctx.RawEvt)
 	text = ai.BuildTextWithQuotedContext(quotedText, text)
 
-	return HandleAIMessage(ctx, mctx, text)
+	// Sama seperti trigger natural: pemrosesan AI jalan async supaya tidak
+	// memblokir event loop whatsmeow (lihat komentar di handleAITrigger).
+	// HandleAIMessage sudah membalas sendiri ke user (bubble atau pesan
+	// gangguan), jadi handler cukup mengembalikan nil.
+	go func() {
+		if err := HandleAIMessage(context.Background(), mctx, text); err != nil {
+			fmt.Printf("❌ Error memproses command .ai: %v\n", err)
+		}
+	}()
+	return nil
 }
 
 // handleProviderSubcommand menangani ".ai provider" (tampilkan daftar) dan
@@ -209,10 +218,45 @@ func processAITurn(ctx context.Context, mctx *store.MessageContext, sessionKey, 
 
 	isGroup := mctx.IsGroup()
 
+	// Vision: kalau pesan pemicu membawa gambar (lampiran langsung atau
+	// yang di-reply), unduh dan selipkan ke pesan user giliran ini supaya
+	// model yang mendukung vision bisa "melihat"-nya. Byte gambar HANYA
+	// hidup di slice history lokal ini (ephemeral) — baris yang disimpan
+	// ke sesi/DB di bawah tetap teks murni, jadi tidak membengkakkan
+	// memori maupun database. Provider non-vision (Gemini) mengabaikan
+	// field gambar secara diam-diam.
+	userPart := ai.Part{Text: text}
+	if imgBytes, imgMime, imgNote := extractTriggerImage(ctx, mctx); len(imgBytes) > 0 {
+		userPart.ImageBytes = imgBytes
+		userPart.ImageMime = imgMime
+	} else if imgNote != "" {
+		text += "\n" + imgNote
+		userPart.Text = text
+	}
+
+	// Dokumen: kalau pesan pemicu membawa file (PDF/DOCX/XLSX/teks —
+	// lampiran langsung atau yang di-reply), ekstrak teksnya dan tempel ke
+	// pesan user. Tidak seperti gambar vision, ini murni teks sehingga
+	// SEMUA provider bisa membacanya (termasuk Gemini) dan aman disimpan
+	// ke histori. Dokumen pendek (<= maxDocChars) ditempel utuh;
+	// dokumen panjang dibaca bertahap via summarizeLongDocument supaya
+	// tidak ada isi yang hilang (bukan dipotong seperti dulu).
+	if docName, docText, docNote := readTriggerDocument(ctx, mctx); docNote != "" {
+		text += "\n" + docNote
+		userPart.Text = text
+	} else if docText != "" {
+		if len([]rune(docText)) <= maxDocChars {
+			text += "\n" + formatDocBlock(docName, strings.TrimSpace(docText), false)
+		} else {
+			text += "\n" + summarizeLongDocument(ctx, provider, docName, docText)
+		}
+		userPart.Text = text
+	}
+
 	history := ai.GlobalSession.Get(sessionKey)
 	history = append(history, ai.Content{
 		Role:  "user",
-		Parts: []ai.Part{{Text: text}},
+		Parts: []ai.Part{userPart},
 	})
 
 	actx := ai.NewAgentContext(ctx, mctx.Sender.String(), mctx.Chat.String(), isGroup)
@@ -269,6 +313,45 @@ func processAITurn(ctx context.Context, mctx *store.MessageContext, sessionKey, 
 	ai.TriggerFactExtraction(provider, mctx.Sender.String(), append(history, newTurn[1]))
 
 	return resultText, nil
+}
+
+// maxVisionImageBytes adalah batas ukuran gambar untuk vision (4MB). Foto
+// dari WhatsApp umumnya sudah dikompres (<1MB); di atas batas dilewati
+// supaya payload base64 tidak meledak dan provider tidak menolak request
+// karena kebesaran.
+const maxVisionImageBytes = 4 << 20
+
+// extractTriggerImage mengambil gambar dari pesan pemicu AI: prioritas
+// lampiran langsung di pesan itu, fallback ke gambar di pesan yang
+// di-reply. Mengembalikan byte+mime kalau berhasil; kalau pesan memang
+// mengandung gambar tapi gagal diunduh/kebesaran, kembalikan note jujur
+// untuk ditempel ke teks (supaya AI tidak mengarang isi gambar). Kalau
+// tidak ada gambar sama sekali, kembalikan kosong. Semua kegagalan
+// fail-soft: chat teks tetap jalan normal.
+func extractTriggerImage(ctx context.Context, mctx *store.MessageContext) (imgBytes []byte, imgMime, note string) {
+	// Getter protobuf aman dipanggil pada pesan nil (mengembalikan nil),
+	// jadi tidak perlu cek nil hasil UnwrapMessage satu per satu.
+	img := store.UnwrapMessage(mctx.RawEvt.Message).GetImageMessage()
+	if img == nil {
+		img = store.UnwrapMessage(store.ExtractQuotedMessage(mctx.RawEvt)).GetImageMessage()
+	}
+	if img == nil {
+		return nil, "", ""
+	}
+	data, err := mctx.Client.Download(ctx, img)
+	if err != nil {
+		fmt.Printf("⚠️ vision: gagal download gambar: %v\n", err)
+		return nil, "", "[Catatan: ada gambar terlampir tapi tidak bisa dibaca.]"
+	}
+	if len(data) > maxVisionImageBytes {
+		fmt.Printf("⚠️ vision: gambar terlalu besar (%d byte), dilewati.\n", len(data))
+		return nil, "", "[Catatan: ada gambar terlampir tapi terlalu besar untuk dibaca.]"
+	}
+	mime := img.GetMimetype()
+	if mime == "" {
+		mime = "image/jpeg"
+	}
+	return data, mime, ""
 }
 
 // notifyOwnerOfAIError mengirim laporan error teknis ke nomor owner

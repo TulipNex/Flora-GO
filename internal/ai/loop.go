@@ -3,6 +3,8 @@ package ai
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 )
 
 // MaxLoops adalah batas jumlah putaran tool-calling dalam satu giliran
@@ -65,6 +67,9 @@ func RunAgentLoop(actx *AgentContext, provider ProviderAdapter, history []Conten
 
 		// Eksekusi tiap tool call, dedup dalam satu giliran supaya kalau
 		// model minta tool yang sama persis 2x, tidak dieksekusi dobel.
+		// Tiap eksekusi dicatat ke terminal (gaya timeline seperti log
+		// pesan) supaya terlihat apa yang dilakukan agent — sebelumnya
+		// eksekusi tool tidak meninggalkan jejak sama sekali di log.
 		seen := map[string]bool{}
 		var responseParts []Part
 		for _, tc := range resp.ToolCalls {
@@ -81,6 +86,7 @@ func RunAgentLoop(actx *AgentContext, provider ProviderAdapter, history []Conten
 					output = result
 				}
 			}
+			logToolCall(tc.Name, tc.Args, output)
 			responseParts = append(responseParts, Part{
 				FunctionResponse: &FunctionResponse{
 					// ID di-echo balik dari tc.ID (bukan lagi memakai Name
@@ -98,6 +104,29 @@ func RunAgentLoop(actx *AgentContext, provider ProviderAdapter, history []Conten
 	}
 
 	return "", fmt.Errorf("agent loop: melebihi %d putaran tanpa jawaban final", MaxLoops)
+}
+
+// logToolCall mencatat satu eksekusi tool ke terminal: nama, argumen
+// ringkas, dan hasil ringkas (sukses/gagal). Argumen & hasil dipadatkan
+// satu baris + dipotong 100 rune supaya tidak membanjiri log.
+func logToolCall(name string, args map[string]interface{}, output string) {
+	fmt.Printf("%s │ ● TOOL %s(%s) → %s\n",
+		time.Now().Format("15:04"),
+		name,
+		compactOneLine(fmt.Sprintf("%v", args), 80),
+		compactOneLine(output, 100),
+	)
+}
+
+// compactOneLine memadatkan teks jadi satu baris dan memotongnya ke max
+// rune (tambah "..." kalau dipotong).
+func compactOneLine(text string, max int) string {
+	oneLine := strings.Join(strings.Fields(text), " ")
+	runes := []rune(oneLine)
+	if len(runes) <= max {
+		return oneLine
+	}
+	return string(runes[:max]) + "..."
 }
 
 // NewAgentContext adalah helper kecil membangun AgentContext dari data minimal.

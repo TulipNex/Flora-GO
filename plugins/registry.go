@@ -16,17 +16,22 @@ const (
 	CategoryStiker    = "Stiker"
 	CategoryPanggilan = "Panggilan"
 	CategoryAI        = "AI"
+	CategoryOwner     = "Owner"
 )
 
 // CategoryOrder mengatur urutan tampil kategori di .menu. Dipisah dari
 // CategoryXxx di atas supaya urutan tampil bisa diubah tanpa menyentuh
 // tiap file plugin — cukup ubah slice ini.
+// CategoryOwner sengaja ditaruh PALING AKHIR supaya daftar menu publik
+// tetap terbaca seperti sebelumnya, dan kategori sensitif tidak mencolok
+// di tengah-tengah (ditambah lagi menu.go menyembunyikannya dari non-owner).
 var CategoryOrder = []string{
 	CategoryUmum,
 	CategoryGrup,
 	CategoryStiker,
 	CategoryPanggilan,
 	CategoryAI,
+	CategoryOwner,
 }
 
 // Command mendeskripsikan satu perintah bot.

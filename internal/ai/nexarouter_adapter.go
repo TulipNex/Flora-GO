@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -47,54 +48,25 @@ func (n *NexaRouterAdapter) Generate(ctx context.Context, params GenerateParams)
 		return nil, fmt.Errorf("nexarouter: model kosong")
 	}
 
-	// PENTING: field "tools" SENGAJA TIDAK disertakan, apapun isi
-	// params.Tools. Dokumentasi resmi NexaRouter (router.nexaworks.web.id)
-	// hanya mendaftarkan model, messages, stream, temperature, max_tokens
-	// sebagai parameter yang didukung — tidak ada tools/function-calling
-	// sama sekali. Percobaan nyata mengirim field tools menghasilkan
-	// 400 invalid_request_error ("Request tidak valid"). Konsekuensinya:
-	// saat NexaRouter jadi provider aktif, AI TIDAK BISA memicu tool
-	// (kick_member, promote_member, dll) — hanya bisa chat teks biasa.
-	// Ini batasan provider itu sendiri, bukan bug adapter.
-	reqBody := openAIRequest{
-		Model:    n.Model,
-		Messages: toOpenAIMessages(params.SystemPrompt, params.History),
-	}
-
-	bodyBytes, err := json.Marshal(reqBody)
+	// Field "tools" DIKIRIM seperti adapter OpenRouter — dokumentasi resmi
+	// NexaRouter menyebut "tools" sebagai parameter yang dikenal (lihat tabel
+	// error 400-nya) dan wire Anthropic-nya mendukung tools, jadi ada peluang
+	// endpoint OpenAI-compatible-nya juga mendukung. Kalau ternyata server
+	// menolak request KARENA field tools (400 + pesan menyinggung tools),
+	// otomatis dicoba ulang SEKALI tanpa tools (fallback mode chat teks,
+	// perilaku lama). Jadi skenario terburuknya sama seperti sebelum
+	// perubahan ini, tidak ada regresi.
+	tools := toOpenAITools(params.Tools)
+	parsed, toolsRejected, err := n.postChat(ctx, params, tools)
 	if err != nil {
-		return nil, fmt.Errorf("nexarouter: gagal marshal request: %w", err)
+		return nil, err
 	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, nexaRouterEndpoint, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("nexarouter: gagal bangun request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+n.APIKey)
-
-	resp, err := n.HTTPClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("nexarouter: request gagal: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("nexarouter: gagal baca response: %w", err)
-	}
-
-	var parsed openAIResponse
-	if err := json.Unmarshal(respBytes, &parsed); err != nil {
-		return nil, fmt.Errorf("nexarouter: gagal parse response (status %d): %w", resp.StatusCode, err)
-	}
-
-	if parsed.Error != nil {
-		return nil, fmt.Errorf("nexarouter: API error (%v): %s", parsed.Error.Code, parsed.Error.Message)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("nexarouter: status HTTP %d, body: %s", resp.StatusCode, string(respBytes))
+	if toolsRejected {
+		fmt.Printf("⚠️ nexarouter: server menolak field tools — fallback mode teks (tanpa tool).\n")
+		parsed, _, err = n.postChat(ctx, params, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if len(parsed.Choices) == 0 {
@@ -102,4 +74,64 @@ func (n *NexaRouterAdapter) Generate(ctx context.Context, params GenerateParams)
 	}
 
 	return fromOpenAIMessage(parsed.Choices[0].Message), nil
+}
+
+// postChat mengirim satu request chat ke NexaRouter. toolsRejected bernilai
+// true HANYA kalau server mengembalikan 400 yang berkaitan dengan field
+// tools — satu-satunya kondisi di mana pemanggil boleh mencoba ulang tanpa
+// tools. Error lain (auth, saldo, model, network) diteruskan apa adanya.
+func (n *NexaRouterAdapter) postChat(ctx context.Context, params GenerateParams, tools []openAITool) (*openAIResponse, bool, error) {
+	reqBody := openAIRequest{
+		Model:    n.Model,
+		Messages: toOpenAIMessages(params.SystemPrompt, params.History),
+		Tools:    tools,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, false, fmt.Errorf("nexarouter: gagal marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, nexaRouterEndpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, false, fmt.Errorf("nexarouter: gagal bangun request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+n.APIKey)
+
+	resp, err := n.HTTPClient.Do(httpReq)
+	if err != nil {
+		return nil, false, fmt.Errorf("nexarouter: request gagal: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, false, fmt.Errorf("nexarouter: gagal baca response: %w", err)
+	}
+
+	var parsed openAIResponse
+	if err := json.Unmarshal(respBytes, &parsed); err != nil {
+		// Body bukan JSON + status 400 saat tools dikirim = sangat mungkin
+		// penolakan terhadap field tools (format error tak dikenal).
+		if resp.StatusCode == http.StatusBadRequest && len(tools) > 0 {
+			return nil, true, nil
+		}
+		return nil, false, fmt.Errorf("nexarouter: gagal parse response (status %d): %w", resp.StatusCode, err)
+	}
+
+	if resp.StatusCode == http.StatusBadRequest && len(tools) > 0 && parsed.Error != nil &&
+		strings.Contains(strings.ToLower(parsed.Error.Message), "tool") {
+		return nil, true, nil
+	}
+
+	if parsed.Error != nil {
+		return nil, false, fmt.Errorf("nexarouter: API error (%v): %s", parsed.Error.Code, parsed.Error.Message)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, false, fmt.Errorf("nexarouter: status HTTP %d, body: %s", resp.StatusCode, string(respBytes))
+	}
+
+	return &parsed, false, nil
 }

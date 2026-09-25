@@ -26,6 +26,11 @@ func RegisterMenu(r *Registry) {
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			all := r.All()
 
+			// Kategori Owner disembunyikan dari non-owner supaya command
+			// sensitif (ban/mode) tidak terlihat publik. Owner tetap
+			// melihat semua.
+			showOwner := IsOwner(mctx)
+
 			// Kelompokkan nama command per kategori, tiap kelompok di-sort
 			// alfabet supaya urutan stabil walau map All() acak.
 			grouped := make(map[string][]string, len(CategoryOrder))
@@ -43,12 +48,15 @@ func RegisterMenu(r *Registry) {
 			}
 
 			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("👋 Halo, saya *%s*!\n%s.\n\n", config.BotName, config.BotDescription))
-			sb.WriteString("📋 *Daftar Perintah*\n")
+			sb.WriteString(fmt.Sprintf("Halo, saya *%s*!\n%s.\n\n", config.BotName, config.BotDescription))
+			sb.WriteString("*Daftar Perintah*\n")
 
 			// Tampilkan kategori sesuai CategoryOrder dulu, supaya urutan
 			// menu konsisten (Umum -> Grup -> Stiker -> Panggilan -> AI).
 			for _, cat := range CategoryOrder {
+				if cat == CategoryOwner && !showOwner {
+					continue
+				}
 				names := grouped[cat]
 				if len(names) == 0 {
 					continue

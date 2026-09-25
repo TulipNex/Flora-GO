@@ -39,9 +39,56 @@ func InitGroupDB(path string) error {
 		description TEXT NOT NULL DEFAULT '',
 		updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 	);
+	CREATE TABLE IF NOT EXISTS banned_users (
+		user_jid   TEXT PRIMARY KEY,
+		user_part  TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+	);
+	CREATE TABLE IF NOT EXISTS banned_groups (
+		chat_jid   TEXT PRIMARY KEY,
+		created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+	);
+	CREATE TABLE IF NOT EXISTS bot_settings (
+		key   TEXT PRIMARY KEY,
+		value TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE IF NOT EXISTS group_moderation (
+		chat_jid   TEXT PRIMARY KEY,
+		antilink   INTEGER NOT NULL DEFAULT 0,
+		updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+	);
+	CREATE TABLE IF NOT EXISTS user_warnings (
+		chat_jid   TEXT NOT NULL,
+		user_jid   TEXT NOT NULL,
+		warn_count INTEGER NOT NULL DEFAULT 0,
+		updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+		PRIMARY KEY (chat_jid, user_jid)
+	);
+	CREATE TABLE IF NOT EXISTS group_greetings (
+		chat_jid    TEXT PRIMARY KEY,
+		welcome     INTEGER NOT NULL DEFAULT 1,
+		bye         INTEGER NOT NULL DEFAULT 1,
+		welcome_msg TEXT NOT NULL DEFAULT '',
+		bye_msg     TEXT NOT NULL DEFAULT '',
+		updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+	);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("gagal membuat schema group.db: %w", err)
+	}
+
+	// Migrasi untuk database LAMA yang tabel group_greetings-nya sudah ada
+	// TANPA kolom bye/welcome_msg/bye_msg (dibuat sebelum fitur perpisahan +
+	// template ini ditambahkan). Pola yang sama dengan migrasi kolom
+	// model_nexarouter di aisettingsdb.go: abaikan error "duplicate column".
+	for _, alter := range []string{
+		`ALTER TABLE group_greetings ADD COLUMN bye INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE group_greetings ADD COLUMN welcome_msg TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE group_greetings ADD COLUMN bye_msg TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := db.Exec(alter); err != nil && !isDuplicateColumnError(err) {
+			return fmt.Errorf("gagal migrasi group_greetings: %w", err)
+		}
 	}
 
 	groupDB = &GroupDB{db: db}

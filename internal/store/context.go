@@ -18,6 +18,12 @@ type MessageContext struct {
 	Sender types.JID // JID pengirim pesan
 	RawEvt *events.Message
 	Args   []string // argumen setelah nama command, misal ".ping foo bar" -> ["foo","bar"]
+	// RawArgs adalah teks mentah setelah nama command dengan whitespace ASLI
+	// (termasuk baris baru) yang dipertahankan. Args di atas dipecah pakai
+	// strings.Fields yang menghancurkan baris baru — command yang butuh
+	// format multi-baris (.setwelcome/.setbye) WAJIB pakai field ini, bukan
+	// strings.Join(Args, " ").
+	RawArgs string
 }
 
 // ReplyText adalah helper supaya plugin tidak perlu menulis ulang boilerplate

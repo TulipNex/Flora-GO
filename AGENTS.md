@@ -63,9 +63,9 @@ plugins  ->  internal/ai  ->  internal/store
 
 ## AI Engine
 
-- **3 provider** di belakang interface `ProviderAdapter`: `google` (Gemini), `openrouter`, `nexarouter`.
+- **4 provider** di belakang interface `ProviderAdapter`: `google` (Gemini), `openrouter`, `nexarouter`, `ciora`.
   Pilihan aktif disimpan di SQLite + cache in-memory (`providers.go`), diganti via `.ai provider` / `.ai model`.
-- **NexaRouter**: API tidak mendukung field `tools` — adapter sengaja tidak mengirimnya. Limitation provider, bukan bug.
+- **NexaRouter/Ciora**: adapter mencoba mengirim field `tools`; kalau server menolak (400 soal tools), otomatis fallback sekali tanpa tools (mode chat teks). Lihat `postChat` di `nexarouter_adapter.go` / `ciora_adapter.go`.
 - **Session key**: selalu pakai `ai.BuildSessionKey(isGroup, chatJID, senderJID)` — jangan format string sendiri.
   Histori percakapan pakai sessionKey; fakta jangka panjang pakai `senderJID` murni (lintas chat/grup).
 - **Tool calling**: saat menyusun ulang history, WAJIB echo balik apa adanya:

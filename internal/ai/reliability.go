@@ -85,7 +85,7 @@ func RunAgentLoopWithRetry(actx *AgentContext, provider ProviderAdapter, history
 // diubah tanpa menyentuh logic retry.
 func FormatOwnerErrorReport(senderJID, chatJID string, err error) string {
 	return fmt.Sprintf(
-		"⚠️ [AI ERROR]\nWaktu: %s\nDari: %s\nChat: %s\nError: %s",
+		"[AI ERROR]\nWaktu: %s\nDari: %s\nChat: %s\nError: %s",
 		time.Now().Format("2006-01-02 15:04:05"),
 		senderJID,
 		chatJID,

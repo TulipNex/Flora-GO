@@ -13,7 +13,7 @@ import (
 // AvailableProviders adalah daftar nama provider yang valid untuk command
 // ".ai provider <nama>". Ditulis eksplisit (bukan diturunkan dari map lain)
 // supaya urutan tampil di pesan bantuan selalu konsisten.
-var AvailableProviders = []string{"google", "openrouter", "nexarouter"}
+var AvailableProviders = []string{"google", "openrouter", "nexarouter", "ciora"}
 
 // AvailableModels adalah daftar model yang bisa dipilih per provider lewat
 // ".ai model <model>", HARDCODE (bukan fetch live dari API) sesuai
@@ -22,7 +22,7 @@ var AvailableProviders = []string{"google", "openrouter", "nexarouter"}
 //
 // Model default (dipakai kalau user belum pernah set lewat command) tetap
 // config.AIModelDefault untuk Google, dan entri pertama di sini untuk
-// OpenRouter/NexaRouter.
+// OpenRouter/NexaRouter/Ciora.
 var AvailableModels = map[string][]string{
 	"google": {
 		"gemini-3.6-flash",
@@ -58,6 +58,35 @@ var AvailableModels = map[string][]string{
 		"qwen3.8-flash",
 		"claude-opus-5",
 	},
+	"ciora": {
+		"deepseek/deepseek-v4.1-flash",
+		"poolside/laguna-s-2.1-free",
+		"z-ai/glm-5.3-flash",
+		"qwen/qwen3.8-27b",
+		"dots-studio/dots-3-note-preview",
+		"qwen/qwen3.8-flash",
+		"ciora-ai-free",
+		"cohere/north-mini-code-free",
+		"minimax/minimax-m3",
+		"ciora-vision-free",
+		"ciora-coding-free",
+		"ciora/gemini-3.6-flash",
+		"go/gemini-3.8-flash",
+		"ciora/gemini-3.7-flash",
+		"koboillm/gemini-2.5-flash-lite",
+		"op/gpt-5.6-luna",
+		"go/gemini-3.1-pro",
+		"ciora/gemini-3.1-pro",
+		"op/gpt-5.6-terra",
+		"an/claude-sonnet-4-6",
+		"an/claude-sonnet-5",
+		"an/claude-opus-5",
+		"op/gpt-6-astra",
+		"koboillm/gemini-3.6-flash",
+		"koboillm/gemini-3.8-flash",
+		"an/claude-opus-4-8",
+		"anthropic/claude-sonnet-4.6",
+	},
 }
 
 // defaultModelFor mengembalikan model default untuk sebuah provider kalau
@@ -67,7 +96,7 @@ func defaultModelFor(provider string) string {
 	switch provider {
 	case "google":
 		return config.AIModelDefault
-	case "openrouter", "nexarouter":
+	case "openrouter", "nexarouter", "ciora":
 		if models := AvailableModels[provider]; len(models) > 0 {
 			return models[0]
 		}
@@ -164,6 +193,8 @@ func GetActiveModelName(ctx context.Context) string {
 		model = s.ModelOpenRouter
 	case "nexarouter":
 		model = s.ModelNexaRouter
+	case "ciora":
+		model = s.ModelCiora
 	}
 	if model == "" {
 		model = defaultModelFor(provider)
@@ -183,22 +214,32 @@ func GetActiveProvider(ctx context.Context) (ProviderAdapter, error) {
 	provider := GetActiveProviderName(ctx)
 	model := GetActiveModelName(ctx)
 
+	// API key di-TrimSpace dulu karena nilai dari environment sering membawa
+	// whitespace tak terlihat (spasi akhir, newline, atau \r dari file .env
+	// berformat CRLF Windows) — karakter itu ILEGAL di HTTP header dan membuat
+	// request gagal dengan "net/http: invalid header field value" sebelum
+	// sempat terkirim ke provider.
 	switch provider {
 	case "google":
-		if config.AIApiKey == "" {
+		if strings.TrimSpace(config.AIApiKey) == "" {
 			return nil, fmt.Errorf("provider google aktif tapi AI_API_KEY kosong di .env")
 		}
-		return NewGeminiAdapter(config.AIApiKey, model), nil
+		return NewGeminiAdapter(strings.TrimSpace(config.AIApiKey), model), nil
 	case "openrouter":
-		if config.OpenRouterAPIKey == "" {
+		if strings.TrimSpace(config.OpenRouterAPIKey) == "" {
 			return nil, fmt.Errorf("provider openrouter aktif tapi OPENROUTER_API_KEY kosong di .env")
 		}
-		return NewOpenRouterAdapter(config.OpenRouterAPIKey, model), nil
+		return NewOpenRouterAdapter(strings.TrimSpace(config.OpenRouterAPIKey), model), nil
 	case "nexarouter":
-		if config.NexaRouterAPIKey == "" {
+		if strings.TrimSpace(config.NexaRouterAPIKey) == "" {
 			return nil, fmt.Errorf("provider nexarouter aktif tapi NEXAROUTER_API_KEY kosong di .env")
 		}
-		return NewNexaRouterAdapter(config.NexaRouterAPIKey, model), nil
+		return NewNexaRouterAdapter(strings.TrimSpace(config.NexaRouterAPIKey), model), nil
+	case "ciora":
+		if strings.TrimSpace(config.CioraAPIKey) == "" {
+			return nil, fmt.Errorf("provider ciora aktif tapi CIORA_API_KEY kosong di .env")
+		}
+		return NewCioraAdapter(strings.TrimSpace(config.CioraAPIKey), model), nil
 	default:
 		return nil, fmt.Errorf("provider tidak dikenal: %s", provider)
 	}

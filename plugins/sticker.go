@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"wabot-go/internal/config"
 	"wabot-go/internal/store"
@@ -32,7 +33,7 @@ func RegisterSticker(r *Registry) {
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			img, vid, err := extractStickerMedia(mctx)
 			if err != nil {
-				return store.ReplyText(ctx, mctx, "❌ "+err.Error())
+				return store.ReplyText(ctx, mctx, err.Error())
 			}
 
 			var mediaBytes []byte
@@ -44,17 +45,17 @@ func RegisterSticker(r *Registry) {
 				mediaBytes, err = mctx.Client.Download(ctx, vid)
 			}
 			if err != nil {
-				return store.ReplyText(ctx, mctx, "❌ Gagal download media: "+err.Error())
+				return store.ReplyText(ctx, mctx, "Gagal download media: "+err.Error())
 			}
 
 			webpBytes, err := convertToStickerWebp(mediaBytes, isVideo)
 			if err != nil {
-				return store.ReplyText(ctx, mctx, "❌ Gagal convert ke stiker: "+err.Error())
+				return store.ReplyText(ctx, mctx, "Gagal convert ke stiker: "+err.Error())
 			}
 
 			webpBytes, err = store.WriteStickerExif(webpBytes, config.StickerPackname, config.StickerAuthor)
 			if err != nil {
-				return store.ReplyText(ctx, mctx, "❌ Gagal set metadata stiker: "+err.Error())
+				return store.ReplyText(ctx, mctx, "Gagal set metadata stiker: "+err.Error())
 			}
 
 			label := "image->sticker"
@@ -62,11 +63,61 @@ func RegisterSticker(r *Registry) {
 				label = "video->sticker"
 			}
 			if err := sendStickerWebp(ctx, mctx, webpBytes, "sticker", label); err != nil {
-				return store.ReplyText(ctx, mctx, "❌ Gagal kirim stiker: "+err.Error())
+				return store.ReplyText(ctx, mctx, "Gagal kirim stiker: "+err.Error())
 			}
 			return nil
 		},
 	})
+}
+
+// BuildAndSendSticker membuat stiker dari gambar/video di pesan pemicu
+// (kirim langsung + caption, atau yang di-reply) lalu mengirimkannya ke
+// chat — logic yang SAMA PERSIS dengan command .sticker, dibungkus untuk
+// dipakai ulang oleh tool AI make_sticker. packname/author kosong berarti
+// pakai default config. Butuh ffmpeg di server, error-nya diteruskan agar
+// AI bisa menyampaikannya ke user.
+func BuildAndSendSticker(ctx context.Context, mctx *store.MessageContext, packname, author string) error {
+	if strings.TrimSpace(packname) == "" {
+		packname = config.StickerPackname
+	}
+	if strings.TrimSpace(author) == "" {
+		author = config.StickerAuthor
+	}
+
+	img, vid, err := extractStickerMedia(mctx)
+	if err != nil {
+		return err
+	}
+
+	var mediaBytes []byte
+	isVideo := vid != nil
+	if img != nil {
+		mediaBytes, err = mctx.Client.Download(ctx, img)
+	} else {
+		mediaBytes, err = mctx.Client.Download(ctx, vid)
+	}
+	if err != nil {
+		return fmt.Errorf("gagal download media: %w", err)
+	}
+
+	webpBytes, err := convertToStickerWebp(mediaBytes, isVideo)
+	if err != nil {
+		return fmt.Errorf("gagal convert ke stiker: %w", err)
+	}
+
+	webpBytes, err = store.WriteStickerExif(webpBytes, packname, author)
+	if err != nil {
+		return fmt.Errorf("gagal set metadata stiker: %w", err)
+	}
+
+	label := "image->sticker"
+	if isVideo {
+		label = "video->sticker"
+	}
+	if err := sendStickerWebp(ctx, mctx, webpBytes, "sticker", label); err != nil {
+		return fmt.Errorf("gagal kirim stiker: %w", err)
+	}
+	return nil
 }
 
 // sendStickerWebp mengupload webp stiker lalu mengirimkannya ke chat.

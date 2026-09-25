@@ -69,6 +69,11 @@ var (
 	// ketiga (https://router.nexaworks.web.id), API-nya OpenAI-compatible
 	// sama seperti OpenRouter.
 	NexaRouterAPIKey = os.Getenv("NEXAROUTER_API_KEY")
+
+	// CioraAPIKey dibaca dari .env (CIORA_API_KEY=...). Provider keempat
+	// (https://ciora.id), API-nya OpenAI-compatible dan dokumentasinya
+	// menyatakan mendukung tool calling standar OpenAI.
+	CioraAPIKey = os.Getenv("CIORA_API_KEY")
 )
 
 const (

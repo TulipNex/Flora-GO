@@ -30,7 +30,7 @@ func RegisterStickerWatermark(r *Registry) {
 
 			img, sticker, err := extractWatermarkMedia(mctx)
 			if err != nil {
-				return store.ReplyText(ctx, mctx, "❌ "+err.Error())
+				return store.ReplyText(ctx, mctx, err.Error())
 			}
 
 			var mediaBytes []byte
@@ -42,7 +42,7 @@ func RegisterStickerWatermark(r *Registry) {
 				mediaBytes, err = mctx.Client.Download(ctx, img)
 			}
 			if err != nil {
-				return store.ReplyText(ctx, mctx, "❌ Gagal download media: "+err.Error())
+				return store.ReplyText(ctx, mctx, "Gagal download media: "+err.Error())
 			}
 
 			var webpBytes []byte
@@ -55,13 +55,13 @@ func RegisterStickerWatermark(r *Registry) {
 				// yang sama dengan command .sticker.
 				webpBytes, err = convertToStickerWebp(mediaBytes, false)
 				if err != nil {
-					return store.ReplyText(ctx, mctx, "❌ Gagal convert ke stiker: "+err.Error())
+					return store.ReplyText(ctx, mctx, "Gagal convert ke stiker: "+err.Error())
 				}
 			}
 
 			newWebp, err := store.WriteStickerExif(webpBytes, packname, author)
 			if err != nil {
-				return store.ReplyText(ctx, mctx, "❌ Gagal set metadata stiker: "+err.Error())
+				return store.ReplyText(ctx, mctx, "Gagal set metadata stiker: "+err.Error())
 			}
 
 			// Upload+kirim lewat helper bersama (bukan blok duplikat lokal) —
@@ -69,7 +69,7 @@ func RegisterStickerWatermark(r *Registry) {
 			// (audit A3), dan otomatis LogOutgoing dengan label di bawah.
 			label := fmt.Sprintf("packname=%q author=%q", packname, author)
 			if err := sendStickerWebp(ctx, mctx, newWebp, "stickerwatermark", label); err != nil {
-				return store.ReplyText(ctx, mctx, "❌ Gagal kirim stiker: "+err.Error())
+				return store.ReplyText(ctx, mctx, "Gagal kirim stiker: "+err.Error())
 			}
 			return nil
 		},

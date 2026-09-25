@@ -23,7 +23,7 @@ func RegisterPing(r *Registry) {
 		Category:    CategoryUmum,
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			latency := time.Since(mctx.RawEvt.Info.Timestamp).Milliseconds()
-			text := fmt.Sprintf("🏓 Pong! Bot aktif.\n⏱️ Latensi: %dms", latency)
+			text := fmt.Sprintf("Pong! Bot aktif.\nLatensi: %dms", latency)
 			return store.ReplyText(ctx, mctx, text)
 		},
 	})

@@ -45,6 +45,12 @@ func RegisterGroupManage(r *Registry) {
 		Handler:     handleTagAll,
 	})
 	r.Register(Command{
+		Name:        "hidetag",
+		Description: "Tag semua member tanpa daftar @ (.hidetag <pesan>)",
+		Category:    CategoryGrup,
+		Handler:     handleHideTag,
+	})
+	r.Register(Command{
 		Name:        "add",
 		Description: "Tambahkan member ke grup lewat nomor, contoh: .add 6281234567890",
 		Category:    CategoryGrup,
@@ -97,21 +103,21 @@ func displayNumber(info *types.GroupInfo, target types.JID) string {
 // atau string kosong kalau semua syarat lolos.
 func requireGroupAdminGate(ctx context.Context, mctx *store.MessageContext) string {
 	if !mctx.IsGroup() {
-		return "⚠️ Command ini hanya bisa dipakai di dalam grup."
+		return "Command ini hanya bisa dipakai di dalam grup."
 	}
 	isSenderAdmin, err := mctx.IsSenderAdmin(ctx)
 	if err != nil {
-		return fmt.Sprintf("⚠️ Gagal cek status admin: %v", err)
+		return fmt.Sprintf("Gagal cek status admin: %v", err)
 	}
 	if !isSenderAdmin {
-		return "🚫 Hanya admin grup yang boleh pakai command ini."
+		return "Hanya admin grup yang boleh pakai command ini."
 	}
 	isBotAdmin, err := mctx.IsBotAdmin(ctx)
 	if err != nil {
-		return fmt.Sprintf("⚠️ Gagal cek status admin bot: %v", err)
+		return fmt.Sprintf("Gagal cek status admin bot: %v", err)
 	}
 	if !isBotAdmin {
-		return "🚫 Bot harus jadi admin dulu di grup ini supaya bisa melakukan aksi tersebut."
+		return "Bot harus jadi admin dulu di grup ini supaya bisa melakukan aksi tersebut."
 	}
 	return ""
 }
@@ -150,7 +156,7 @@ func canonicalMentionJID(info *types.GroupInfo, target types.JID) types.JID {
 func replySingleMention(ctx context.Context, mctx *store.MessageContext, info *types.GroupInfo, target types.JID, suffix string) error {
 	bare := canonicalMentionJID(info, target)
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("✅ @%s", bare.User))
+	sb.WriteString(fmt.Sprintf("@%s", bare.User))
 	if pn := displayNumber(info, target); pn != "" && pn != bare.User {
 		sb.WriteString(fmt.Sprintf(" (%s)", pn))
 	}
@@ -164,7 +170,7 @@ func handleKick(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	target, err := resolveTargetJID(mctx)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, "⚠️ "+err.Error())
+		return store.ReplyText(ctx, mctx, err.Error())
 	}
 
 	// Resolve JID primer SEBELUM aksi kick dijalankan — setelah member
@@ -177,7 +183,7 @@ func handleKick(ctx context.Context, mctx *store.MessageContext) error {
 
 	_, err = mctx.Client.UpdateGroupParticipants(ctx, mctx.Chat, []types.JID{target}, whatsmeow.ParticipantChangeRemove)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("❌ Gagal kick: %v", err))
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal kick: %v", err))
 	}
 	return replySingleMention(ctx, mctx, infoBefore, target, " berhasil dikeluarkan dari grup.")
 }
@@ -188,14 +194,14 @@ func handlePromote(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	target, err := resolveTargetJID(mctx)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, "⚠️ "+err.Error())
+		return store.ReplyText(ctx, mctx, err.Error())
 	}
 
 	infoBefore, _ := mctx.GroupInfo(ctx)
 
 	_, err = mctx.Client.UpdateGroupParticipants(ctx, mctx.Chat, []types.JID{target}, whatsmeow.ParticipantChangePromote)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("❌ Gagal promote: %v", err))
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal promote: %v", err))
 	}
 	return replySingleMention(ctx, mctx, infoBefore, target, " sekarang jadi admin grup.")
 }
@@ -206,38 +212,49 @@ func handleDemote(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	target, err := resolveTargetJID(mctx)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, "⚠️ "+err.Error())
+		return store.ReplyText(ctx, mctx, err.Error())
 	}
 
 	infoBefore, _ := mctx.GroupInfo(ctx)
 
 	_, err = mctx.Client.UpdateGroupParticipants(ctx, mctx.Chat, []types.JID{target}, whatsmeow.ParticipantChangeDemote)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("❌ Gagal demote: %v", err))
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal demote: %v", err))
 	}
 	return replySingleMention(ctx, mctx, infoBefore, target, " diturunkan jadi member biasa.")
 }
 
 func handleTagAll(ctx context.Context, mctx *store.MessageContext) error {
 	if !mctx.IsGroup() {
-		return store.ReplyText(ctx, mctx, "⚠️ Command ini hanya bisa dipakai di dalam grup.")
+		return store.ReplyText(ctx, mctx, "Command ini hanya bisa dipakai di dalam grup.")
 	}
 	isSenderAdmin, err := mctx.IsSenderAdmin(ctx)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("⚠️ Gagal cek status admin: %v", err))
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal cek status admin: %v", err))
 	}
 	if !isSenderAdmin {
-		return store.ReplyText(ctx, mctx, "🚫 Hanya admin grup yang boleh pakai command ini.")
-	}
-
-	info, err := mctx.GroupInfo(ctx)
-	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("⚠️ Gagal ambil data grup: %v", err))
+		return store.ReplyText(ctx, mctx, "Hanya admin grup yang boleh pakai command ini.")
 	}
 
 	pesan := strings.Join(mctx.Args, " ")
 	if pesan == "" {
-		pesan = "📢 Panggilan untuk semua member grup"
+		pesan = "Panggilan untuk semua member grup"
+	}
+
+	if _, err := TagAllMembers(ctx, mctx, pesan); err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal tagall: %v", err))
+	}
+	return nil
+}
+
+// TagAllMembers mengirim pesan + mention ke SEMUA participant grup.
+// Dipakai command .tagall DAN tool AI tag_all — satu implementasi, dua
+// pintu masuk, supaya pairing mention selalu konsisten. Mengembalikan
+// jumlah member yang di-tag.
+func TagAllMembers(ctx context.Context, mctx *store.MessageContext, pesan string) (int, error) {
+	info, err := mctx.GroupInfo(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("gagal ambil data grup: %w", err)
 	}
 
 	var sb strings.Builder
@@ -272,6 +289,55 @@ func handleTagAll(ctx context.Context, mctx *store.MessageContext) error {
 	if err == nil {
 		store.LogOutgoing(mctx, "tagall", pesan)
 	}
+	return len(mentions), err
+}
+
+// handleHideTag seperti tagall tapi TANPA deretan "@..." di teks — pesannya
+// bersih, hanya isi pengumuman. Semua member tetap ke-tag karena
+// MentionedJID-nya tetap diisi penuh (notifikasi mention masuk normal),
+// hanya highlight inline yang tidak ada karena tidak ada pasangan "@..."
+// di teks. Gate-nya sama dengan tagall (admin grup, bot tidak perlu admin
+// karena mengirim pesan biasa tidak butuh hak admin).
+func handleHideTag(ctx context.Context, mctx *store.MessageContext) error {
+	if !mctx.IsGroup() {
+		return store.ReplyText(ctx, mctx, "Command ini hanya bisa dipakai di dalam grup.")
+	}
+	isSenderAdmin, err := mctx.IsSenderAdmin(ctx)
+	if err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal cek status admin: %v", err))
+	}
+	if !isSenderAdmin {
+		return store.ReplyText(ctx, mctx, "Hanya admin grup yang boleh pakai command ini.")
+	}
+
+	info, err := mctx.GroupInfo(ctx)
+	if err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal ambil data grup: %v", err))
+	}
+
+	pesan := strings.Join(mctx.Args, " ")
+	if pesan == "" {
+		pesan = "Panggilan untuk semua member grup"
+	}
+
+	// JID primer tiap participant (LID di grup LID) dalam bentuk bare —
+	// sama seperti tagall, supaya mention-nya valid di sisi server.
+	mentions := make([]string, 0, len(info.Participants))
+	for _, p := range info.Participants {
+		mentions = append(mentions, p.JID.ToNonAD().String())
+	}
+
+	_, err = mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String(pesan),
+			ContextInfo: &waE2E.ContextInfo{
+				MentionedJID: mentions,
+			},
+		},
+	})
+	if err == nil {
+		store.LogOutgoing(mctx, "hidetag", pesan)
+	}
 	return err
 }
 
@@ -304,7 +370,7 @@ func handleAdd(ctx context.Context, mctx *store.MessageContext) error {
 		return store.ReplyText(ctx, mctx, msg)
 	}
 	if len(mctx.Args) == 0 {
-		return store.ReplyText(ctx, mctx, "⚠️ Isi nomor yang mau ditambahkan, contoh: .add 6281234567890")
+		return store.ReplyText(ctx, mctx, "Isi nomor yang mau ditambahkan, contoh: .add 6281234567890")
 	}
 
 	// Dukung banyak nomor sekaligus, dipisah spasi: .add 6281111 6282222
@@ -312,14 +378,14 @@ func handleAdd(ctx context.Context, mctx *store.MessageContext) error {
 	for _, arg := range mctx.Args {
 		jid, err := parsePhoneToJID(arg)
 		if err != nil {
-			return store.ReplyText(ctx, mctx, "⚠️ "+err.Error())
+			return store.ReplyText(ctx, mctx, err.Error())
 		}
 		targets = append(targets, jid)
 	}
 
 	results, err := mctx.Client.UpdateGroupParticipants(ctx, mctx.Chat, targets, whatsmeow.ParticipantChangeAdd)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("❌ Gagal menambahkan member: %v", err))
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal menambahkan member: %v", err))
 	}
 
 	// PENTING: whatsmeow bisa mengembalikan p.JID dalam bentuk LID untuk member
@@ -334,7 +400,7 @@ func handleAdd(ctx context.Context, mctx *store.MessageContext) error {
 	// sebagai info baca. Baris gagal/invite tidak di-mention (member belum
 	// tentu ada di grup) — tampil nomor ketikan saja seperti sebelumnya.
 	var sb strings.Builder
-	sb.WriteString("📋 Hasil penambahan member:\n")
+	sb.WriteString("Hasil penambahan member:\n")
 	mentions := make([]types.JID, 0, len(results))
 	for i, p := range results {
 		typed := p.JID.User
@@ -349,16 +415,16 @@ func handleAdd(ctx context.Context, mctx *store.MessageContext) error {
 			if bare.IsEmpty() && i < len(targets) {
 				bare = targets[i].ToNonAD()
 			}
-			sb.WriteString(fmt.Sprintf("✅ @%s", bare.User))
+			sb.WriteString(fmt.Sprintf("@%s", bare.User))
 			if typed != "" && typed != bare.User {
 				sb.WriteString(fmt.Sprintf(" (%s)", typed))
 			}
 			sb.WriteString(" berhasil ditambahkan\n")
 			mentions = append(mentions, bare)
 		case p.AddRequest != nil:
-			sb.WriteString(fmt.Sprintf("📨 %s tidak bisa ditambah langsung (privasi), undangan invite terkirim\n", typed))
+			sb.WriteString(fmt.Sprintf("%s tidak bisa ditambah langsung (privasi), undangan invite terkirim\n", typed))
 		default:
-			sb.WriteString(fmt.Sprintf("❌ %s gagal ditambahkan (kode error %d)\n", typed, p.Error))
+			sb.WriteString(fmt.Sprintf("%s gagal ditambahkan (kode error %d)\n", typed, p.Error))
 		}
 	}
 

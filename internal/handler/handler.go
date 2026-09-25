@@ -27,6 +27,10 @@ func NewEventHandler(client *whatsmeow.Client) func(interface{}) {
 		switch evt := rawEvt.(type) {
 		case *events.Message:
 			handleMessage(client, registry, evt)
+		case *events.GroupInfo:
+			// Perubahan info grup: sambutan (join) & perpisahan (leave)
+			// ditangani di plugins/welcome.go.
+			plugins.HandleGroupJoin(client, evt)
 		case *events.Connected:
 			fmt.Println("🔌 Terhubung ke server WhatsApp")
 		case *events.Disconnected:
@@ -46,9 +50,44 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 		return
 	}
 
-	store.LogIncoming(evt)
+	store.LogIncoming(client, evt)
+
+	// Gerbang owner (ban user, ban grup, mode self/public) — dicek SEBELUM
+	// routing command maupun trigger AI supaya user/grup yang di-ban benar-benar
+	// diabaikan total. Owner SELALU lolos supaya bisa unban/ubah mode bahkan
+	// dari dalam grup yang di-ban. Cek DB fail-open: kalau DB error, pesan
+	// tetap diproses (log saja) supaya gangguan DB tidak bikin bot diam total.
+	if !plugins.IsOwnerEvent(evt) {
+		bg := context.Background()
+		if self, err := store.Groups().IsSelfMode(bg); err != nil {
+			fmt.Printf("⚠️ Gagal cek mode bot: %v\n", err)
+		} else if self {
+			return
+		}
+		if banned, err := store.Groups().IsUserBanned(bg, evt.Info.Sender, evt.Info.SenderAlt); err != nil {
+			fmt.Printf("⚠️ Gagal cek ban user: %v\n", err)
+		} else if banned {
+			return
+		}
+		if evt.Info.IsGroup {
+			if gbanned, err := store.Groups().IsGroupBanned(bg, evt.Info.Chat.String()); err != nil {
+				fmt.Printf("⚠️ Gagal cek ban grup: %v\n", err)
+			} else if gbanned {
+				return
+			}
+		}
+	}
 
 	text := extractText(evt)
+
+	// Moderasi antilink otomatis — hanya pesan grup NON-command. Kalau pesan
+	// ditindak (link asing dihapus + warn), setop di sini supaya tidak
+	// diteruskan ke trigger AI.
+	if evt.Info.IsGroup && text != "" && !strings.HasPrefix(text, CommandPrefix) {
+		if plugins.CheckAntilink(client, evt, text) {
+			return
+		}
+	}
 
 	// Cek apakah pesan diawali prefix command
 	if text != "" && strings.HasPrefix(text, CommandPrefix) {
@@ -72,17 +111,27 @@ func handleCommand(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 	cmdName := strings.ToLower(parts[0])
 	args := parts[1:]
 
+	// RawArgs: teks mentah setelah nama command dengan baris baru utuh.
+	// Diambil langsung dari teks asli (tanpa lewat strings.Fields yang
+	// menghancurkan whitespace) — potong di whitespace pertama setelah
+	// nama command, lalu trim tepi saja supaya baris baru di TENGAH utuh.
+	rawArgs := ""
+	if i := strings.IndexAny(withoutPrefix, " \t\n\r"); i >= 0 {
+		rawArgs = strings.TrimSpace(withoutPrefix[i+1:])
+	}
+
 	cmd, ok := registry.Get(cmdName)
 	if !ok {
 		return // command tidak ditemukan, diamkan saja (bisa diubah untuk balas "command tidak dikenal")
 	}
 
 	ctx := &store.MessageContext{
-		Client: client,
-		Chat:   evt.Info.Chat,
-		Sender: evt.Info.Sender,
-		RawEvt: evt,
-		Args:   args,
+		Client:  client,
+		Chat:    evt.Info.Chat,
+		Sender:  evt.Info.Sender,
+		RawEvt:  evt,
+		Args:    args,
+		RawArgs: rawArgs,
 	}
 
 	if err := cmd.Handler(context.Background(), ctx); err != nil {
@@ -134,10 +183,18 @@ func handleAITrigger(client *whatsmeow.Client, evt *events.Message, text string)
 		Args:   nil, // trigger natural tidak berbasis command prefix, teks ada di 'text'
 	}
 
-	if err := plugins.HandleAIMessage(context.Background(), ctx, finalText); err != nil {
-		fmt.Printf("❌ Error memproses trigger AI (alasan: %s): %v\n", trigger.Reason, err)
-		_ = store.ReplyText(context.Background(), ctx, "Maaf, ada gangguan saat memproses ini.")
-	}
+	// Pemrosesan AI jalan di goroutine sendiri supaya tidak memblokir event
+	// loop whatsmeow. HandleAIMessage butuh waktu lama (HTTP ke provider +
+	// delay ketik antar-bubble, total bisa belasan detik) — kalau dijalankan
+	// sinkron di sini, whatsmeow tidak bisa memproses stanza berikutnya dan
+	// memunculkan warning "Node handling took Xs". Aman dari balapan karena
+	// sesi yang sama sudah diserialkan via ai.WithSenderLock di dalamnya.
+	go func() {
+		if err := plugins.HandleAIMessage(context.Background(), ctx, finalText); err != nil {
+			fmt.Printf("❌ Error memproses trigger AI (alasan: %s): %v\n", trigger.Reason, err)
+			_ = store.ReplyText(context.Background(), ctx, "Maaf, ada gangguan saat memproses ini.")
+		}
+	}()
 }
 
 // extractText mengambil teks dari berbagai tipe pesan (teks biasa, caption gambar, dll).

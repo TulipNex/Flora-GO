@@ -1,6 +1,6 @@
 # Flora GO 
 
-Bot WhatsApp modular berbasis Go, memakai library [whatsmeow](https://github.com/tulir/whatsmeow). Dilengkapi command bawaan, fitur panggilan WhatsApp, manajemen grup, dan **AI agent multi-provider** (Gemini / OpenRouter / NexaRouter) dengan tool-calling, sesi percakapan, dan ingatan jangka panjang per user.
+Bot WhatsApp modular berbasis Go, memakai library [whatsmeow](https://github.com/tulir/whatsmeow). Dilengkapi command bawaan, fitur panggilan WhatsApp, manajemen grup, dan **AI agent multi-provider** (Gemini / OpenRouter / NexaRouter / Ciora) dengan tool-calling, sesi percakapan, dan ingatan jangka panjang per user.
 
 ## Struktur Folder
 
@@ -18,7 +18,8 @@ wabot-go/
 │   │   ├── providers.go           # daftar provider/model, GetActiveProvider (baca dari SQLite + cache)
 │   │   ├── gemini_adapter.go      # adapter Gemini API (function-calling native)
 │   │   ├── openrouter_adapter.go  # adapter OpenRouter (OpenAI-compatible)
-│   │   ├── nexarouter_adapter.go  # adapter NexaRouter (OpenAI-compatible, tanpa tools)
+│   │   ├── nexarouter_adapter.go  # adapter NexaRouter (OpenAI-compatible, tools + fallback teks)
+│   │   ├── ciora_adapter.go       # adapter Ciora AI (OpenAI-compatible, tools + fallback teks)
 │   │   ├── loop.go                # agent loop: generate -> eksekusi tool -> ulang (max 8 putaran)
 │   │   ├── registry.go            # registry tool AI + AgentContext
 │   │   ├── reliability.go         # retry error transient + notifikasi owner saat gagal
@@ -183,6 +184,7 @@ Diset lewat file `.env` di root panel (`run.sh` sudah otomatis `source .env` di 
 | `AI_API_KEY`           | API key Google Gemini (provider `google`)                                  |
 | `OPENROUTER_API_KEY`   | API key OpenRouter (provider `openrouter`)                                 |
 | `NEXAROUTER_API_KEY`   | API key NexaRouter (provider `nexarouter`, https://router.nexaworks.web.id) |
+| `CIORA_API_KEY`        | API key Ciora AI (provider `ciora`, https://ciora.id) |
 
 Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan di `.env`, melainkan dikompilasi langsung ke binary lewat `internal/config/config.go` — ubah di sana lalu deploy ulang jika perlu mengganti nilainya.
 
@@ -205,7 +207,7 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 | `.setname` / `.setdesc` / `.open` / `.close` / `.linkgc` | Pengaturan grup |
 | `.ai <pesan>` | Ngobrol dengan AI (lihat bagian [AI Agent](#fitur-ai-agent)) |
 | `.ai reset` | Reset sesi percakapan AI (per private/grup) |
-| `.ai provider [nama]` | Lihat/ganti provider AI aktif (google/openrouter/nexarouter) |
+| `.ai provider [nama]` | Lihat/ganti provider AI aktif (google/openrouter/nexarouter/ciora) |
 | `.ai model [nama]` | Lihat/ganti model AI untuk provider aktif |
 
 Panggilan WhatsApp memakai library [meowcaller](https://github.com/purpshell/meowcaller). Data grup (setting, dsb) disimpan di SQLite lewat driver `modernc.org/sqlite` (pure Go, tanpa cgo).
@@ -223,26 +225,29 @@ Selain command `.ai`, bot juga merespons pesan **natural** (tanpa prefix) lewat 
 
 ### Multi-Provider
 
-Tiga provider tersedia, bisa diganti kapan saja lewat `.ai provider`:
+Empat provider tersedia, bisa diganti kapan saja lewat `.ai provider`:
 
 | Provider | Endpoint | Tool-calling | Default Model |
 |---|---|---|---|
 | `google` | generativelanguage.googleapis.com | ✅ | `gemini-3.6-flash` |
 | `openrouter` | openrouter.ai | ✅ | `openai/gpt-4o-mini` |
-| `nexarouter` | router.nexaworks.web.id | ❌ | `deepseek-v4-flash` |
+| `nexarouter` | router.nexaworks.web.id | fallback teks* | `deepseek-v4-flash` |
+| `ciora` | ciora.id | ✅ | `deepseek/deepseek-v4.1-flash` |
 
-> **Catatan NexaRouter:** API-nya tidak mendukung field `tools`, jadi saat provider ini aktif AI tidak bisa mengeksekusi tool (kick/promote) — hanya chat teks biasa.
+> **Catatan NexaRouter/Ciora:** adapter mencoba mengirim field `tools`; kalau server menolak (400 soal tools), otomatis fallback sekali tanpa tools (mode chat teks). Kalau tool (kick/promote) tidak pernah jalan di provider ini, berarti server memang menolak tools.
 
 Model bisa diganti per provider lewat `.ai model <nama>` (daftar model hardcode di `internal/ai/providers.go`). Pengaturan provider/model **global** (berlaku untuk semua user) dan persist di SQLite.
 
 ### Kemampuan AI
 
-- **Tool-calling**: AI bisa mengeksekusi `system_info`, `kick_member`, `promote_member` (hanya jika user eksplisit minta aksi & berada di grup dengan hak admin yang cukup).
+- **Tool-calling**: AI bisa mengeksekusi `system_info`, `kick_member`, `promote_member`, `demote_member`, `set_group_name`, `tag_all`, `group_link`, `group_close`, `group_open`, `make_sticker` (butuh hak admin grup yang cukup), serta `make_call` & `bot_mode` (khusus owner) — hanya jika user eksplisit minta aksi.
 - **Sesi percakapan**: histori per user, terpisah antara chat private dan tiap grup. Idle timeout 30 menit, persist ke SQLite (survive restart).
 - **Ingatan jangka panjang**: fakta tentang user (nama, hobi, dll) diekstrak otomatis tiap 8 giliran dan disuntik ke system prompt lintas chat/grup.
 - **Multi-bubble**: balasan panjang dipecah jadi beberapa bubble dengan delay ketik simulasi + status "mengetik...".
 - **Mood detection**: deteksi mood user dari teks (sedih/stres/senang) menyesuaikan nada balasan.
 - **Konteks reply**: jika user reply bubble bot, teks bubble tersebut disertakan sebagai konteks.
+- **Vision**: gambar di pesan pemicu (lampiran langsung atau reply) diteruskan ke model yang mendukung (provider OpenAI-compatible) sebagai `image_url` base64; provider Gemini mengabaikannya. Batas 4MB, histori tersimpan tetap teks.
+- **Baca dokumen**: file di pesan pemicu (lampiran langsung atau reply) diekstrak teksnya dan ditempel ke pesan — PDF (`ledongthuc/pdf`), Word `.docx`, Excel `.xlsx` (`excelize`), dan teks polos (TXT/CSV/Markdown). Dokumen sampai 12000 karakter ditempel utuh; selebihnya dibaca bertahap (map-reduce: potongan 8000 karakter diringkas paralel lalu digabung, maks 8 bagian). Batas file 8MB; format lain (termasuk `.doc`/`.xls` lawas) ditolak dengan catatan jujur.
 - **Reliability**: retry otomatis untuk error transient (timeout/429/5xx), notifikasi ke owner via WhatsApp jika gagal total.
 
 > Pemilihan provider & model juga menentukan jalannya fact extractor — kalau OpenRouter sedang aktif, ekstraksi fakta ikut lewat OpenRouter (bukan selalu Gemini).

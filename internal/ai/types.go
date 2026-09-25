@@ -24,6 +24,15 @@ type Part struct {
 	FunctionCall     *FunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *FunctionResponse `json:"functionResponse,omitempty"`
 	ThoughtSignature string            `json:"thoughtSignature,omitempty"`
+	// ImageBytes/ImageMime membawa gambar mentah untuk vision model.
+	// Tag json:"-" WAJIB: byte gambar tidak boleh ikut termarshal ke
+	// request Gemini (GenerateRequest.Contents memakai []Content langsung)
+	// maupun ke penyimpanan sesi/DB — hanya adapter OpenAI-compatible yang
+	// membaca field ini dan mengubahnya jadi blok image_url base64.
+	// Diisi HANYA pada pesan user terbaru yang dikirim (ephemeral, tidak
+	// pernah disimpan ke histori), jadi tidak membengkakkan memori/DB.
+	ImageBytes []byte `json:"-"`
+	ImageMime  string `json:"-"`
 }
 
 // FunctionCall adalah permintaan pemanggilan tool dari model.

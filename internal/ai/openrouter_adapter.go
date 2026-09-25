@@ -3,10 +3,12 @@ package ai
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -50,15 +52,55 @@ type openAIRequest struct {
 
 // openAIMessage merepresentasikan satu baris "messages" ala OpenAI.
 // Role bisa "system", "user", "assistant", atau "tool".
-// Content dipakai untuk teks biasa; ToolCalls dipakai saat assistant
-// meminta pemanggilan tool; ToolCallID+Name dipakai saat role="tool"
-// (hasil eksekusi tool dikirim balik).
+// Content bertipe any karena di wire OpenAI isinya BISA string polos
+// (kasus umum) ATAU array blok multimodal [{type:text},{type:image_url}]
+// saat pesan user membawa gambar (vision). ToolCalls dipakai saat
+// assistant meminta pemanggilan tool; ToolCallID+Name dipakai saat
+// role="tool" (hasil eksekusi tool dikirim balik).
 type openAIMessage struct {
 	Role       string           `json:"role"`
-	Content    string           `json:"content,omitempty"`
+	Content    any              `json:"content,omitempty"`
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
 	Name       string           `json:"name,omitempty"`
+}
+
+// openAIContentPart adalah satu blok dalam content multimodal:
+// teks biasa atau gambar (data URL base64) untuk vision model.
+type openAIContentPart struct {
+	Type     string          `json:"type"` // "text" | "image_url"
+	Text     string          `json:"text,omitempty"`
+	ImageURL *openAIImageURL `json:"image_url,omitempty"`
+}
+
+// openAIImageURL membawa gambar sebagai data URL (bukan URL remote),
+// supaya tidak perlu upload ke mana pun dulu — langsung ditempel base64.
+type openAIImageURL struct {
+	URL string `json:"url"` // format: data:<mime>;base64,<base64>
+}
+
+// openAIContentText membaca kembali Content balasan model jadi string.
+// Balasan normal selalu string; array (sangat jarang untuk model teks)
+// digabung dari blok-blok text-nya secara best-effort.
+func openAIContentText(content any) string {
+	switch c := content.(type) {
+	case nil:
+		return ""
+	case string:
+		return c
+	case []any:
+		var sb strings.Builder
+		for _, item := range c {
+			if m, ok := item.(map[string]any); ok {
+				if t, ok := m["text"].(string); ok {
+					sb.WriteString(t)
+				}
+			}
+		}
+		return sb.String()
+	default:
+		return ""
+	}
 }
 
 type openAIToolCall struct {
@@ -133,6 +175,7 @@ func toOpenAIMessages(systemPrompt string, history []Content) []openAIMessage {
 			// perlu dipecah: FunctionResponse jadi message role="tool"
 			// sendiri-sendiri, teks biasa jadi satu message role="user".
 			var text string
+			var images []Part
 			for _, p := range c.Parts {
 				if p.FunctionResponse != nil {
 					result, _ := json.Marshal(p.FunctionResponse.Response)
@@ -145,10 +188,38 @@ func toOpenAIMessages(systemPrompt string, history []Content) []openAIMessage {
 					continue
 				}
 				text += p.Text
+				if len(p.ImageBytes) > 0 {
+					images = append(images, p)
+				}
 			}
+			if len(images) == 0 {
+				// Jalur lama tanpa gambar: content string polos, wire-nya
+				// identik seperti sebelum fitur vision ada.
+				if text != "" {
+					messages = append(messages, openAIMessage{Role: "user", Content: text})
+				}
+				continue
+			}
+			// Jalur vision: content jadi array blok multimodal. Blok teks
+			// selalu dulu (boleh kosong kalau user kirim gambar tanpa caption),
+			// lalu satu blok image_url per gambar sebagai data URL base64.
+			var blocks []openAIContentPart
 			if text != "" {
-				messages = append(messages, openAIMessage{Role: "user", Content: text})
+				blocks = append(blocks, openAIContentPart{Type: "text", Text: text})
 			}
+			for _, p := range images {
+				mime := p.ImageMime
+				if mime == "" {
+					mime = "image/jpeg"
+				}
+				blocks = append(blocks, openAIContentPart{
+					Type: "image_url",
+					ImageURL: &openAIImageURL{
+						URL: "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(p.ImageBytes),
+					},
+				})
+			}
+			messages = append(messages, openAIMessage{Role: "user", Content: blocks})
 
 		case "model":
 			// Baris "model" bisa berisi teks biasa ATAU FunctionCall
@@ -227,7 +298,7 @@ func fromOpenAIMessage(msg openAIMessage) *AgentResponse {
 		})
 	}
 	return &AgentResponse{
-		Text:      msg.Content,
+		Text:      openAIContentText(msg.Content),
 		ToolCalls: toolCalls,
 	}
 }

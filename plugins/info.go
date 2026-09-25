@@ -29,15 +29,15 @@ func RegisterInfo(r *Registry) {
 			uptime := time.Since(startTime).Round(time.Second)
 
 			msg := fmt.Sprintf(
-				"🤖 *Info Bot*\n\n"+
-					"📛 Nama: %s\n"+
-					"🔖 Versi: %s\n"+
-					"📝 %s\n\n"+
-					"⏱️ Uptime: %s\n"+
-					"🧩 Command terdaftar: %d\n"+
-					"🐹 Bahasa: Go (Golang) %s\n"+
-					"📦 Library: whatsmeow\n"+
-					"💻 OS/Arch: %s/%s",
+				"*Info Bot*\n\n"+
+					"Nama: %s\n"+
+					"Versi: %s\n"+
+					"%s\n\n"+
+					"Uptime: %s\n"+
+					"Command terdaftar: %d\n"+
+					"Bahasa: Go (Golang) %s\n"+
+					"Library: whatsmeow\n"+
+					"OS/Arch: %s/%s",
 				config.BotName,
 				config.BotVersion,
 				config.BotDescription,

@@ -94,7 +94,7 @@ func RegisterCall(r *Registry) {
 			}()
 
 			return store.ReplyText(ctx, mctx, fmt.Sprintf(
-				"📅 Panggilan ke %s dijadwalkan pukul %s WITA (%s lagi).",
+				"Panggilan ke %s dijadwalkan pukul %s WITA (%s lagi).",
 				target, at.Format("15:04"), delay.Round(time.Second),
 			))
 		},
@@ -128,12 +128,18 @@ func parseJamWITA(jamStr string) (time.Time, error) {
 	return target, nil
 }
 
-// doCall melakukan panggilan WhatsApp ke target dan memasang callback
-// OnPeerAccept (memutar greeting.mp3) & OnEnd (logging).
-func doCall(ctx context.Context, mctx *store.MessageContext, target string) error {
+// CallNow melakukan panggilan WhatsApp keluar ke target dan memasang
+// callback OnPeerAccept (memutar greeting.mp3) & OnEnd (logging).
+// Dipakai command .call DAN tool AI make_call — satu implementasi, dua
+// pintu masuk. Tidak mengirim balasan chat apa pun, pemanggil yang
+// memutuskan pesannya sendiri.
+func CallNow(ctx context.Context, client *whatsmeow.Client, target string) error {
+	if callClient == nil {
+		return fmt.Errorf("fitur call belum aktif")
+	}
 	call, err := callClient.Call(ctx, target)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal melakukan panggilan: %v", err))
+		return fmt.Errorf("gagal melakukan panggilan: %w", err)
 	}
 
 	call.OnPeerAccept(func() {
@@ -151,6 +157,14 @@ func doCall(ctx context.Context, mctx *store.MessageContext, target string) erro
 	call.OnEnd(func(reason string) {
 		fmt.Printf("📴 Panggilan ke %s berakhir: %s\n", target, reason)
 	})
+	return nil
+}
 
-	return store.ReplyText(ctx, mctx, "📞 Memanggil "+target+"...")
+// doCall adalah pembungkus CallNow untuk command .call: menjalankan
+// panggilan lalu membalas hasilnya ke chat.
+func doCall(ctx context.Context, mctx *store.MessageContext, target string) error {
+	if err := CallNow(ctx, mctx.Client, target); err != nil {
+		return store.ReplyText(ctx, mctx, err.Error())
+	}
+	return store.ReplyText(ctx, mctx, "Memanggil "+target+"...")
 }
