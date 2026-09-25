@@ -28,11 +28,13 @@ Panduan untuk AI agent (dan developer baru) yang bekerja di repo `wabot-go` — 
 ### Arah dependency (JANGAN dibalik)
 ```
 plugins  ->  internal/ai  ->  internal/store
-   ^              ^
-   |              |
+   ^              ^                  ^
+   |              |                  |
    +--- tools/bridge (satu-satunya yang boleh import plugins)
+   +--- internal/messaging (dipakai plugins & tools/bridge)
 ```
 - `internal/ai` TIDAK boleh import whatsmeow langsung — akses client/mctx lewat `AgentContext.Extra`.
+- `internal/messaging` adalah lapisan "merakit + mengirim pesan kaya" (link card, dst): boleh dipakai `plugins` & `tools/bridge`, tapi TIDAK boleh import `plugins`/`internal/ai`. Fitur JANGAN ditaruh di `internal/store` (itu infra tipis: DB, context, reply mentah).
 - `internal/handler` adalah satu-satunya tempat routing pesan masuk.
 
 ### Command prefix

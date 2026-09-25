@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"wabot-go/internal/config"
+	"wabot-go/internal/messaging"
 	"wabot-go/internal/store"
 )
 
@@ -14,21 +16,21 @@ func init() {
 	registerPlugin(RegisterMenu)
 }
 
-// RegisterMenu mendaftarkan command ".menu" yang menampilkan daftar semua
-// command lain secara otomatis (tidak perlu diupdate manual tiap nambah plugin).
-// Daftar dikelompokkan per Category (lihat CategoryXxx di registry.go) supaya
-// user langsung paham fungsi tiap command tanpa harus menebak dari namanya.
+// Elemen kartu menu (link, judul, deskripsi, thumbnail, favicon) dibaca
+// dari .env (MENU_LINK, MENU_TITLE, MENU_DESC, MENU_THUMB_URL,
+// MENU_FAVICON_URL — lihat config.go). Kosong = default otomatis seperti
+// di bawah, jadi bot tetap jalan tanpa setting .env tambahan.
+
+// RegisterMenu mendaftarkan command ".menu" tiga mode (meniru model menu
+// berkategori): tanpa argumen = sapaan + daftar KATEGORI saja; "all" =
+// semua command semua kategori; "<kategori>" = command kategori itu saja.
 func RegisterMenu(r *Registry) {
 	r.Register(Command{
 		Name:        "menu",
-		Description: "Menampilkan daftar semua perintah",
+		Description: "Daftar perintah (.menu / .menu all / .menu <kategori>)",
 		Category:    CategoryUmum,
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			all := r.All()
-
-			// Kategori Owner disembunyikan dari non-owner supaya command
-			// sensitif (ban/mode) tidak terlihat publik. Owner tetap
-			// melihat semua.
 			showOwner := IsOwner(mctx)
 
 			// Kelompokkan nama command per kategori, tiap kelompok di-sort
@@ -41,48 +43,218 @@ func RegisterMenu(r *Registry) {
 					// jangan hilangkan dari menu, tampung ke Umum.
 					cat = CategoryUmum
 				}
+				if cat == CategoryOwner && !showOwner {
+					continue
+				}
 				grouped[cat] = append(grouped[cat], name)
 			}
 			for _, names := range grouped {
 				sort.Strings(names)
 			}
 
-			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("Halo, saya *%s*!\n%s.\n\n", config.BotName, config.BotDescription))
-			sb.WriteString("*Daftar Perintah*\n")
+			arg := ""
+			if len(mctx.Args) > 0 {
+				arg = strings.ToLower(strings.TrimSpace(mctx.Args[0]))
+			}
 
-			// Tampilkan kategori sesuai CategoryOrder dulu, supaya urutan
-			// menu konsisten (Umum -> Grup -> Stiker -> Panggilan -> AI).
-			for _, cat := range CategoryOrder {
-				if cat == CategoryOwner && !showOwner {
-					continue
+			// Hitung command yang TERLIHAT pemanggil ini (kategori Owner
+			// sudah difilter dari grouped untuk non-owner) — angka ini
+			// yang dipakai deskripsi default supaya <n> selalu sama dengan
+			// jumlah command yang benar-benar terbuka di tampilan ini.
+			var body string
+			shown := 0
+			switch {
+			case arg == "all":
+				body = buildAllMenu(grouped)
+				for _, names := range grouped {
+					shown += len(names)
 				}
-				names := grouped[cat]
-				if len(names) == 0 {
-					continue
+			case arg != "":
+				selected := matchCategory(arg)
+				names, ok := grouped[selected]
+				if !ok || len(names) == 0 {
+					return store.ReplyText(ctx, mctx, fmt.Sprintf("Kategori *%s* tidak ditemukan.\nTersedia: %s", mctx.Args[0], availableCategories(grouped)))
 				}
-				sb.WriteString(fmt.Sprintf("\n*%s*\n", cat))
-				for _, name := range names {
-					sb.WriteString(fmt.Sprintf("• %s%s\n", CommandPrefixForMenu, name))
+				body = buildSingleMenu(grouped, selected)
+				shown = len(names)
+			default:
+				body = buildCategoryMenu(grouped)
+				for _, names := range grouped {
+					shown += len(names)
 				}
 			}
 
-			// Kalau ada kategori di luar CategoryOrder (mis. plugin baru
-			// memakai string kategori sendiri tanpa update CategoryOrder),
-			// tetap tampilkan di bawah supaya tidak ada command yang hilang.
-			for cat, names := range grouped {
-				if isKnownCategory(cat) {
-					continue
+			// Menu dikirim sebagai kartu link + isi lengkap sebagai body —
+			// meniru model menu berkartu. Tiap elemen kartu diambil dari
+			// .env kalau diisi, kalau kosong pakai default otomatis:
+			// link = wa.me nomor bot (fallback nomor owner), judul =
+			// nama+versi bot, deskripsi = jumlah command TERLIHAT.
+			pageURL := strings.TrimSpace(config.MenuLink)
+			if pageURL == "" {
+				botNum := config.OwnerNumber
+				if id := mctx.Client.Store.ID; id != nil && id.ToNonAD().User != "" {
+					botNum = id.ToNonAD().User
 				}
-				sb.WriteString(fmt.Sprintf("\n*%s*\n", cat))
-				for _, name := range names {
-					sb.WriteString(fmt.Sprintf("• %s%s\n", CommandPrefixForMenu, name))
-				}
+				pageURL = "https://wa.me/" + botNum
 			}
-
-			return store.ReplyText(ctx, mctx, sb.String())
+			title := strings.TrimSpace(config.MenuTitle)
+			if title == "" {
+				title = fmt.Sprintf("%s %s", config.BotName, config.BotVersion)
+			}
+			desc := strings.TrimSpace(config.MenuDesc)
+			if desc == "" {
+				desc = fmt.Sprintf("%d commands tersedia", shown)
+			}
+			if err := messaging.SendLinkCard(ctx, mctx, messaging.LinkCard{
+				PageURL:     pageURL,
+				Title:       title,
+				Description: desc,
+				ThumbURL:    strings.TrimSpace(config.MenuThumbURL),
+				FaviconURL:  strings.TrimSpace(config.MenuFaviconURL),
+				Body:        greetingHeader(mctx) + "\n\nDaftar Menu\n" + body,
+			}); err != nil {
+				return store.ReplyText(ctx, mctx, err.Error())
+			}
+			return nil
 		},
 	})
+}
+
+// greetingHeader menyusun sapaan dua baris: "Halo <nama>, selamat
+// <periode>!" lalu baris baru "Saya <NamaBot>, <deskripsi bot>.".
+// Nama dari PushName pengirim, periode dari jam WITA (fungsi dayPeriod
+// yang sama dengan template welcome).
+func greetingHeader(mctx *store.MessageContext) string {
+	name := "kamu"
+	if push := strings.TrimSpace(mctx.RawEvt.Info.PushName); push != "" {
+		name = push
+	}
+	periode := dayPeriod(time.Now().In(witaLocation))
+	return fmt.Sprintf("Halo %s, selamat %s!\nSaya %s, %s.", name, periode, config.BotName, config.BotDescription)
+}
+
+// matchCategory mencocokkan argumen ke nama kategori (case-insensitive).
+// Mengembalikan string kosong kalau tidak ada yang cocok.
+func matchCategory(arg string) string {
+	for _, cat := range CategoryOrder {
+		if strings.EqualFold(cat, arg) {
+			return cat
+		}
+	}
+	return ""
+}
+
+// availableCategories merangkai daftar kategori yang boleh dilihat pemanggil
+// (kategori Owner sudah difilter sebelum fungsi ini dipanggil).
+func availableCategories(grouped map[string][]string) string {
+	var cats []string
+	for _, cat := range CategoryOrder {
+		if len(grouped[cat]) > 0 {
+			cats = append(cats, cat)
+		}
+	}
+	// Kategori di luar CategoryOrder (kalau ada) tetap disebut supaya tidak
+	// ada yang tersembunyi.
+	for cat, names := range grouped {
+		if !isKnownCategory(cat) && len(names) > 0 {
+			cats = append(cats, cat)
+		}
+	}
+	return strings.Join(cats, ", ")
+}
+
+// buildCategoryMenu menyusun daftar KATEGORI saja (tanpa command) + petunjuk
+// pemakaian — tampilan default `.menu`.
+func buildCategoryMenu(grouped map[string][]string) string {
+	var sb strings.Builder
+	for _, cat := range CategoryOrder {
+		if len(grouped[cat]) == 0 {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("▸ %s\n", cat))
+	}
+	for cat, names := range grouped {
+		if !isKnownCategory(cat) && len(names) > 0 {
+			sb.WriteString(fmt.Sprintf("▸ %s\n", cat))
+		}
+	}
+	sb.WriteString("\n.menu <kategori>\n.menu all")
+	return sb.String()
+}
+
+// buildAllMenu menyusun SEMUA kategori + command-nya (`.menu all`).
+func buildAllMenu(grouped map[string][]string) string {
+	var sb strings.Builder
+	for _, cat := range CategoryOrder {
+		names := grouped[cat]
+		if len(names) == 0 {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("▾ *%s*\n", cat))
+		for _, name := range names {
+			sb.WriteString(fmt.Sprintf("  · %s%s\n", CommandPrefixForMenu, name))
+		}
+		sb.WriteString("\n")
+	}
+	// Loop kedua HANYA untuk kategori di luar CategoryOrder (mis. plugin
+	// baru pakai string kategori sendiri) — kategori dikenal sudah tampil
+	// di loop pertama, jangan diulang.
+	for cat, names := range grouped {
+		if isKnownCategory(cat) || len(names) == 0 {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("▾ *%s*\n", cat))
+		for _, name := range names {
+			sb.WriteString(fmt.Sprintf("  · %s%s\n", CommandPrefixForMenu, name))
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString(fmt.Sprintf("%d commands", countCommands(grouped)))
+	return sb.String()
+}
+
+// buildSingleMenu menyusun SEMUA kategori dengan yang diminta DIBUKA di
+// posisinya, sisanya tertutup (`.menu <kategori>`) — meniru tampilan contoh:
+//
+//	Daftar Menu
+//	▸ Umum
+//	▾ Grup
+//	  · _.add_
+//	  · _.antilink_
+//	  · ... (total 19 command)
+//	▸ Stiker
+func buildSingleMenu(grouped map[string][]string, selected string) string {
+	var sb strings.Builder
+	writeCat := func(cat string, names []string) {
+		if cat == selected {
+			sb.WriteString(fmt.Sprintf("▾ %s\n", cat))
+			for _, name := range names {
+				sb.WriteString(fmt.Sprintf("  · _%s%s_\n", CommandPrefixForMenu, name))
+			}
+		} else {
+			sb.WriteString(fmt.Sprintf("▸ %s\n", cat))
+		}
+	}
+	for _, cat := range CategoryOrder {
+		if len(grouped[cat]) == 0 {
+			continue
+		}
+		writeCat(cat, grouped[cat])
+	}
+	for cat, names := range grouped {
+		if !isKnownCategory(cat) && len(names) > 0 {
+			writeCat(cat, names)
+		}
+	}
+	return sb.String()
+}
+
+func countCommands(grouped map[string][]string) int {
+	total := 0
+	for _, names := range grouped {
+		total += len(names)
+	}
+	return total
 }
 
 // isKnownCategory mengecek apakah kategori sudah ada di CategoryOrder.

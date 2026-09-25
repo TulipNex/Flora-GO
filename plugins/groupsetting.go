@@ -41,8 +41,8 @@ func RegisterGroupSetting(r *Registry) {
 	})
 	r.Register(Command{
 		Name:        "linkgc",
-		Aliases:     []string{"linkgroup"},
 		Description: "Ambil link invite grup saat ini",
+		Category:    CategoryGrup,
 		Handler:     handleLinkGC,
 	})
 }

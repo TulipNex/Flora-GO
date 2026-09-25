@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"runtime"
 
@@ -25,11 +26,42 @@ import (
 
 	qrcode "github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/types"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	_ "modernc.org/sqlite"
 
 	"go.mau.fi/whatsmeow/store/sqlstore"
 )
+
+// onlinePresenceInterval adalah jeda heartbeat status "online" nomor bot.
+// WhatsApp menganggap presence basi setelah beberapa puluh detik tanpa
+// update (prinsip yang sama dengan WA Web yang terbuka) — tanpa heartbeat
+// ini, kontak hanya melihat "terakhir dilihat ..." dari terakhir kali akun
+// HP bot dibuka. Kirim ulang berkala membuat status tampil "online" terus.
+//
+// Kalau heartbeat ini TIDAK diinginkan (mis. ingin bot terlihat offline),
+// hapus/komentari pemanggilan startOnlinePresence di main() di bawah.
+const onlinePresenceInterval = 30 * time.Second
+
+// startOnlinePresence mengirim presence "available" SEKARANG lalu mengulang
+// tiap onlinePresenceInterval selama proses hidup. Kegagalan kirim
+// (mis. socket belum tersambung saat start) hanya dicatat ke console dan
+// dicoba lagi di tick berikutnya — tidak pernah mematikan bot.
+func startOnlinePresence(client *whatsmeow.Client) {
+	send := func() {
+		if err := client.SendPresence(context.Background(), types.PresenceAvailable); err != nil {
+			fmt.Printf("⚠️ Gagal kirim presence online: %v\n", err)
+		}
+	}
+	go func() {
+		send()
+		ticker := time.NewTicker(onlinePresenceInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			send()
+		}
+	}()
+}
 
 // Path file PNG QR yang akan dibuat di root project, bisa didownload lewat
 // file manager panel (Pterodactyl) untuk di-scan dari HP.
@@ -116,6 +148,12 @@ func main() {
 	//     whatsmeow mulai jalan.
 	// ==========================================================
 	plugins.InitCallClient(client)
+
+	// ==========================================================
+	// 2c. Jaga nomor bot tampil "online" (bukan "terakhir dilihat").
+	//     Heartbeat presence berkala, fail-soft kalau belum tersambung.
+	// ==========================================================
+	startOnlinePresence(client)
 
 	// ==========================================================
 	// 3. Login: SEPENUHNYA dikendalikan lewat .env, TIDAK menunggu

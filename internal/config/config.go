@@ -74,6 +74,16 @@ var (
 	// (https://ciora.id), API-nya OpenAI-compatible dan dokumentasinya
 	// menyatakan mendukung tool calling standar OpenAI.
 	CioraAPIKey = os.Getenv("CIORA_API_KEY")
+
+	// Kartu link `.menu` — semuanya opsional, kosong berarti pakai default
+	// otomatis (link = wa.me nomor bot, judul = nama+versi bot, deskripsi =
+	// jumlah command, tanpa thumbnail/favicon). Dipisah ke .env supaya
+	// teks/link/gambar kartu bisa diganti tanpa compile ulang.
+	MenuLink       = os.Getenv("MENU_LINK")
+	MenuTitle      = os.Getenv("MENU_TITLE")
+	MenuDesc       = os.Getenv("MENU_DESC")
+	MenuThumbURL   = os.Getenv("MENU_THUMB_URL")
+	MenuFaviconURL = os.Getenv("MENU_FAVICON_URL")
 )
 
 const (
