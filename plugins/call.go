@@ -59,6 +59,7 @@ func RegisterCall(r *Registry) {
 	r.Register(Command{
 		Name:        "call",
 		Description: "Panggil WhatsApp. .call 628xxx (langsung) atau .call 628xxx|12.50 (jadwal jam WITA)",
+		Category:    CategoryPanggilan,
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			if callClient == nil {
 				return store.ReplyText(ctx, mctx, "Fitur call belum aktif.")

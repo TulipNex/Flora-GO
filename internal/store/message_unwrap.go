@@ -43,7 +43,7 @@ func UnwrapMessage(msg *waE2E.Message) *waE2E.Message {
 		return nil
 	}
 
-	if vo2e := msg.GetViewOnceMessageV2Extended(); vo2e != nil {
+	if vo2e := msg.GetViewOnceMessageV2Extension(); vo2e != nil {
 		msg = vo2e.GetMessage()
 	}
 

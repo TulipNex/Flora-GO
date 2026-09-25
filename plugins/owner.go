@@ -21,6 +21,7 @@ func RegisterOwner(r *Registry) {
 	r.Register(Command{
 		Name:        "owner",
 		Description: "Kirim kontak owner bot",
+		Category:    CategoryUmum,
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			vcard := fmt.Sprintf(
 				"BEGIN:VCARD\nVERSION:3.0\nN:;%s;;;\nFN:%s\nTEL;type=CELL;type=VOICE;waid=%s:+%s\nEND:VCARD",

@@ -75,7 +75,8 @@ plugins  ->  internal/ai  ->  internal/store
 
 ## Hal yang Mudah Rusak
 
-- **Dual-format JID (LID vs nomor telepon)**: selalu pakai `participantMatchesJID` (di `store` dan duplikat lokal di `plugins/groupmanage.go`) — jangan bandingkan `.User` polos, bisa false-negative di grup AddressingMode "lid".
+- **Dual-format JID (LID vs nomor telepon)**: selalu pakai `store.ParticipantMatchesJID` — jangan bandingkan `.User` polos, bisa false-negative di grup AddressingMode "lid", dan jangan bikin salinan logic-nya sendiri.
+- **Baca ContextInfo** (reply/mention/quoted): selalu lewat helper di `internal/store/trigger_extract.go` (`ExtractStanzaID`, `ExtractMentionedJIDs`, `ExtractQuotedParticipant`, `ExtractQuotedMessage`) yang sudah unwrap Ephemeral/ViewOnce — jangan baca `RawEvt.Message.GetExtendedTextMessage()` langsung.
 - `.sticker` / `.swm` butuh **ffmpeg** di PATH server.
 - `LOGIN_METHOD` di `.env` wajib `qr` atau `pairing` — kosong/tidak valid = panic saat startup.
 - `.env` berisi nomor HP & API key — **jangan pernah commit** (sudah di `.gitignore`, `push.ps1` juga memperingatkan).

@@ -45,6 +45,39 @@ func ReplyText(ctx context.Context, mctx *MessageContext, text string) error {
 	return err
 }
 
+// ReplyTextWithMentions sama seperti ReplyText (tetap me-reply pesan pemicu)
+// tapi menyertakan MentionedJID supaya "@..." di teks menjadi tag beneran
+// (highlight + notif), bukan sekadar teks polos.
+//
+// SYARAT PAIRING (lihat handleTagAll di plugins/groupmanage.go): teks WAJIB
+// mengandung "@<User>" untuk tiap JID di mentions dengan User yang SAMA
+// PERSIS dengan JID-nya. Di grup mode LID itu berarti "@<LID>", bukan
+// "@<nomor HP>" — klien WhatsApp yang me-render-nya jadi nama kontak.
+// Tiap JID dinormalisasi via ToNonAD di sini supaya device/agent tidak ikut
+// terbawa dan merusak pairing.
+func ReplyTextWithMentions(ctx context.Context, mctx *MessageContext, text string, mentions []types.JID) error {
+	bare := make([]string, 0, len(mentions))
+	for _, jid := range mentions {
+		bare = append(bare, jid.ToNonAD().String())
+	}
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String(text),
+			ContextInfo: &waE2E.ContextInfo{
+				StanzaID:      proto.String(mctx.RawEvt.Info.ID),
+				Participant:   proto.String(mctx.Sender.String()),
+				QuotedMessage: mctx.RawEvt.Message,
+				MentionedJID:  bare,
+			},
+		},
+	})
+	if err == nil {
+		LogOutgoing(mctx, "text-mention", text)
+		TrackBotMessageID(resp.ID, text)
+	}
+	return err
+}
+
 // SendText mengirim pesan teks BIASA (bukan reply/quote) ke chat tujuan.
 // Dipakai untuk bubble ke-2 dst pada output multi-bubble AI (Fase 5) —
 // hanya bubble pertama yang reply ke pesan user, sisanya pesan lepas

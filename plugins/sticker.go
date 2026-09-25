@@ -28,6 +28,7 @@ func RegisterSticker(r *Registry) {
 		Name:        "sticker",
 		Aliases:     []string{"s"},
 		Description: "Ubah gambar/video (kirim langsung atau reply) jadi stiker",
+		Category:    CategoryStiker,
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			img, vid, err := extractStickerMedia(mctx)
 			if err != nil {
@@ -56,62 +57,78 @@ func RegisterSticker(r *Registry) {
 				return store.ReplyText(ctx, mctx, "❌ Gagal set metadata stiker: "+err.Error())
 			}
 
-			// convertToStickerWebp sekarang selalu memad canvas ke 512x512
-			// transparan (bukan hanya scale sesuai rasio aspek), karena
-			// klien WhatsApp mengasumsikan canvas sticker persis 512x512 —
-			// canvas non-persegi bikin kontennya terlihat "dipaksa"/gepeng
-			// jadi 1:1 saat dirender. Jadi Width/Height selalu 512x512,
-			// tidak perlu dibaca dinamis dari file lagi.
-			stickerW, stickerH := 512, 512
-
-			uploaded, err := mctx.Client.Upload(ctx, webpBytes, whatsmeow.MediaImage)
-			if err != nil {
-				return store.ReplyText(ctx, mctx, "❌ Gagal upload stiker: "+err.Error())
+			label := "image->sticker"
+			if isVideo {
+				label = "video->sticker"
 			}
-
-			_, err = mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{
-				StickerMessage: &waE2E.StickerMessage{
-					URL:           proto.String(uploaded.URL),
-					DirectPath:    proto.String(uploaded.DirectPath),
-					MediaKey:      uploaded.MediaKey,
-					Mimetype:      proto.String("image/webp"),
-					FileEncSHA256: uploaded.FileEncSHA256,
-					FileSHA256:    uploaded.FileSHA256,
-					FileLength:    proto.Uint64(uploaded.FileLength),
-					// Width/Height WAJIB diisi eksplisit — kalau kosong, klien
-					// WhatsApp (terutama Android) sering salah render area
-					// transparan dan menggambar latar hitam solid alih-alih
-					// transparan, walau file webp-nya sendiri sudah benar.
-					Width:  proto.Uint32(uint32(stickerW)),
-					Height: proto.Uint32(uint32(stickerH)),
-				},
-			})
-			if err == nil {
-				label := "image->sticker"
-				if isVideo {
-					label = "video->sticker"
-				}
-				store.LogOutgoing(mctx, "sticker", label)
+			if err := sendStickerWebp(ctx, mctx, webpBytes, "sticker", label); err != nil {
+				return store.ReplyText(ctx, mctx, "❌ Gagal kirim stiker: "+err.Error())
 			}
-			return err
+			return nil
 		},
 	})
 }
 
+// sendStickerWebp mengupload webp stiker lalu mengirimkannya ke chat.
+//
+// Blok upload+kirim ini sebelumnya diduplikasi di sticker.go dan
+// stickerwatermark.go (audit duplikasi A3), dan duplikasinya sudah melahirkan
+// bug nyata: .swm lupa mengisi Width/Height sehingga stiker hasil .swm bisa
+// dirender Android dengan latar hitam solid. Sekarang satu helper, satu
+// perilaku, dipanggil kedua command.
+//
+// logType/logLabel hanya untuk LogOutgoing (mis. "sticker"/"image->sticker"
+// atau "stickerwatermark"/"packname=... author=...").
+func sendStickerWebp(ctx context.Context, mctx *store.MessageContext, webp []byte, logType, logLabel string) error {
+	uploaded, err := mctx.Client.Upload(ctx, webp, whatsmeow.MediaImage)
+	if err != nil {
+		return fmt.Errorf("upload: %w", err)
+	}
+
+	// Width/Height WAJIB diisi eksplisit — kalau kosong, klien WhatsApp
+	// (terutama Android) sering salah render area transparan dan menggambar
+	// latar hitam solid alih-alih transparan, walau file webp-nya sendiri
+	// sudah benar. Canvas selalu 512x512 oleh convertToStickerWebp (pad
+	// transparan), jadi tidak perlu dibaca dinamis dari file.
+	_, err = mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{
+		StickerMessage: &waE2E.StickerMessage{
+			URL:           proto.String(uploaded.URL),
+			DirectPath:    proto.String(uploaded.DirectPath),
+			MediaKey:      uploaded.MediaKey,
+			Mimetype:      proto.String("image/webp"),
+			FileEncSHA256: uploaded.FileEncSHA256,
+			FileSHA256:    uploaded.FileSHA256,
+			FileLength:    proto.Uint64(uploaded.FileLength),
+			Width:         proto.Uint32(512),
+			Height:        proto.Uint32(512),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("kirim: %w", err)
+	}
+
+	store.LogOutgoing(mctx, logType, logLabel)
+	return nil
+}
+
 // extractStickerMedia mengambil ImageMessage/VideoMessage baik dari pesan langsung
 // (kirim media dengan caption .sticker) maupun dari pesan yang di-reply (quoted).
+//
+// Pesan di-unwrap dulu dan quoted diambil lewat ExtractQuotedMessage — satu
+// jalur ContextInfo bersama (audit A2), supaya tetap jalan di grup
+// ber-Pesan-Sementara / pesan sekali-lihat.
 func extractStickerMedia(mctx *store.MessageContext) (*waE2E.ImageMessage, *waE2E.VideoMessage, error) {
-	msg := mctx.RawEvt.Message
-
-	if img := msg.GetImageMessage(); img != nil {
-		return img, nil, nil
+	msg := store.UnwrapMessage(mctx.RawEvt.Message)
+	if msg != nil {
+		if img := msg.GetImageMessage(); img != nil {
+			return img, nil, nil
+		}
+		if vid := msg.GetVideoMessage(); vid != nil {
+			return nil, vid, nil
+		}
 	}
-	if vid := msg.GetVideoMessage(); vid != nil {
-		return nil, vid, nil
-	}
 
-	quoted := msg.GetExtendedTextMessage().GetContextInfo().GetQuotedMessage()
-	if quoted != nil {
+	if quoted := store.UnwrapMessage(store.ExtractQuotedMessage(mctx.RawEvt)); quoted != nil {
 		if img := quoted.GetImageMessage(); img != nil {
 			return img, nil, nil
 		}

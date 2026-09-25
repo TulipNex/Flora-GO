@@ -23,26 +23,31 @@ func RegisterGroupManage(r *Registry) {
 	r.Register(Command{
 		Name:        "kick",
 		Description: "Keluarkan member dari grup (mention atau reply pesan target)",
+		Category:    CategoryGrup,
 		Handler:     handleKick,
 	})
 	r.Register(Command{
 		Name:        "promote",
 		Description: "Jadikan member sebagai admin grup (mention atau reply pesan target)",
+		Category:    CategoryGrup,
 		Handler:     handlePromote,
 	})
 	r.Register(Command{
 		Name:        "demote",
 		Description: "Turunkan admin grup jadi member biasa (mention atau reply pesan target)",
+		Category:    CategoryGrup,
 		Handler:     handleDemote,
 	})
 	r.Register(Command{
 		Name:        "tagall",
 		Description: "Mention semua member grup, opsional sertakan pesan (.tagall <pesan>)",
+		Category:    CategoryGrup,
 		Handler:     handleTagAll,
 	})
 	r.Register(Command{
 		Name:        "add",
 		Description: "Tambahkan member ke grup lewat nomor, contoh: .add 6281234567890",
+		Category:    CategoryGrup,
 		Handler:     handleAdd,
 	})
 }
@@ -60,25 +65,6 @@ func resolveTargetJID(mctx *store.MessageContext) (types.JID, error) {
 	return types.JID{}, fmt.Errorf("tag member yang dimaksud (@user) atau reply pesannya")
 }
 
-// participantMatchesJIDLocal mereplikasi logic pencocokan participant vs JID
-// target dari store.participantMatchesJID (fungsi itu tidak exported dari
-// package store, jadi tidak bisa dipanggil dari sini). Perlu karena WhatsApp
-// punya dual-format JID (LID vs nomor telepon/PN) — sebuah participant dan
-// sebuah JID dianggap "orang yang sama" kalau salah satu dari: .User mentah
-// cocok, ATAU field PhoneNumber cocok, ATAU field LID cocok.
-func participantMatchesJIDLocal(p types.GroupParticipant, target types.JID) bool {
-	if p.JID.User == target.User {
-		return true
-	}
-	if !p.PhoneNumber.IsEmpty() && p.PhoneNumber.User == target.User {
-		return true
-	}
-	if !p.LID.IsEmpty() && p.LID.User == target.User {
-		return true
-	}
-	return false
-}
-
 // displayNumber mencari nomor telepon (PN) participant yang cocok dengan JID
 // target, untuk ditampilkan ke user di pesan hasil command. Ini perlu karena
 // di grup dengan AddressingMode "lid", whatsmeow bisa mengembalikan/menyimpan
@@ -87,12 +73,17 @@ func participantMatchesJIDLocal(p types.GroupParticipant, target types.JID) bool
 // resolusi ini, pesan hasil command akan menampilkan LID yang tidak dikenali
 // user sama sekali.
 //
+// Pencocokan participant->target memakai store.ParticipantMatchesJID — logika
+// LID vs PN yang SAMA dengan IsSenderAdmin/IsBotAdmin (sebelumnya ada salinan
+// lokal participantMatchesJIDLocal yang diduplikasi baris per baris, dihapus
+// oleh audit duplikasi supaya cuma ada satu sumber kebenaran).
+//
 // info boleh nil (mis. gagal fetch GroupInfo) — dalam hal itu fallback ke
 // target.User apa adanya, lebih baik dari pada error total.
 func displayNumber(info *types.GroupInfo, target types.JID) string {
 	if info != nil {
 		for _, p := range info.Participants {
-			if participantMatchesJIDLocal(p, target) && !p.PhoneNumber.IsEmpty() {
+			if store.ParticipantMatchesJID(p, target) && !p.PhoneNumber.IsEmpty() {
 				return p.PhoneNumber.User
 			}
 		}
@@ -134,6 +125,39 @@ func RequireGroupAdminGate(ctx context.Context, mctx *store.MessageContext) stri
 	return requireGroupAdminGate(ctx, mctx)
 }
 
+// canonicalMentionJID mengembalikan JID primer participant yang cocok dengan
+// target (p.JID dari GroupInfo — yaitu LID di grup mode LID) supaya teks
+// "@..." dan MentionedJID berpasangan persis seperti di handleTagAll.
+// Fallback ke target apa adanya kalau GroupInfo nil / tidak ketemu, lebih
+// baik kirim sesuatu daripada gagal total.
+func canonicalMentionJID(info *types.GroupInfo, target types.JID) types.JID {
+	if info != nil {
+		for _, p := range info.Participants {
+			if store.ParticipantMatchesJID(p, target) {
+				return p.JID.ToNonAD()
+			}
+		}
+	}
+	return target.ToNonAD()
+}
+
+// replySingleMention mengirim hasil aksi single-target (kick/promote/demote)
+// sebagai reply dengan mention beneran (highlight + notif), memakai metode
+// yang sama dengan handleTagAll: teks "@<bare.User>" + MentionedJID bare.
+// Nomor PN (kalau berbeda dari bare.User, yaitu di grup LID) ditampilkan
+// dalam kurung di luar "@..." sebagai info baca manusia — tidak mengganggu
+// pairing karena pairing hanya melihat bagian "@..." vs MentionedJID.
+func replySingleMention(ctx context.Context, mctx *store.MessageContext, info *types.GroupInfo, target types.JID, suffix string) error {
+	bare := canonicalMentionJID(info, target)
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("✅ @%s", bare.User))
+	if pn := displayNumber(info, target); pn != "" && pn != bare.User {
+		sb.WriteString(fmt.Sprintf(" (%s)", pn))
+	}
+	sb.WriteString(suffix)
+	return store.ReplyTextWithMentions(ctx, mctx, sb.String(), []types.JID{bare})
+}
+
 func handleKick(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireGroupAdminGate(ctx, mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
@@ -143,17 +167,19 @@ func handleKick(ctx context.Context, mctx *store.MessageContext) error {
 		return store.ReplyText(ctx, mctx, "⚠️ "+err.Error())
 	}
 
-	// Resolve nomor tampilan SEBELUM aksi kick dijalankan — setelah member
+	// Resolve JID primer SEBELUM aksi kick dijalankan — setelah member
 	// dikeluarkan, dia tidak lagi ada di GroupInfo.Participants sehingga
-	// resolusi LID->PN tidak akan berhasil lagi (fallback ke LID mentah).
+	// pemetaan ke JID primer tidak akan berhasil lagi.
+	// Catatan: mention ke member yang baru di-kick memang tidak akan
+	// menghasilkan notif (dia sudah keluar), tapi pairing tetap dibuat benar
+	// supaya tampil highlight konsisten dengan command lain.
 	infoBefore, _ := mctx.GroupInfo(ctx)
-	display := displayNumber(infoBefore, target)
 
 	_, err = mctx.Client.UpdateGroupParticipants(ctx, mctx.Chat, []types.JID{target}, whatsmeow.ParticipantChangeRemove)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("❌ Gagal kick: %v", err))
 	}
-	return store.ReplyText(ctx, mctx, fmt.Sprintf("✅ @%s berhasil dikeluarkan dari grup.", display))
+	return replySingleMention(ctx, mctx, infoBefore, target, " berhasil dikeluarkan dari grup.")
 }
 
 func handlePromote(ctx context.Context, mctx *store.MessageContext) error {
@@ -166,13 +192,12 @@ func handlePromote(ctx context.Context, mctx *store.MessageContext) error {
 	}
 
 	infoBefore, _ := mctx.GroupInfo(ctx)
-	display := displayNumber(infoBefore, target)
 
 	_, err = mctx.Client.UpdateGroupParticipants(ctx, mctx.Chat, []types.JID{target}, whatsmeow.ParticipantChangePromote)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("❌ Gagal promote: %v", err))
 	}
-	return store.ReplyText(ctx, mctx, fmt.Sprintf("✅ @%s sekarang jadi admin grup.", display))
+	return replySingleMention(ctx, mctx, infoBefore, target, " sekarang jadi admin grup.")
 }
 
 func handleDemote(ctx context.Context, mctx *store.MessageContext) error {
@@ -185,13 +210,12 @@ func handleDemote(ctx context.Context, mctx *store.MessageContext) error {
 	}
 
 	infoBefore, _ := mctx.GroupInfo(ctx)
-	display := displayNumber(infoBefore, target)
 
 	_, err = mctx.Client.UpdateGroupParticipants(ctx, mctx.Chat, []types.JID{target}, whatsmeow.ParticipantChangeDemote)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("❌ Gagal demote: %v", err))
 	}
-	return store.ReplyText(ctx, mctx, fmt.Sprintf("✅ @%s diturunkan jadi member biasa.", display))
+	return replySingleMention(ctx, mctx, infoBefore, target, " diturunkan jadi member biasa.")
 }
 
 func handleTagAll(ctx context.Context, mctx *store.MessageContext) error {
@@ -222,14 +246,19 @@ func handleTagAll(ctx context.Context, mctx *store.MessageContext) error {
 
 	mentions := make([]string, 0, len(info.Participants))
 	for _, p := range info.Participants {
-		// Tampilkan nomor telepon kalau ada (lebih dikenali user), fallback
-		// ke JID.User apa adanya (bisa jadi LID) kalau PhoneNumber kosong.
-		shown := p.JID.User
-		if !p.PhoneNumber.IsEmpty() {
-			shown = p.PhoneNumber.User
-		}
-		sb.WriteString(fmt.Sprintf("@%s\n", shown))
-		mentions = append(mentions, p.JID.String())
+		// Teks "@xxx" WAJIB memakai User dari JID yang SAMA dengan yang
+		// dimasukkan ke MentionedJID — klien WhatsApp memasangkan keduanya
+		// berdasarkan kecocokan User. Sebelumnya teks memakai PhoneNumber
+		// (@628...) tapi MentionedJID memakai p.JID (@lid di grup LID),
+		// sehingga tidak ada pasangan yang cocok dan tag gagal total
+		// (hanya tampil teks polos, tanpa highlight/notif).
+		// Di grup LID teks memang terlihat seperti "@18189..." (bukan nomor),
+		// tapi itulah yang diminta protokol — klien yang me-render-nya jadi
+		// nama kontak + highlight. ToNonAD dipakai supaya device/agent
+		// tidak ikut terbawa ke teks maupun MentionedJID.
+		bare := p.JID.ToNonAD()
+		sb.WriteString(fmt.Sprintf("@%s\n", bare.User))
+		mentions = append(mentions, bare.String())
 	}
 
 	_, err = mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{
@@ -295,27 +324,46 @@ func handleAdd(ctx context.Context, mctx *store.MessageContext) error {
 
 	// PENTING: whatsmeow bisa mengembalikan p.JID dalam bentuk LID untuk member
 	// yang baru ditambahkan (bukan PN yang barusan diketik user di .add), kalau
-	// grup memakai AddressingMode "lid". Supaya laporan hasil selalu menampilkan
-	// nomor yang SAMA dengan yang diketik user, kita tampilkan berdasarkan
-	// posisi (index) di targets/mctx.Args — bukan dari p.JID.User — karena
-	// UpdateGroupParticipants menjamin urutan results sejajar dengan urutan
-	// targets yang dikirim.
+	// grup memakai AddressingMode "lid". UpdateGroupParticipants menjamin
+	// urutan results sejajar dengan urutan targets yang dikirim, jadi nomor
+	// ketikan user diambil dari mctx.Args berdasarkan index.
+	//
+	// Supaya tag berfungsi (metode yang sama dengan tagall/kick/promote),
+	// baris sukses memakai "@<bare.User>" dari JID hasil server + MentionedJID
+	// yang berpasangan, dengan nomor ketikan user ditampilkan dalam kurung
+	// sebagai info baca. Baris gagal/invite tidak di-mention (member belum
+	// tentu ada di grup) — tampil nomor ketikan saja seperti sebelumnya.
 	var sb strings.Builder
 	sb.WriteString("📋 Hasil penambahan member:\n")
+	mentions := make([]types.JID, 0, len(results))
 	for i, p := range results {
-		display := p.JID.User
+		typed := p.JID.User
 		if i < len(mctx.Args) {
-			display = mctx.Args[i]
+			typed = mctx.Args[i]
 		}
 		switch {
 		case p.Error == 0:
-			sb.WriteString(fmt.Sprintf("✅ %s berhasil ditambahkan\n", display))
+			bare := p.JID.ToNonAD()
+			// Kalau server tidak mengembalikan JID valid, fallback ke JID
+			// yang tadi dikirim (targets sejajar index dengan results).
+			if bare.IsEmpty() && i < len(targets) {
+				bare = targets[i].ToNonAD()
+			}
+			sb.WriteString(fmt.Sprintf("✅ @%s", bare.User))
+			if typed != "" && typed != bare.User {
+				sb.WriteString(fmt.Sprintf(" (%s)", typed))
+			}
+			sb.WriteString(" berhasil ditambahkan\n")
+			mentions = append(mentions, bare)
 		case p.AddRequest != nil:
-			sb.WriteString(fmt.Sprintf("📨 %s tidak bisa ditambah langsung (privasi), undangan invite terkirim\n", display))
+			sb.WriteString(fmt.Sprintf("📨 %s tidak bisa ditambah langsung (privasi), undangan invite terkirim\n", typed))
 		default:
-			sb.WriteString(fmt.Sprintf("❌ %s gagal ditambahkan (kode error %d)\n", display, p.Error))
+			sb.WriteString(fmt.Sprintf("❌ %s gagal ditambahkan (kode error %d)\n", typed, p.Error))
 		}
 	}
 
-	return store.ReplyText(ctx, mctx, sb.String())
+	if len(mentions) == 0 {
+		return store.ReplyText(ctx, mctx, sb.String())
+	}
+	return store.ReplyTextWithMentions(ctx, mctx, sb.String(), mentions)
 }

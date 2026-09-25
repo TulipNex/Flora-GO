@@ -18,26 +18,31 @@ func RegisterGroupSetting(r *Registry) {
 	r.Register(Command{
 		Name:        "setname",
 		Description: "Ganti nama grup, contoh: .setname Nama Baru",
+		Category:    CategoryGrup,
 		Handler:     handleSetName,
 	})
 	r.Register(Command{
 		Name:        "setdesc",
 		Description: "Ganti deskripsi grup, contoh: .setdesc Deskripsi baru",
+		Category:    CategoryGrup,
 		Handler:     handleSetDesc,
 	})
 	r.Register(Command{
 		Name:        "open",
 		Description: "Buka grup, semua member boleh kirim pesan",
+		Category:    CategoryGrup,
 		Handler:     handleOpen,
 	})
 	r.Register(Command{
 		Name:        "close",
 		Description: "Kunci grup, cuma admin yang boleh kirim pesan",
+		Category:    CategoryGrup,
 		Handler:     handleClose,
 	})
 	r.Register(Command{
 		Name:        "linkgc",
 		Description: "Ambil link invite grup saat ini",
+		Category:    CategoryGrup,
 		Handler:     handleLinkGC,
 	})
 }

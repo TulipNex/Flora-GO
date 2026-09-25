@@ -16,30 +16,75 @@ func init() {
 
 // RegisterMenu mendaftarkan command ".menu" yang menampilkan daftar semua
 // command lain secara otomatis (tidak perlu diupdate manual tiap nambah plugin).
+// Daftar dikelompokkan per Category (lihat CategoryXxx di registry.go) supaya
+// user langsung paham fungsi tiap command tanpa harus menebak dari namanya.
 func RegisterMenu(r *Registry) {
 	r.Register(Command{
 		Name:        "menu",
 		Description: "Menampilkan daftar semua perintah",
+		Category:    CategoryUmum,
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			all := r.All()
 
-			names := make([]string, 0, len(all))
-			for name := range all {
-				names = append(names, name)
+			// Kelompokkan nama command per kategori, tiap kelompok di-sort
+			// alfabet supaya urutan stabil walau map All() acak.
+			grouped := make(map[string][]string, len(CategoryOrder))
+			for name, cmd := range all {
+				cat := cmd.Category
+				if cat == "" {
+					// Pengaman untuk plugin lama yang lupa isi Category:
+					// jangan hilangkan dari menu, tampung ke Umum.
+					cat = CategoryUmum
+				}
+				grouped[cat] = append(grouped[cat], name)
 			}
-			sort.Strings(names)
+			for _, names := range grouped {
+				sort.Strings(names)
+			}
 
 			var sb strings.Builder
 			sb.WriteString(fmt.Sprintf("👋 Halo, saya *%s*!\n%s.\n\n", config.BotName, config.BotDescription))
-			sb.WriteString("📋 *Daftar Perintah*\n\n")
-			for _, name := range names {
-				cmd := all[name]
-				sb.WriteString(fmt.Sprintf("• %s%s\n", CommandPrefixForMenu, cmd.Name))
+			sb.WriteString("📋 *Daftar Perintah*\n")
+
+			// Tampilkan kategori sesuai CategoryOrder dulu, supaya urutan
+			// menu konsisten (Umum -> Grup -> Stiker -> Panggilan -> AI).
+			for _, cat := range CategoryOrder {
+				names := grouped[cat]
+				if len(names) == 0 {
+					continue
+				}
+				sb.WriteString(fmt.Sprintf("\n*%s*\n", cat))
+				for _, name := range names {
+					sb.WriteString(fmt.Sprintf("• %s%s\n", CommandPrefixForMenu, name))
+				}
+			}
+
+			// Kalau ada kategori di luar CategoryOrder (mis. plugin baru
+			// memakai string kategori sendiri tanpa update CategoryOrder),
+			// tetap tampilkan di bawah supaya tidak ada command yang hilang.
+			for cat, names := range grouped {
+				if isKnownCategory(cat) {
+					continue
+				}
+				sb.WriteString(fmt.Sprintf("\n*%s*\n", cat))
+				for _, name := range names {
+					sb.WriteString(fmt.Sprintf("• %s%s\n", CommandPrefixForMenu, name))
+				}
 			}
 
 			return store.ReplyText(ctx, mctx, sb.String())
 		},
 	})
+}
+
+// isKnownCategory mengecek apakah kategori sudah ada di CategoryOrder.
+func isKnownCategory(cat string) bool {
+	for _, known := range CategoryOrder {
+		if known == cat {
+			return true
+		}
+	}
+	return false
 }
 
 // CommandPrefixForMenu dipakai khusus di plugin ini supaya tidak ada

@@ -8,9 +8,7 @@ import (
 	"wabot-go/internal/config"
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
-	"google.golang.org/protobuf/proto"
 )
 
 func init() {
@@ -26,6 +24,7 @@ func RegisterStickerWatermark(r *Registry) {
 		Name:        "stickerwatermark",
 		Aliases:     []string{"swm"},
 		Description: "Reply gambar/stiker + .swm <packname>|<author> untuk ganti metadata stiker",
+		Category:    CategoryStiker,
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			packname, author := parseStickerWatermarkArgs(mctx.Args)
 
@@ -65,26 +64,13 @@ func RegisterStickerWatermark(r *Registry) {
 				return store.ReplyText(ctx, mctx, "❌ Gagal set metadata stiker: "+err.Error())
 			}
 
-			uploaded, err := mctx.Client.Upload(ctx, newWebp, whatsmeow.MediaImage)
-			if err != nil {
-				return store.ReplyText(ctx, mctx, "❌ Gagal upload stiker: "+err.Error())
-			}
-
-			_, err = mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{
-				StickerMessage: &waE2E.StickerMessage{
-					URL:           proto.String(uploaded.URL),
-					DirectPath:    proto.String(uploaded.DirectPath),
-					MediaKey:      uploaded.MediaKey,
-					Mimetype:      proto.String("image/webp"),
-					FileEncSHA256: uploaded.FileEncSHA256,
-					FileSHA256:    uploaded.FileSHA256,
-					FileLength:    proto.Uint64(uploaded.FileLength),
-				},
-			})
-			if err != nil {
+			// Upload+kirim lewat helper bersama (bukan blok duplikat lokal) —
+			// termasuk Width/Height yang sebelumnya lupa diisi oleh .swm
+			// (audit A3), dan otomatis LogOutgoing dengan label di bawah.
+			label := fmt.Sprintf("packname=%q author=%q", packname, author)
+			if err := sendStickerWebp(ctx, mctx, newWebp, "stickerwatermark", label); err != nil {
 				return store.ReplyText(ctx, mctx, "❌ Gagal kirim stiker: "+err.Error())
 			}
-			store.LogOutgoing(mctx, "stickerwatermark", fmt.Sprintf("packname=%q author=%q", packname, author))
 			return nil
 		},
 	})
@@ -121,8 +107,12 @@ func parseStickerWatermarkArgs(args []string) (packname, author string) {
 // yang di-reply (quoted). Berbeda dari extractStickerMedia di sticker.go,
 // command ini HANYA baca dari reply (bukan pesan langsung), dan mendukung
 // StickerMessage — bukan hanya gambar/video.
+//
+// Quoted diambil lewat ExtractQuotedMessage + UnwrapMessage — satu jalur
+// ContextInfo bersama (audit A2), supaya reply di grup ber-Pesan-Sementara /
+// pesan sekali-lihat tetap terbaca.
 func extractWatermarkMedia(mctx *store.MessageContext) (*waE2E.ImageMessage, *waE2E.StickerMessage, error) {
-	quoted := mctx.RawEvt.Message.GetExtendedTextMessage().GetContextInfo().GetQuotedMessage()
+	quoted := store.UnwrapMessage(store.ExtractQuotedMessage(mctx.RawEvt))
 	if quoted == nil {
 		return nil, nil, fmt.Errorf("reply ke gambar atau stiker dulu, lalu ketik .swm <packname>|<author>")
 	}

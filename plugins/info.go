@@ -24,6 +24,7 @@ func RegisterInfo(r *Registry) {
 	r.Register(Command{
 		Name:        "info",
 		Description: "Menampilkan info & uptime bot",
+		Category:    CategoryUmum,
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			uptime := time.Since(startTime).Round(time.Second)
 

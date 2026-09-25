@@ -6,11 +6,35 @@ import (
 	"wabot-go/internal/store"
 )
 
+// Kategori command untuk pengelompokan di .menu. Didefinisikan sebagai
+// konstanta supaya tidak ada typo string antar file plugin — kalau kategori
+// ditulis bebas per plugin, satu salah ketik saja akan melahirkan grup
+// kategori hantu di menu yang isinya cuma satu command.
+const (
+	CategoryUmum      = "Umum"
+	CategoryGrup      = "Grup"
+	CategoryStiker    = "Stiker"
+	CategoryPanggilan = "Panggilan"
+	CategoryAI        = "AI"
+)
+
+// CategoryOrder mengatur urutan tampil kategori di .menu. Dipisah dari
+// CategoryXxx di atas supaya urutan tampil bisa diubah tanpa menyentuh
+// tiap file plugin — cukup ubah slice ini.
+var CategoryOrder = []string{
+	CategoryUmum,
+	CategoryGrup,
+	CategoryStiker,
+	CategoryPanggilan,
+	CategoryAI,
+}
+
 // Command mendeskripsikan satu perintah bot.
 type Command struct {
 	Name        string   // nama command tanpa prefix, misal "ping"
 	Aliases     []string // nama alternatif, misal []string{"s"} untuk "sticker"
 	Description string   // dipakai di menu bantuan
+	Category    string   // kategori fungsi, wajib diisi salah satu CategoryXxx di atas
 	Handler     func(ctx context.Context, mctx *store.MessageContext) error
 }
 

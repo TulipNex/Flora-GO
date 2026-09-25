@@ -23,6 +23,7 @@ func RegisterAI(r *Registry) {
 	r.Register(Command{
 		Name:        "ai",
 		Description: "Ngobrol dengan AI (.ai <pesan> / .ai reset / .ai provider / .ai model)",
+		Category:    CategoryAI,
 		Handler:     handleAICommand,
 	})
 }
