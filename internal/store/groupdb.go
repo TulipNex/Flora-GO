@@ -72,6 +72,14 @@ func InitGroupDB(path string) error {
 		bye_msg     TEXT NOT NULL DEFAULT '',
 		updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 	);
+	CREATE TABLE IF NOT EXISTS scheduled_calls (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		target_phone TEXT NOT NULL,
+		chat_jid     TEXT NOT NULL,
+		scheduled_at INTEGER NOT NULL,
+		status       TEXT NOT NULL DEFAULT 'pending',
+		created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+	);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("gagal membuat schema group.db: %w", err)

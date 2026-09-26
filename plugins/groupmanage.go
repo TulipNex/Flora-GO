@@ -342,8 +342,10 @@ func handleHideTag(ctx context.Context, mctx *store.MessageContext) error {
 }
 
 // parsePhoneToJID menerima nomor telepon mentah dari argumen command
-// (misal "6281234567890", boleh diawali "+", boleh ada spasi/strip) dan
-// mengubahnya jadi types.JID di server default (@s.whatsapp.net).
+// (misal "6281234567890", boleh diawali "+", boleh ada spasi/strip seperti
+// "+62 822-1111-2222") dan mengubahnya jadi types.JID di server default
+// (@s.whatsapp.net). Awalan "0" lokal otomatis jadi "62" (konvensi nomor
+// Indonesia — bot ini dipakai owner Indonesia).
 func parsePhoneToJID(raw string) (types.JID, error) {
 	cleaned := strings.NewReplacer("+", "", " ", "", "-", "").Replace(raw)
 	if cleaned == "" {
@@ -353,6 +355,9 @@ func parsePhoneToJID(raw string) (types.JID, error) {
 		if r < '0' || r > '9' {
 			return types.JID{}, fmt.Errorf("nomor %q mengandung karakter tidak valid, pakai format 62xxxxxxxxxx", raw)
 		}
+	}
+	if strings.HasPrefix(cleaned, "0") {
+		cleaned = "62" + cleaned[1:]
 	}
 	return types.NewJID(cleaned, types.DefaultUserServer), nil
 }

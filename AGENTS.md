@@ -15,6 +15,12 @@ Panduan untuk AI agent (dan developer baru) yang bekerja di repo `wabot-go` — 
 
 > Repo ini **belum punya test suite, linter config, atau CI**. Verifikasi minimal: `go vet ./...` lalu `go run .` dan chat bot di WhatsApp untuk uji manual.
 
+## Aturan Konfirmasi (WAJIB)
+
+- **Selalu tanya/konfirmasi SEBELUM eksekusi.** Pertanyaan user dijawab sebagai pertanyaan dulu; usulan perubahan disampaikan sebagai rencana + diminta persetujuan eksplisit. Berlaku terutama untuk hal penting: build/deploy config, database/migrasi, perilaku bot, dependency baru, dan penghapusan kode.
+- Dilarang "langsung eksekusi" atas inisiatif sendiri — tidak ada eksekusi tanpa kata setuju user, kecuali user sudah memberi perintah eksplisit ("buatkan", "perbaiki", "lanjutkan", dll).
+- Pengecualian: perintah verifikasi read-only/baca (`go vet`, `gofmt -l`, build cek lokal, baca file) boleh jalan tanpa konfirmasi karena tidak mengubah apa pun.
+
 ## Arsitektur
 
 ### Self-registration pattern

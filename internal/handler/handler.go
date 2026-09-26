@@ -95,8 +95,30 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 		return
 	}
 
+	// Prefix spesial karakter tunggal: "$" = shell server, "\" = eval JS.
+	// Tidak lewat prefix "." supaya tetap satu karakter seperti aslinya,
+	// tapi eksekusinya memakai jalur command yang sama (termasuk RawArgs
+	// utuh — penting karena script shell/JS multi-baris).
+	if rest, ok := cutSpecialPrefix(text, "$"); ok {
+		executeNamedCommand(client, registry, evt, "$", strings.Fields(rest), strings.TrimSpace(rest))
+		return
+	}
+	if rest, ok := cutSpecialPrefix(text, "\\"); ok {
+		executeNamedCommand(client, registry, evt, "\\", strings.Fields(rest), strings.TrimSpace(rest))
+		return
+	}
+
 	// Bukan command (termasuk pesan media tanpa caption) → cek trigger AI.
 	handleAITrigger(client, evt, text)
+}
+
+// cutSpecialPrefix memotong prefix spesial di awal teks. Mengembalikan sisa
+// teks (boleh kosong — pemanggil yang memutuskan) dan true kalau cocok.
+func cutSpecialPrefix(text, prefix string) (string, bool) {
+	if text == "" || !strings.HasPrefix(text, prefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(text, prefix), true
 }
 
 // handleCommand memproses pesan yang diawali prefix command seperti sebelumnya.
@@ -118,6 +140,19 @@ func handleCommand(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 	rawArgs := ""
 	if i := strings.IndexAny(withoutPrefix, " \t\n\r"); i >= 0 {
 		rawArgs = strings.TrimSpace(withoutPrefix[i+1:])
+	}
+
+	executeNamedCommand(client, registry, evt, cmdName, args, rawArgs)
+}
+
+// executeNamedCommand menjalankan command yang sudah diketahui namanya
+// (dari prefix "." maupun prefix spesial "$"/"\"). Dipisah dari
+// handleCommand supaya semua jalur routing berbagi penanganan error yang
+// sama. args boleh kosong; rawArgs adalah sisa teks mentah (baris baru
+// utuh) untuk command yang membutuhkannya (shell, eval, template).
+func executeNamedCommand(client *whatsmeow.Client, registry *plugins.Registry, evt *events.Message, cmdName string, args []string, rawArgs string) {
+	if rawArgs == "" && len(args) > 0 {
+		rawArgs = strings.Join(args, " ")
 	}
 
 	cmd, ok := registry.Get(cmdName)

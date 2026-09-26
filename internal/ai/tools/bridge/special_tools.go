@@ -7,6 +7,8 @@ import (
 	"wabot-go/internal/ai"
 	"wabot-go/internal/store"
 	"wabot-go/plugins"
+
+	"go.mau.fi/whatsmeow/types"
 )
 
 // requireOwnerTool memastikan peminta tool adalah owner bot. Dipakai tool
@@ -23,13 +25,17 @@ func requireOwnerTool(mctx *store.MessageContext) error {
 func init() {
 	ai.RegisterTool(ai.ToolDefinition{
 		Name:        "make_call",
-		Description: "Melakukan panggilan WhatsApp keluar ke nomor telepon. PENTING: hanya gunakan kalau OWNER bot yang eksplisit memintanya (mis. owner bilang 'telpon ...'), JANGAN pernah untuk permintaan orang lain — panggilan berdering di HP sungguhan.",
+		Description: "Melakukan panggilan WhatsApp keluar ke nomor telepon, langsung atau terjadwal. PENTING: hanya gunakan kalau OWNER bot yang eksplisit memintanya (mis. owner bilang 'telpon ...'), JANGAN pernah untuk permintaan orang lain — panggilan berdering di HP sungguhan.",
 		Parameters: ai.ParameterSchema{
 			Type: "OBJECT",
 			Properties: map[string]ai.PropertySchema{
 				"phone_number": {
 					Type:        "STRING",
-					Description: "Nomor telepon yang mau dihubungi, format internasional tanpa tanda +, contoh: 6281234567890",
+					Description: "Nomor telepon yang mau dihubungi (628xxx, 08xx, atau +62 8xx-xxxx), atau LID member (dari mention @<angka> di grup). Contoh: 6281234567890",
+				},
+				"at": {
+					Type:        "STRING",
+					Description: "Opsional: jadwalkan panggilan pada jam format HH.MM zona WITA hari ini (atau besok kalau sudah lewat), contoh: 17.00. Jadwal tersimpan dan tahan restart. Kosongkan untuk menelpon langsung.",
 				},
 			},
 			Required: []string{"phone_number"},
@@ -43,17 +49,38 @@ func init() {
 				return "", err
 			}
 			phoneRaw, _ := args["phone_number"].(string)
-			// Validasi format dulu (sekaligus normalisasi +/spasi/strip),
-			// tapi yang dikirim ke CallNow adalah nomornya — CallNow butuh
-			// nomor telepon mentah, bukan string JID full.
+			// Validasi format dulu (sekaligus normalisasi +/spasi/strip dan
+			// 0 lokal jadi 62). Lalu resolve LID→nomor HP lewat jalur yang
+			// SAMA dengan command .call — AI sering menyerahkan LID dari
+			// mention, yang tidak bisa langsung ditelpon.
 			cleaned, err := plugins.ParsePhoneToJID(phoneRaw)
 			if err != nil {
 				return "", err
 			}
-			if err := plugins.CallNow(actx.Context, mctx.Client, cleaned.User); err != nil {
+			phone := cleaned.User
+			if resolved, rerr := plugins.ResolveCallPhone(actx.Context, mctx, types.NewJID(cleaned.User, types.HiddenUserServer)); rerr == nil {
+				phone = resolved
+			}
+			// Kalau resolve gagal (mis. chat private / nomor tidak dikenal
+			// di grup), pakai nomor hasil parse apa adanya — perilaku lama
+			// yang benar untuk nomor HP asli.
+			if atRaw, _ := args["at"].(string); strings.TrimSpace(atRaw) != "" {
+				at, err := plugins.ParseJamWITA(strings.TrimSpace(atRaw))
+				if err != nil {
+					return "", fmt.Errorf("format jam salah (%v), pakai HH.MM WITA contoh 17.00", err)
+				}
+				if _, err := plugins.ScheduleCall(mctx.Chat, phone, at); err != nil {
+					return "", fmt.Errorf("gagal menyimpan jadwal: %w", err)
+				}
+				return fmt.Sprintf("Berhasil: panggilan ke %s dijadwalkan pukul %s WITA, tersimpan dan tahan restart. Progresnya tampil di chat ini saat waktunya tiba.", phone, at.Format("15:04")), nil
+			}
+			// Langsung: progres (memanggil → berdering → terhubung →
+			// berakhir/ditolak/tidak dijawab) tampil di SATU bubble chat
+			// ini yang diedit tiap status berubah.
+			if err := plugins.CallWithProgress(actx.Context, mctx.Client, mctx.Chat, phone); err != nil {
 				return "", fmt.Errorf("gagal melakukan panggilan: %w", err)
 			}
-			return fmt.Sprintf("Berhasil: memanggil %s, pesan suara akan diputar saat diangkat.", phoneRaw), nil
+			return fmt.Sprintf("Baik, menelpon %s sekarang — progresnya tampil di chat ini.", phone), nil
 		},
 	})
 

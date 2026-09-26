@@ -200,8 +200,8 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 | `.owner` | Kirim vCard kontak owner |
 | `.sticker` / `.s` | Konversi gambar/video (langsung atau reply) jadi stiker webp, termasuk animasi |
 | `.stickerwatermark` / `.swm` | Ganti metadata packname & author stiker (reply gambar/stiker + `.swm <pack>\|<author>`) |
-| `.call <nomor>` | Melakukan panggilan WhatsApp keluar |
-| `.call <nomor>\|<jam>` | Menjadwalkan panggilan pada jam tertentu (format `HH.MM`, zona WITA); jadwal in-memory, hilang jika bot restart sebelum waktunya |
+| `.call <target>` | Melakukan panggilan WhatsApp keluar, khusus owner (target: mention, reply, atau nomor `628xxx`/`08xx`/`+62 8xx-xxxx`). Progres (memanggil/berdering/terhubung/berakhir+durasi/ditolak/tidak dijawab) tampil dalam 1 bubble yang diedit |
+| `.call <target>\|<jam>` | Menjadwalkan panggilan pada jam tertentu (format `HH.MM`, zona WITA); tersimpan di SQLite, tahan restart. Bisa juga via Flora: `telpon X jam 17.00` |
 | `.add <nomor...>` | Menambahkan member ke grup langsung lewat nomor telepon (bisa banyak sekaligus) |
 | `.kick` / `.promote` / `.demote` / `.tagall` | Manajemen dasar grup |
 | `.setname` / `.setdesc` / `.open` / `.close` / `.linkgc` | Pengaturan grup |
@@ -209,6 +209,11 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 | `.ai reset` | Reset sesi percakapan AI (per private/grup) |
 | `.ai provider [nama]` | Lihat/ganti provider AI aktif (google/openrouter/nexarouter/ciora) |
 | `.ai model [nama]` | Lihat/ganti model AI untuk provider aktif |
+| `$ <perintah>` | Eksekusi shell di server, khusus owner (async, timeout 120 dtk, output dipotong) |
+| `\ <kode js>` | Eval JavaScript di dalam bot, khusus owner (async, timeout 30 dtk, tanpa akses Conn) |
+| `.delete` / `.del` | Hapus pesan yang di-reply (pesan bot: siapa saja; pesan orang: admin + bot admin) |
+| `.get <url> [browser]` | Fetch URL dengan sidik TLS browser + kirim isinya (host internal diblokir anti-SSRF) |
+| `.rvo` | Buka pesan sekali-lihat yang di-reply |
 
 Panggilan WhatsApp memakai library [meowcaller](https://github.com/purpshell/meowcaller). Data grup (setting, dsb) disimpan di SQLite lewat driver `modernc.org/sqlite` (pure Go, tanpa cgo).
 

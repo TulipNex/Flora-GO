@@ -186,6 +186,13 @@ func main() {
 	}
 
 	// ==========================================================
+	// 3b. Pulihkan jadwal panggilan tersimpan (tahan restart). Dijalankan
+	//     sekali setelah connect di jalur mana pun — jadwal yang waktunya
+	//     sudah lewat selama bot mati diberitahu "terlewat" ke chat-nya.
+	// ==========================================================
+	plugins.RestoreScheduledCalls()
+
+	// ==========================================================
 	// 4. Tunggu sinyal berhenti (Ctrl+C atau kill dari Pterodactyl)
 	//    supaya proses shutdown-nya bersih.
 	// ==========================================================
