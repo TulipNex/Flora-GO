@@ -11,12 +11,12 @@ import (
 // ditulis bebas per plugin, satu salah ketik saja akan melahirkan grup
 // kategori hantu di menu yang isinya cuma satu command.
 const (
-	CategoryUmum   = "Umum"
-	CategoryGrup   = "Grup"
-	CategoryStiker = "Stiker"
-	CategoryAI     = "AI"
-	CategoryAlat   = "Alat"
-	CategoryOwner  = "Owner"
+	CategoryUmum  = "Umum"
+	CategoryGrup  = "Grup"
+	CategoryMedia = "Media"
+	CategoryAI    = "AI"
+	CategoryAlat  = "Alat"
+	CategoryOwner = "Owner"
 )
 
 // CategoryOrder mengatur urutan tampil kategori di .menu. Dipisah dari
@@ -28,7 +28,7 @@ const (
 var CategoryOrder = []string{
 	CategoryUmum,
 	CategoryGrup,
-	CategoryStiker,
+	CategoryMedia,
 	CategoryAI,
 	CategoryAlat,
 	CategoryOwner,

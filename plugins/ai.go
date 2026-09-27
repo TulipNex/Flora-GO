@@ -10,6 +10,7 @@ import (
 	"wabot-go/internal/config"
 	"wabot-go/internal/store"
 
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
@@ -22,7 +23,7 @@ func init() {
 func RegisterAI(r *Registry) {
 	r.Register(Command{
 		Name:        "ai",
-		Description: "Ngobrol dengan AI (.ai <pesan> / .ai reset / .ai provider / .ai model)",
+		Description: "Ngobrol dengan AI (.ai <pesan> / .ai reset / .ai provider / .ai model / .ai status)",
 		Category:    CategoryAI,
 		Handler:     handleAICommand,
 	})
@@ -42,6 +43,9 @@ func handleAICommand(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	if len(mctx.Args) > 0 && strings.EqualFold(mctx.Args[0], "model") {
 		return handleModelSubcommand(ctx, mctx)
+	}
+	if len(mctx.Args) > 0 && strings.EqualFold(mctx.Args[0], "status") {
+		return handleStatusSubcommand(ctx, mctx)
 	}
 
 	text := strings.TrimSpace(strings.Join(mctx.Args, " "))
@@ -78,8 +82,9 @@ func handleAICommand(ctx context.Context, mctx *store.MessageContext) error {
 	return nil
 }
 
-// handleProviderSubcommand menangani ".ai provider" (tampilkan daftar) dan
-// ".ai provider <nama>" (ganti provider aktif).
+// handleProviderSubcommand menangani ".ai provider" (tampilkan daftar),
+// ".ai provider <nama>" dan ".ai provider <nomor>" (ganti provider aktif,
+// nomor sesuai urutan di daftar).
 func handleProviderSubcommand(ctx context.Context, mctx *store.MessageContext) error {
 	arg := strings.TrimSpace(strings.Join(mctx.Args[1:], " "))
 
@@ -87,15 +92,17 @@ func handleProviderSubcommand(ctx context.Context, mctx *store.MessageContext) e
 		return store.ReplyText(ctx, mctx, ai.FormatProviderList(ctx))
 	}
 
-	if err := ai.SetActiveProvider(ctx, arg); err != nil {
+	name := ai.ResolveProviderRef(arg)
+	if err := ai.SetActiveProvider(ctx, name); err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal ganti provider: %v\n\n%s", err, ai.FormatProviderList(ctx)))
 	}
 
-	return store.ReplyText(ctx, mctx, fmt.Sprintf("Oke, provider AI sekarang: *%s*", strings.ToLower(arg)))
+	return store.ReplyText(ctx, mctx, fmt.Sprintf("Oke, provider AI sekarang: *%s*", name))
 }
 
 // handleModelSubcommand menangani ".ai model" (tampilkan daftar model utk
-// provider aktif) dan ".ai model <nama>" (ganti model aktif).
+// provider aktif), ".ai model <nama>" dan ".ai model <nomor>" (ganti model
+// aktif, nomor sesuai urutan di daftar).
 func handleModelSubcommand(ctx context.Context, mctx *store.MessageContext) error {
 	arg := strings.TrimSpace(strings.Join(mctx.Args[1:], " "))
 
@@ -103,11 +110,39 @@ func handleModelSubcommand(ctx context.Context, mctx *store.MessageContext) erro
 		return store.ReplyText(ctx, mctx, ai.FormatModelList(ctx))
 	}
 
-	if err := ai.SetActiveModel(ctx, arg); err != nil {
+	name := ai.ResolveModelRef(ai.GetActiveProviderName(ctx), arg)
+	if err := ai.SetActiveModel(ctx, name); err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal ganti model: %v\n\n%s", err, ai.FormatModelList(ctx)))
 	}
 
-	return store.ReplyText(ctx, mctx, fmt.Sprintf("Oke, model AI sekarang: *%s*", arg))
+	return store.ReplyText(ctx, mctx, fmt.Sprintf("Oke, model AI sekarang: *%s*", name))
+}
+
+// handleStatusSubcommand menangani ".ai status": menampilkan status lock
+// trigger natural (global), provider + model aktif, dan status sesi chat
+// ini (aktif kalau masih dalam idle timeout 30 menit, idle kalau sudah
+// lama tidak chat). Sengaja jalan walau sedang terkunci — gunanya justru
+// untuk mengecek status lock.
+func handleStatusSubcommand(ctx context.Context, mctx *store.MessageContext) error {
+	locked, err := store.Groups().IsAILocked(ctx)
+	if err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca status lock: %v", err))
+	}
+	lockText := "aktif (trigger natural menyala)"
+	if locked {
+		lockText = "TERKUNCI (trigger natural mati, .ai tetap jalan)"
+	}
+
+	sessionKey := ai.BuildSessionKey(mctx.IsGroup(), mctx.Chat.String(), mctx.Sender.String())
+	sessionText := "idle (sapa Flora untuk mulai)"
+	if ai.GlobalSession.HasActive(sessionKey) {
+		sessionText = "aktif"
+	}
+
+	return store.ReplyText(ctx, mctx, fmt.Sprintf(
+		"Status Flora:\n- Lock: %s\n- Provider: %s\n- Model: %s\n- Sesi chat ini: %s",
+		lockText, ai.GetActiveProviderName(ctx), ai.GetActiveModelName(ctx), sessionText,
+	))
 }
 
 // HandleAIMessage adalah logic inti pemrosesan AI — dipanggil baik dari
@@ -321,35 +356,61 @@ func processAITurn(ctx context.Context, mctx *store.MessageContext, sessionKey, 
 // karena kebesaran.
 const maxVisionImageBytes = 4 << 20
 
-// extractTriggerImage mengambil gambar dari pesan pemicu AI: prioritas
-// lampiran langsung di pesan itu, fallback ke gambar di pesan yang
-// di-reply. Mengembalikan byte+mime kalau berhasil; kalau pesan memang
-// mengandung gambar tapi gagal diunduh/kebesaran, kembalikan note jujur
-// untuk ditempel ke teks (supaya AI tidak mengarang isi gambar). Kalau
+// extractTriggerImage mengambil gambar dari pesan pemicu AI untuk vision:
+// prioritas lampiran langsung di pesan itu, fallback ke pesan yang
+// di-reply; tiap jalur mencoba ImageMessage dulu lalu StickerMessage.
+// Stiker diperlakukan SAMA seperti foto (diunduh + dikirim sebagai
+// image_url) supaya Flora "melihat" stiker yang diterimanya — stiker
+// animasi dikirim apa adanya, backend vision umumnya memakai frame
+// pertama. Mengembalikan byte+mime kalau berhasil; kalau pesan memang
+// mengandung gambar/stiker tapi gagal diunduh/kebesaran, kembalikan note
+// jujur untuk ditempel ke teks (supaya AI tidak mengarang isinya). Kalau
 // tidak ada gambar sama sekali, kembalikan kosong. Semua kegagalan
 // fail-soft: chat teks tetap jalan normal.
 func extractTriggerImage(ctx context.Context, mctx *store.MessageContext) (imgBytes []byte, imgMime, note string) {
 	// Getter protobuf aman dipanggil pada pesan nil (mengembalikan nil),
 	// jadi tidak perlu cek nil hasil UnwrapMessage satu per satu.
-	img := store.UnwrapMessage(mctx.RawEvt.Message).GetImageMessage()
-	if img == nil {
-		img = store.UnwrapMessage(store.ExtractQuotedMessage(mctx.RawEvt)).GetImageMessage()
+	direct := store.UnwrapMessage(mctx.RawEvt.Message)
+	quoted := store.UnwrapMessage(store.ExtractQuotedMessage(mctx.RawEvt))
+
+	// Kumpulkan kandidat berurutan: gambar langsung, gambar reply, stiker
+	// langsung, stiker reply. Yang pertama ketemu dipakai.
+	type candidate struct {
+		msg         whatsmeow.DownloadableMessage
+		mime        string
+		label       string
+		defaultMime string
 	}
-	if img == nil {
+	var candidates []candidate
+	if img := direct.GetImageMessage(); img != nil {
+		candidates = append(candidates, candidate{img, img.GetMimetype(), "gambar", "image/jpeg"})
+	}
+	if img := quoted.GetImageMessage(); img != nil {
+		candidates = append(candidates, candidate{img, img.GetMimetype(), "gambar", "image/jpeg"})
+	}
+	if stk := direct.GetStickerMessage(); stk != nil {
+		candidates = append(candidates, candidate{stk, stk.GetMimetype(), "stiker", "image/webp"})
+	}
+	if stk := quoted.GetStickerMessage(); stk != nil {
+		candidates = append(candidates, candidate{stk, stk.GetMimetype(), "stiker", "image/webp"})
+	}
+	if len(candidates) == 0 {
 		return nil, "", ""
 	}
-	data, err := mctx.Client.Download(ctx, img)
+
+	c := candidates[0]
+	data, err := mctx.Client.Download(ctx, c.msg)
 	if err != nil {
-		fmt.Printf("⚠️ vision: gagal download gambar: %v\n", err)
-		return nil, "", "[Catatan: ada gambar terlampir tapi tidak bisa dibaca.]"
+		fmt.Printf("⚠️ vision: gagal download %s: %v\n", c.label, err)
+		return nil, "", fmt.Sprintf("[Catatan: ada %s terlampir tapi tidak bisa dibaca.]", c.label)
 	}
 	if len(data) > maxVisionImageBytes {
-		fmt.Printf("⚠️ vision: gambar terlalu besar (%d byte), dilewati.\n", len(data))
-		return nil, "", "[Catatan: ada gambar terlampir tapi terlalu besar untuk dibaca.]"
+		fmt.Printf("⚠️ vision: %s terlalu besar (%d byte), dilewati.\n", c.label, len(data))
+		return nil, "", fmt.Sprintf("[Catatan: ada %s terlampir tapi terlalu besar untuk dibaca.]", c.label)
 	}
-	mime := img.GetMimetype()
+	mime := c.mime
 	if mime == "" {
-		mime = "image/jpeg"
+		mime = c.defaultMime
 	}
 	return data, mime, ""
 }

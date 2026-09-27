@@ -207,11 +207,15 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 | `.setname` / `.setdesc` / `.open` / `.close` / `.linkgc` | Pengaturan grup |
 | `.ai <pesan>` | Ngobrol dengan AI (lihat bagian [AI Agent](#fitur-ai-agent)) |
 | `.ai reset` | Reset sesi percakapan AI (per private/grup) |
-| `.ai provider [nama]` | Lihat/ganti provider AI aktif (google/openrouter/nexarouter/ciora) |
-| `.ai model [nama]` | Lihat/ganti model AI untuk provider aktif |
+| `.ai provider [nama/nomor]` | Lihat/ganti provider AI aktif (google/openrouter/nexarouter/ciora) |
+| `.ai model [nama/nomor]` | Lihat/ganti model AI untuk provider aktif |
+| `.ai status` | Lihat status lock, provider/model, dan sesi chat ini |
+| `lock flo` / `unlock flora` / `lock @flora` | Kunci/buka trigger natural Flora (global, khusus owner) |
 | `$ <perintah>` | Eksekusi shell di server, khusus owner (async, timeout 120 dtk, output dipotong) |
 | `\ <kode js>` | Eval JavaScript di dalam bot, khusus owner (async, timeout 30 dtk, tanpa akses Conn) |
 | `.delete` / `.del` | Hapus pesan yang di-reply (pesan bot: siapa saja; pesan orang: admin + bot admin) |
+| `.tiktok` / `.youtube` / `.instagram` / `.twitter` / `.facebook` / `.spotify` + `<url>` | Download medsos via scraper API (cepat; foto sebagai foto, album multi-kirim tanpa batas; `.youtube --mp3`/`.youtubemp3` untuk audio), fallback yt-dlp bila gagal. Semua user, 720p, antrean 2, timeout 10 mnt |
+| `.autodownload on/off` | Download otomatis link medsos di chat ini, per chat (admin/owner di grup) |
 | `.get <url> [browser]` | Fetch URL dengan sidik TLS browser + kirim isinya (host internal diblokir anti-SSRF) |
 | `.rvo` | Buka pesan sekali-lihat yang di-reply |
 
@@ -251,7 +255,7 @@ Model bisa diganti per provider lewat `.ai model <nama>` (daftar model hardcode 
 - **Multi-bubble**: balasan panjang dipecah jadi beberapa bubble dengan delay ketik simulasi + status "mengetik...".
 - **Mood detection**: deteksi mood user dari teks (sedih/stres/senang) menyesuaikan nada balasan.
 - **Konteks reply**: jika user reply bubble bot, teks bubble tersebut disertakan sebagai konteks.
-- **Vision**: gambar di pesan pemicu (lampiran langsung atau reply) diteruskan ke model yang mendukung (provider OpenAI-compatible) sebagai `image_url` base64; provider Gemini mengabaikannya. Batas 4MB, histori tersimpan tetap teks.
+- **Vision**: gambar/stiker di pesan pemicu (lampiran langsung atau reply) diteruskan ke model yang mendukung (provider OpenAI-compatible) sebagai `image_url` base64; Flora dituntun merespons isi yang dilihatnya, bukan mendeskripsikannya. Provider Gemini mengabaikannya. Batas 4MB, histori tersimpan tetap teks.
 - **Baca dokumen**: file di pesan pemicu (lampiran langsung atau reply) diekstrak teksnya dan ditempel ke pesan — PDF (`ledongthuc/pdf`), Word `.docx`, Excel `.xlsx` (`excelize`), dan teks polos (TXT/CSV/Markdown). Dokumen sampai 12000 karakter ditempel utuh; selebihnya dibaca bertahap (map-reduce: potongan 8000 karakter diringkas paralel lalu digabung, maks 8 bagian). Batas file 8MB; format lain (termasuk `.doc`/`.xls` lawas) ditolak dengan catatan jujur.
 - **Reliability**: retry otomatis untuk error transient (timeout/429/5xx), notifikasi ke owner via WhatsApp jika gagal total.
 

@@ -1,0 +1,86 @@
+package messaging
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"image"
+	"image/jpeg"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
+)
+
+// maxInlineThumbBytes adalah batas byte thumbnail inline. Thumbnail inline
+// yang kebesaran bikin klien gagal render — lebih baik tanpa thumbnail
+// (placeholder) daripada byte raksasa yang merusak kartu.
+const maxInlineThumbBytes = 200 << 10 // 200KB
+
+// tinyInlineDim/Quality membuat thumbnail inline SANGAT kecil (~1-3KB).
+// Bukti lapangan (perbandingan log pesan masuk): bot Baileys yang
+// preview-nya tampil membawa thumb ~1,5KB, sedangkan thumb 320px/7-26KB
+// kita diabaikan klien (placeholder abu-abu) — klien tampaknya membuang
+// thumb inline yang kebesaran. Thumb sekecil ini tampil buram saat
+// dibesarkan, tapi jauh lebih baik daripada abu-abu polos.
+const (
+	tinyInlineDim     = 128
+	tinyInlineQuality = 60
+)
+
+// InlineThumbForImage membuat thumbnail JPEG mini dari byte gambar untuk
+// ditempel di field JPEGThumbnail pesan media. Tanpa ini (atau kalau
+// kebesaran) daftar chat menampilkan placeholder kamera abu-abu padahal
+// file-nya valid. Mengembalikan nil kalau tidak bisa dibuat (fail-soft:
+// kirim tanpa thumb). Selalu re-encode via jpeg.Encode stdlib sehingga
+// hasilnya baseline JPEG yang aman di-render semua klien (termasuk sumber
+// progressive JPEG yang decoder kliennya tidak menanganinya).
+func InlineThumbForImage(data []byte) []byte {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil
+	}
+	small := img
+	if b := img.Bounds(); b.Dx() > tinyInlineDim || b.Dy() > tinyInlineDim {
+		small = downscaleBilinear(img, tinyInlineDim)
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, small, &jpeg.Options{Quality: tinyInlineQuality}); err != nil {
+		return nil
+	}
+	out := buf.Bytes()
+	if len(out) == 0 || len(out) > maxInlineThumbBytes {
+		return nil
+	}
+	return out
+}
+
+// InlineThumbForVideo mengekstrak 1 frame video via ffmpeg lalu mengecilkannya
+// jadi thumbnail inline. Butuh ffmpeg di server (sudah wajib untuk .sticker).
+// Gagal di titik mana pun = nil (kirim tanpa thumb, bukan gagal total).
+func InlineThumbForVideo(ctx context.Context, data []byte) []byte {
+	dir, err := os.MkdirTemp("", "wabot-vthumb-*")
+	if err != nil {
+		return nil
+	}
+	defer os.RemoveAll(dir)
+
+	in := filepath.Join(dir, "in.mp4")
+	if err := os.WriteFile(in, data, 0600); err != nil {
+		return nil
+	}
+	out := filepath.Join(dir, "thumb.jpg")
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	// Frame detik ke-1 (lewati frame hitam pembuka), 1 frame JPEG kualitas sedang.
+	cmd := exec.CommandContext(timeoutCtx, "ffmpeg", "-y", "-ss", "1", "-i", in, "-vframes", "1", "-q:v", "5", out)
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("⚠️ mediathumb: ffmpeg frame gagal: %v\n", err)
+		return nil
+	}
+	thumb, err := os.ReadFile(out)
+	if err != nil || len(thumb) == 0 {
+		return nil
+	}
+	return InlineThumbForImage(thumb)
+}

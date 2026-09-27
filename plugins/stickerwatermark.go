@@ -24,7 +24,7 @@ func RegisterStickerWatermark(r *Registry) {
 		Name:        "stickerwatermark",
 		Aliases:     []string{"swm"},
 		Description: "Reply gambar/stiker + .swm <packname>|<author> untuk ganti metadata stiker",
-		Category:    CategoryStiker,
+		Category:    CategoryMedia,
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			packname, author := parseStickerWatermarkArgs(mctx.Args)
 

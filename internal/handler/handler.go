@@ -10,6 +10,7 @@ import (
 	"wabot-go/plugins"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 )
 
@@ -93,6 +94,14 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 	if text != "" && strings.HasPrefix(text, CommandPrefix) {
 		handleCommand(client, registry, evt, text)
 		return
+	}
+
+	// Autodownload medsos — pesan NON-command (grup maupun private) yang
+	// mengandung link didukung. TIDAK menyetop alur (beda dari antilink):
+	// trigger AI tetap diproses setelah ini. Fungsi kembali seketika,
+	// download-nya async di dalam.
+	if text != "" {
+		plugins.CheckAutodownload(client, evt, text)
 	}
 
 	// Prefix spesial karakter tunggal: "$" = shell server, "\" = eval JS.
@@ -195,6 +204,42 @@ func handleAITrigger(client *whatsmeow.Client, evt *events.Message, text string)
 	// idle) untuk sesi di dalam grup.
 	sessionKey := ai.BuildSessionKey(evt.Info.IsGroup, evt.Info.Chat.String(), evt.Info.Sender.String())
 
+	// Perintah lock/unlock ("lock flo", "unlock flora", "lock @flora")
+	// dicek PALING DULU — bahkan saat sedang terkunci — supaya unlock
+	// selalu bisa. Hanya owner yang boleh; non-owner diabaikan diam-diam.
+	if action := ai.ParseLockCommand(text, isBotMentioned(client, evt)); action != ai.LockNone {
+		if !plugins.IsOwnerEvent(evt) {
+			return
+		}
+		mctx := &store.MessageContext{
+			Client: client, Chat: evt.Info.Chat, Sender: evt.Info.Sender, RawEvt: evt,
+		}
+		bg := context.Background()
+		if action == ai.LockOn {
+			if err := store.Groups().SetAILock(bg, true); err != nil {
+				_ = store.ReplyText(bg, mctx, fmt.Sprintf("Gagal mengunci: %v", err))
+				return
+			}
+			_ = store.ReplyText(bg, mctx, "Flora di-lock — trigger natural dimatikan di semua chat. Buka lagi dengan unlock flo/flora.")
+		} else {
+			if err := store.Groups().SetAILock(bg, false); err != nil {
+				_ = store.ReplyText(bg, mctx, fmt.Sprintf("Gagal membuka kunci: %v", err))
+				return
+			}
+			_ = store.ReplyText(bg, mctx, "Flora aktif lagi — trigger natural menyala.")
+		}
+		return
+	}
+
+	// Gerbang lock global: saat terkunci, semua trigger natural di semua
+	// chat diabaikan diam-diam. Command eksplisit (.ai, .ai status, ...)
+	// TIDAK lewat sini sehingga tetap jalan.
+	if locked, err := store.Groups().IsAILocked(context.Background()); err != nil {
+		fmt.Printf("⚠️ Gagal cek lock AI: %v\n", err)
+	} else if locked {
+		return
+	}
+
 	trigger := ai.DetectTrigger(ai.TriggerInput{
 		Text:             text,
 		IsReplyToBot:     store.IsReplyToBot(evt),
@@ -230,6 +275,35 @@ func handleAITrigger(client *whatsmeow.Client, evt *events.Message, text string)
 			_ = store.ReplyText(context.Background(), ctx, "Maaf, ada gangguan saat memproses ini.")
 		}
 	}()
+}
+
+// isBotMentioned true kalau pesan menandai bot sendiri — dibandingkan
+// dengan ID maupun LID bot (lihat IsBotAdmin untuk dual-format yang sama),
+// karena mention di grup mode LID datang sebagai @lid.
+func isBotMentioned(client *whatsmeow.Client, evt *events.Message) bool {
+	mentioned := store.ExtractMentionedJIDs(evt)
+	if len(mentioned) == 0 {
+		return false
+	}
+	matches := func(jid types.JID) bool {
+		if jid.IsEmpty() {
+			return false
+		}
+		bare := jid.ToNonAD().User
+		for _, raw := range mentioned {
+			if parsed, err := types.ParseJID(raw); err == nil && parsed.ToNonAD().User == bare {
+				return true
+			}
+		}
+		return false
+	}
+	if client.Store.ID != nil && matches(*client.Store.ID) {
+		return true
+	}
+	if !client.Store.LID.IsEmpty() && matches(client.Store.LID) {
+		return true
+	}
+	return false
 }
 
 // extractText mengambil teks dari berbagai tipe pesan (teks biasa, caption gambar, dll).

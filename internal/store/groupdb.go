@@ -80,6 +80,11 @@ func InitGroupDB(path string) error {
 		status       TEXT NOT NULL DEFAULT 'pending',
 		created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 	);
+	CREATE TABLE IF NOT EXISTS autodownload (
+		chat_jid   TEXT PRIMARY KEY,
+		enabled    INTEGER NOT NULL DEFAULT 0,
+		updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+	);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("gagal membuat schema group.db: %w", err)

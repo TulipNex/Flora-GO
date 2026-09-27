@@ -29,7 +29,7 @@ func RegisterSticker(r *Registry) {
 		Name:        "sticker",
 		Aliases:     []string{"s"},
 		Description: "Ubah gambar/video (kirim langsung atau reply) jadi stiker",
-		Category:    CategoryStiker,
+		Category:    CategoryMedia,
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			img, vid, err := extractStickerMedia(mctx)
 			if err != nil {

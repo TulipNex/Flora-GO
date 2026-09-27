@@ -140,7 +140,7 @@ func getCachedThumb(ctx context.Context, mctx *store.MessageContext, thumbURL st
 		return nil, nil, 0, 0, fmt.Errorf("gagal ambil thumbnail: %w", err)
 	}
 	full, small, width, height := normalizeThumb(raw)
-	up, err := uploadThumb(ctx, mctx, full)
+	up, err := uploadThumb(ctx, mctx, full, whatsmeow.MediaLinkThumbnail)
 	if err != nil {
 		return nil, nil, 0, 0, fmt.Errorf("gagal upload thumbnail: %w", err)
 	}
@@ -306,12 +306,12 @@ func downscaleBilinear(img image.Image, maxDim uint32) image.Image {
 	return dst
 }
 
-// uploadThumb mengupload byte thumbnail ke server WhatsApp dengan tipe
-// media MediaLinkThumbnail ("thumbnail-link") — WAJIB tipe ini, bukan
-// MediaImage. Kunci enkripsi diturunkan dari tipe medianya, upload pakai
-// tipe yang salah membuat klien gagal dekripsi dan preview tampil hitam.
-func uploadThumb(ctx context.Context, mctx *store.MessageContext, thumb []byte) (*whatsmeow.UploadResponse, error) {
-	uploaded, err := mctx.Client.Upload(ctx, thumb, whatsmeow.MediaLinkThumbnail)
+// uploadThumb mengupload byte thumbnail ke server WhatsApp. mediaType
+// menentukan turunan kunci enkripsi — WAJIB cocok dengan pemakaian:
+// MediaLinkThumbnail untuk kartu link, MediaImage untuk thumbnail pesan
+// media biasa. Tipe salah = klien gagal dekripsi = tampil hitam.
+func uploadThumb(ctx context.Context, mctx *store.MessageContext, thumb []byte, mediaType whatsmeow.MediaType) (*whatsmeow.UploadResponse, error) {
+	uploaded, err := mctx.Client.Upload(ctx, thumb, mediaType)
 	if err != nil {
 		return nil, err
 	}

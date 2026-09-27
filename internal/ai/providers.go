@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -277,37 +278,64 @@ func SetActiveModel(ctx context.Context, model string) error {
 
 // FormatProviderList merangkai daftar provider tersedia + penanda provider
 // aktif saat ini, dipakai saat user ketik ".ai provider" tanpa argumen.
+// Bernomor urut (1-based mengikuti AvailableProviders) supaya user bisa
+// memilih pakai nama maupun nomor (".ai provider 2").
 func FormatProviderList(ctx context.Context) string {
 	active := GetActiveProviderName(ctx)
 	var sb strings.Builder
 	sb.WriteString("Provider tersedia:\n")
-	for _, p := range AvailableProviders {
+	for i, p := range AvailableProviders {
 		marker := ""
 		if p == active {
 			marker = " (aktif)"
 		}
-		sb.WriteString(fmt.Sprintf("- %s%s\n", p, marker))
+		sb.WriteString(fmt.Sprintf("%d. %s%s\n", i+1, p, marker))
 	}
-	sb.WriteString("\nGanti pakai: .ai provider <nama>")
+	sb.WriteString("\nGanti pakai: .ai provider <nama/nomor>")
 	return sb.String()
 }
 
 // FormatModelList merangkai daftar model tersedia UNTUK PROVIDER AKTIF
 // saat ini + penanda model aktif, dipakai saat user ketik ".ai model"
-// tanpa argumen.
+// tanpa argumen. Bernomor urut supaya user bisa memilih pakai nama maupun
+// nomor (".ai model 4").
 func FormatModelList(ctx context.Context) string {
 	provider := GetActiveProviderName(ctx)
 	activeModel := GetActiveModelName(ctx)
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Model tersedia untuk provider %s:\n", provider))
-	for _, m := range AvailableModels[provider] {
+	for i, m := range AvailableModels[provider] {
 		marker := ""
 		if m == activeModel {
 			marker = " (aktif)"
 		}
-		sb.WriteString(fmt.Sprintf("- %s%s\n", m, marker))
+		sb.WriteString(fmt.Sprintf("%d. %s%s\n", i+1, m, marker))
 	}
-	sb.WriteString("\nGanti pakai: .ai model <nama>")
+	sb.WriteString("\nGanti pakai: .ai model <nama/nomor>")
 	return sb.String()
+}
+
+// ResolveProviderRef mengubah referensi user (nama atau nomor urut 1-based
+// sesuai FormatProviderList) jadi nama provider. Nomor di luar rentang
+// dikembalikan sebagai nama apa adanya supaya error validasinya tetap
+// informatif di SetActiveProvider.
+func ResolveProviderRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if n, err := strconv.Atoi(ref); err == nil && n >= 1 && n <= len(AvailableProviders) {
+		return AvailableProviders[n-1]
+	}
+	return ref
+}
+
+// ResolveModelRef mengubah referensi user (nama atau nomor urut 1-based
+// sesuai FormatModelList untuk provider tersebut) jadi nama model.
+func ResolveModelRef(provider, ref string) string {
+	ref = strings.TrimSpace(ref)
+	if models := AvailableModels[provider]; len(models) > 0 {
+		if n, err := strconv.Atoi(ref); err == nil && n >= 1 && n <= len(models) {
+			return models[n-1]
+		}
+	}
+	return ref
 }

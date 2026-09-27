@@ -170,6 +170,30 @@ func (g *GroupDB) SetBotMode(ctx context.Context, mode string) error {
 	return err
 }
 
+// IsAILocked true kalau trigger natural Flora sedang di-lock global
+// (mati di semua chat). Default false kalau belum pernah di-set.
+func (g *GroupDB) IsAILocked(ctx context.Context) (bool, error) {
+	var val string
+	err := g.db.QueryRowContext(ctx, `SELECT value FROM bot_settings WHERE key = 'ai_lock'`).Scan(&val)
+	if err != nil {
+		if strings.Contains(err.Error(), "no rows") {
+			return false, nil
+		}
+		return false, err
+	}
+	return val == "1", nil
+}
+
+// SetAILock menyalakan/mematikan lock trigger natural Flora (global).
+func (g *GroupDB) SetAILock(ctx context.Context, locked bool) error {
+	val := "0"
+	if locked {
+		val = "1"
+	}
+	_, err := g.db.ExecContext(ctx, `INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('ai_lock', ?)`, val)
+	return err
+}
+
 // errInvalidMode dipisah supaya pesan error konsisten dipakai ulang.
 func errInvalidMode(mode string) error {
 	return &modeError{mode: mode}

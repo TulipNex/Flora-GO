@@ -86,7 +86,14 @@ func main() {
 	printBanner()
 
 	// ==========================================================
-	// 0. Siapkan database SQLite untuk pengaturan grup (kick, promote,
+	// 0a. Sapu folder temp yatim downloader (wabot-dl-*) yang umurnya
+	//    lebih dari 24 jam — sisa crash di tengah download yang defer-nya
+	//    tidak sempat jalan. Aman & cepat, fail-soft di dalamnya.
+	// ==========================================================
+	plugins.CleanStaleDownloads()
+
+	// ==========================================================
+	// 0b. Siapkan database SQLite untuk pengaturan grup (kick, promote,
 	//    open/close, dll). Terpisah dari data/session.db milik whatsmeow.
 	// ==========================================================
 	if err := store.InitGroupDB("data/group.db"); err != nil {
@@ -94,7 +101,7 @@ func main() {
 	}
 
 	// ==========================================================
-	// 0b. Siapkan database SQLite untuk histori percakapan AI (command
+	// 0c. Siapkan database SQLite untuk histori percakapan AI (command
 	//     .ai + trigger natural). Terpisah dari group.db dan session.db.
 	// ==========================================================
 	if err := store.InitAIDB("data/ai.db"); err != nil {
@@ -102,7 +109,7 @@ func main() {
 	}
 
 	// ==========================================================
-	// 0c. Siapkan tabel fakta jangka panjang per-user (Fase 5, fact
+	// 0d. Siapkan tabel fakta jangka panjang per-user (Fase 5, fact
 	//     extractor). Reuse koneksi ai.db yang sama, hanya menambah tabel.
 	// ==========================================================
 	if err := store.InitFactsDB(); err != nil {
@@ -110,7 +117,7 @@ func main() {
 	}
 
 	// ==========================================================
-	// 0d. Siapkan tabel setting provider/model AI aktif (fitur
+	// 0e. Siapkan tabel setting provider/model AI aktif (fitur
 	//     multi-provider Gemini/OpenRouter). Reuse koneksi ai.db yang sama.
 	// ==========================================================
 	if err := store.InitAISettingsDB(); err != nil {

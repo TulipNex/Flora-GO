@@ -14,7 +14,9 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"time"
 
+	"wabot-go/internal/messaging"
 	"wabot-go/internal/store"
 
 	fhttp "github.com/bogdanfinn/fhttp"
@@ -303,31 +305,41 @@ func sendGetMedia(ctx context.Context, mctx *store.MessageContext, data []byte, 
 	switch mediaType {
 	case whatsmeow.MediaImage:
 		im := &waE2E.ImageMessage{
-			URL:           proto.String(uploaded.URL),
-			DirectPath:    proto.String(uploaded.DirectPath),
-			MediaKey:      uploaded.MediaKey,
-			Mimetype:      proto.String(mimeType),
-			FileEncSHA256: uploaded.FileEncSHA256,
-			FileSHA256:    uploaded.FileSHA256,
-			FileLength:    proto.Uint64(uploaded.FileLength),
+			URL:               proto.String(uploaded.URL),
+			DirectPath:        proto.String(uploaded.DirectPath),
+			MediaKey:          uploaded.MediaKey,
+			MediaKeyTimestamp: proto.Int64(time.Now().Unix()),
+			Mimetype:          proto.String(mimeType),
+			FileEncSHA256:     uploaded.FileEncSHA256,
+			FileSHA256:        uploaded.FileSHA256,
+			FileLength:        proto.Uint64(uploaded.FileLength),
 		}
 		if cfg, _, cerr := image.DecodeConfig(bytes.NewReader(data)); cerr == nil && cfg.Width > 0 {
 			im.Width = proto.Uint32(uint32(cfg.Width))
 			im.Height = proto.Uint32(uint32(cfg.Height))
 		}
+		im.JPEGThumbnail = messaging.InlineThumbForImage(data)
 		msg = &waE2E.Message{ImageMessage: im}
 	case whatsmeow.MediaVideo:
-		msg = &waE2E.Message{
-			VideoMessage: &waE2E.VideoMessage{
-				URL:           proto.String(uploaded.URL),
-				DirectPath:    proto.String(uploaded.DirectPath),
-				MediaKey:      uploaded.MediaKey,
-				Mimetype:      proto.String(mimeType),
-				FileEncSHA256: uploaded.FileEncSHA256,
-				FileSHA256:    uploaded.FileSHA256,
-				FileLength:    proto.Uint64(uploaded.FileLength),
-			},
+		thumb := messaging.InlineThumbForVideo(ctx, data)
+		vm := &waE2E.VideoMessage{
+			URL:               proto.String(uploaded.URL),
+			DirectPath:        proto.String(uploaded.DirectPath),
+			MediaKey:          uploaded.MediaKey,
+			MediaKeyTimestamp: proto.Int64(time.Now().Unix()),
+			Mimetype:          proto.String(mimeType),
+			FileEncSHA256:     uploaded.FileEncSHA256,
+			FileSHA256:        uploaded.FileSHA256,
+			FileLength:        proto.Uint64(uploaded.FileLength),
+			JPEGThumbnail:     thumb,
 		}
+		if len(thumb) > 0 {
+			if cfg, _, cerr := image.DecodeConfig(bytes.NewReader(thumb)); cerr == nil && cfg.Width > 0 {
+				vm.Width = proto.Uint32(uint32(cfg.Width))
+				vm.Height = proto.Uint32(uint32(cfg.Height))
+			}
+		}
+		msg = &waE2E.Message{VideoMessage: vm}
 	default: // whatsmeow.MediaAudio
 		msg = &waE2E.Message{
 			AudioMessage: &waE2E.AudioMessage{
