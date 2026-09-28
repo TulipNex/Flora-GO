@@ -126,7 +126,12 @@ function Write-SyncBar {
 # --sftp-set-modtime=false        : beberapa server SFTP di Pterodactyl menolak set modtime, ini menghindari error terkait itu.
 # --inplace                       : tulis langsung ke nama file final, TANPA lewat file .partial + rename.
 #                                    Server SFTP panel ini menolak operasi rename (SSH_FX_FAILURE), jadi rename dihindari sepenuhnya.
-# --sftp-disable-concurrent-reads/writes : beberapa server SFTP custom kurang stabil dengan multi-stream, ini pakai satu koneksi saja.
+# --sftp-disable-concurrent-reads : server SFTP panel ini kurang stabil dengan multi-stream untuk operasi baca, jadi baca tetap serial.
+# --sftp-concurrency 8            : upload ditulis PIPELINED (bukan serial seperti flag --sftp-disable-concurrent-writes lama yang
+#                                    menghasilkan ~95 KB/s / deploy 8,5 menit), tapi dibatasi 8 request in-flight supaya tetap
+#                                    ringan untuk server. Pipelining menaikkan throughput ~4x (410 KB/s). Trade-off: server bisa
+#                                    menulis offset out-of-order yang berujung file terpotong diam-diam — makanya ada langkah
+#                                    VERIFIKASI ukuran setelah sync.
 # --retries 3 --low-level-retries 5 : mengantisipasi koneksi SFTP yang sempat timeout.
 # --stats 250ms                    : rclone mencetak blok statistik tiap 250ms ke stderr (dengan newline asli, penting
 #                                    supaya ReadLine() tidak menunggu tanpa akhir). Setiap baris di-parse lalu
@@ -139,7 +144,7 @@ $rcloneArgs = @(
     "--sftp-set-modtime=false",
     "--inplace",
     "--sftp-disable-concurrent-reads",
-    "--sftp-disable-concurrent-writes",
+    "--sftp-concurrency", "8",
     "--retries", "3",
     "--low-level-retries", "5",
     "--stats", "250ms",
@@ -241,6 +246,29 @@ if ($syncExitCode -ne 0) {
     Write-Host ""
     exit 1
 }
+
+# ---------- Verifikasi ----------
+# Mode upload konkuren (lihat komentar --sftp-concurrency di atas) berpotensi
+# membuat file remote terpotong/duplikasi offset secara diam-diam walau exit
+# code rclone 0. Cek ukuran byte remote vs lokal sebagai jaring pengaman
+# supaya kegagalan seperti ini ketahuan di sini, bukan saat binary dijalankan
+# di panel.
+Write-Step "Verifikasi ukuran file remote..."
+$statJson = & cmd /c "rclone lsjson `"$RemotePath$BinaryName`" --stat 2>nul"
+$remoteSize = $null
+if ($statJson) {
+    try {
+        $remoteSize = ($statJson -join "`n") | ConvertFrom-Json | Select-Object -ExpandProperty Size
+    } catch {}
+}
+
+if ($remoteSize -ne $fileInfo.Length) {
+    Write-Err "Verifikasi gagal: ukuran file di panel tidak cocok dengan file lokal."
+    Write-Host "  Remote : $(if ($null -ne $remoteSize) { "$remoteSize B" } else { 'tidak terbaca / file tidak ada' })" -ForegroundColor DarkYellow
+    Write-Host "  Lokal  : $($fileInfo.Length) B" -ForegroundColor DarkYellow
+    exit 1
+}
+Write-Ok "Verifikasi lolos ($sizeText)"
 
 $sw.Stop()
 $elapsed = "{0:mm\:ss}" -f $sw.Elapsed
