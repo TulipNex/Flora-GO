@@ -25,6 +25,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -48,6 +49,11 @@ type LinkCard struct {
 	ThumbURL    string // sumber gambar thumbnail ("" = tanpa thumbnail)
 	FaviconURL  string // sumber ikon kartu ("" = tanpa favicon)
 	Body        string // isi pesan setelah URL ("" = pakai Description)
+	// Mentions adalah JID yang di-tag di dalam Body. SYARAT PAIRING (sama
+	// seperti ReplyTextWithMentions): Body WAJIB mengandung "@<User>" untuk
+	// tiap JID dengan User yang sama persis (di grup mode LID = "@<LID>").
+	// Kosong = kartu tanpa mention (perilaku lama).
+	Mentions []types.JID
 }
 
 // SendLinkCard mengirim kartu link preview. Formatnya mengikuti contoh yang
@@ -64,6 +70,17 @@ func SendLinkCard(ctx context.Context, mctx *store.MessageContext, card LinkCard
 		MatchedText: proto.String(card.PageURL),
 		Title:       proto.String(card.Title),
 		Description: proto.String(card.Description),
+	}
+
+	// Mention opsional: JID dinormalisasi via ToNonAD supaya device/agent
+	// tidak ikut terbawa dan merusak pairing (aturan yang sama dengan
+	// ReplyTextWithMentions di store).
+	if len(card.Mentions) > 0 {
+		bare := make([]string, 0, len(card.Mentions))
+		for _, jid := range card.Mentions {
+			bare = append(bare, jid.ToNonAD().String())
+		}
+		ext.ContextInfo = &waE2E.ContextInfo{MentionedJID: bare}
 	}
 
 	// Thumbnail opsional: kalau ThumbURL diisi, unduh + normalisasi +

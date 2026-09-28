@@ -194,6 +194,80 @@ func (g *GroupDB) SetAILock(ctx context.Context, locked bool) error {
 	return err
 }
 
+// TrustUser menambahkan JID (sudah dinormalisasi ToNonAD oleh pemanggil)
+// ke daftar user yang dipercaya mengakses Flora. Pola penyimpanan identik
+// dengan ban (lihat BanUser/IsUserBanned): user_part disimpan terpisah
+// supaya pencocokan tetap jalan walau pengirim flip-flop antara PN dan LID.
+func (g *GroupDB) TrustUser(ctx context.Context, bareJID types.JID) error {
+	_, err := g.db.ExecContext(ctx, `
+		INSERT OR REPLACE INTO trusted_users (user_jid, user_part) VALUES (?, ?)
+	`, bareJID.String(), bareJID.User)
+	return err
+}
+
+// UntrustUser menghapus JID dari daftar trust. Mengembalikan true kalau
+// memang ada baris yang terhapus (dipakai untuk pesan "tidak ada di daftar").
+func (g *GroupDB) UntrustUser(ctx context.Context, bareJID types.JID) (bool, error) {
+	res, err := g.db.ExecContext(ctx, `DELETE FROM trusted_users WHERE user_jid = ?`, bareJID.String())
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// IsUserTrusted mengecek apakah pengirim masuk daftar trust. sender dan
+// senderAlt dibandingkan seperti IsUserBanned (full JID ATAU user_part)
+// supaya trust tidak jebol saat identitas pengirim flip-flop PN↔LID.
+func (g *GroupDB) IsUserTrusted(ctx context.Context, sender, senderAlt types.JID) (bool, error) {
+	sender = sender.ToNonAD()
+	senderAlt = senderAlt.ToNonAD()
+	rows, err := g.db.QueryContext(ctx, `SELECT user_jid, user_part FROM trusted_users`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var jid, part string
+		if err := rows.Scan(&jid, &part); err != nil {
+			return false, err
+		}
+		if jid != "" && (jid == sender.String() || (!senderAlt.IsEmpty() && jid == senderAlt.String())) {
+			return true, nil
+		}
+		if part != "" && (part == sender.User || (!senderAlt.IsEmpty() && part == senderAlt.User)) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// TrustedEntry adalah satu baris daftar trust (untuk .agent trustlist).
+type TrustedEntry struct {
+	JID       string
+	Part      string
+	CreatedAt int64
+}
+
+// ListTrustedUsers mengembalikan seluruh daftar trust terurut waktu
+// ditambahkan. Kosong (tanpa error) kalau belum ada yang dipercaya.
+func (g *GroupDB) ListTrustedUsers(ctx context.Context) ([]TrustedEntry, error) {
+	rows, err := g.db.QueryContext(ctx, `SELECT user_jid, user_part, created_at FROM trusted_users ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TrustedEntry
+	for rows.Next() {
+		var e TrustedEntry
+		if err := rows.Scan(&e.JID, &e.Part, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // errInvalidMode dipisah supaya pesan error konsisten dipakai ulang.
 func errInvalidMode(mode string) error {
 	return &modeError{mode: mode}

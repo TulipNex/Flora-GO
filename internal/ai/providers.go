@@ -12,12 +12,12 @@ import (
 )
 
 // AvailableProviders adalah daftar nama provider yang valid untuk command
-// ".ai provider <nama>". Ditulis eksplisit (bukan diturunkan dari map lain)
+// ".agent provider <nama>". Ditulis eksplisit (bukan diturunkan dari map lain)
 // supaya urutan tampil di pesan bantuan selalu konsisten.
 var AvailableProviders = []string{"google", "openrouter", "nexarouter", "ciora"}
 
 // AvailableModels adalah daftar model yang bisa dipilih per provider lewat
-// ".ai model <model>", HARDCODE (bukan fetch live dari API) sesuai
+// ".agent model <model>", HARDCODE (bukan fetch live dari API) sesuai
 // keputusan desain — gampang dipastikan valid, tidak nambah panggilan API
 // hanya untuk menampilkan daftar.
 //
@@ -91,7 +91,7 @@ var AvailableModels = map[string][]string{
 }
 
 // defaultModelFor mengembalikan model default untuk sebuah provider kalau
-// belum pernah di-set lewat command ".ai model" (kolom masih string kosong
+// belum pernah di-set lewat command ".agent model" (kolom masih string kosong
 // di SQLite).
 func defaultModelFor(provider string) string {
 	switch provider {
@@ -129,8 +129,8 @@ func IsValidModel(provider, model string) bool {
 // providerSettingsCache adalah cache in-memory dari ai_settings (SQLite),
 // supaya tiap giliran chat TIDAK perlu query DB hanya untuk tahu provider
 // aktif — sama pola cache-first seperti SessionStore (session.go). Diisi
-// sekali saat pertama diakses, diperbarui tiap kali command ".ai provider"
-// / ".ai model" berhasil menyimpan ke DB.
+// sekali saat pertama diakses, diperbarui tiap kali command ".agent provider"
+// / ".agent model" berhasil menyimpan ke DB.
 var (
 	settingsCacheMu sync.Mutex
 	settingsCache   *store.AISettings
@@ -277,9 +277,9 @@ func SetActiveModel(ctx context.Context, model string) error {
 }
 
 // FormatProviderList merangkai daftar provider tersedia + penanda provider
-// aktif saat ini, dipakai saat user ketik ".ai provider" tanpa argumen.
+// aktif saat ini, dipakai saat user ketik ".agent provider" tanpa argumen.
 // Bernomor urut (1-based mengikuti AvailableProviders) supaya user bisa
-// memilih pakai nama maupun nomor (".ai provider 2").
+// memilih pakai nama maupun nomor (".agent provider 2").
 func FormatProviderList(ctx context.Context) string {
 	active := GetActiveProviderName(ctx)
 	var sb strings.Builder
@@ -291,14 +291,14 @@ func FormatProviderList(ctx context.Context) string {
 		}
 		sb.WriteString(fmt.Sprintf("%d. %s%s\n", i+1, p, marker))
 	}
-	sb.WriteString("\nGanti pakai: .ai provider <nama/nomor>")
+	sb.WriteString("\nGanti pakai: .agent provider <nama/nomor>")
 	return sb.String()
 }
 
 // FormatModelList merangkai daftar model tersedia UNTUK PROVIDER AKTIF
-// saat ini + penanda model aktif, dipakai saat user ketik ".ai model"
+// saat ini + penanda model aktif, dipakai saat user ketik ".agent model"
 // tanpa argumen. Bernomor urut supaya user bisa memilih pakai nama maupun
-// nomor (".ai model 4").
+// nomor (".agent model 4").
 func FormatModelList(ctx context.Context) string {
 	provider := GetActiveProviderName(ctx)
 	activeModel := GetActiveModelName(ctx)
@@ -312,7 +312,7 @@ func FormatModelList(ctx context.Context) string {
 		}
 		sb.WriteString(fmt.Sprintf("%d. %s%s\n", i+1, m, marker))
 	}
-	sb.WriteString("\nGanti pakai: .ai model <nama/nomor>")
+	sb.WriteString("\nGanti pakai: .agent model <nama/nomor>")
 	return sb.String()
 }
 

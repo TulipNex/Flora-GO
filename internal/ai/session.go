@@ -152,7 +152,7 @@ func (s *SessionStore) Append(key string, c Content) {
 }
 
 // Reset menghapus sesi sepenuhnya dari cache DAN dari SQLite
-// (dipakai command ".ai reset").
+// (dipakai command ".agent reset").
 func (s *SessionStore) Reset(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

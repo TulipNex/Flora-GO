@@ -112,7 +112,7 @@ func (a *AIDB) LoadHistory(ctx context.Context, sessionKey string, limit int) ([
 	return entries, rows.Err()
 }
 
-// ClearHistory menghapus seluruh histori sebuah sesi (dipakai ".ai reset").
+// ClearHistory menghapus seluruh histori sebuah sesi (dipakai ".agent reset").
 func (a *AIDB) ClearHistory(ctx context.Context, sessionKey string) error {
 	_, err := a.db.ExecContext(ctx, `DELETE FROM ai_history WHERE session_key = ?`, sessionKey)
 	return err

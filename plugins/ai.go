@@ -22,70 +22,274 @@ func init() {
 
 func RegisterAI(r *Registry) {
 	r.Register(Command{
-		Name:        "ai",
-		Description: "Ngobrol dengan AI (.ai <pesan> / .ai reset / .ai provider / .ai model / .ai status)",
-		Category:    CategoryAI,
-		Handler:     handleAICommand,
+		Name:        "agent",
+		Aliases:     []string{"ai"},
+		Description: "Kelola Flora (.agent model/provider/status/trust/trustlist/reset)",
+		Category:    CategoryOwner,
+		Handler:     handleAgentCommand,
 	})
 }
 
-// handleAICommand menangani command eksplisit ".ai <pesan>" / ".ai reset" /
-// ".ai provider [nama]" / ".ai model [nama]".
+// handleAgentCommand menangani command ADMIN Flora — tanya-jawab via
+// command SUDAH DIHAPUS, ngobrol hanya lewat trigger natural (sebut nama
+// Flora / reply bubble bot / kirim stiker — lihat handleAITrigger).
+// Gerbang pertama: hanya owner + user terpercaya yang dilayani.
 //
-// Sejak fitur multi-provider: ".ai provider" tanpa argumen menampilkan
-// daftar provider + yang aktif; ".ai provider <nama>" mengganti provider
-// aktif. Pola sama untuk ".ai model" tapi daftarnya mengikuti provider
-// yang SEDANG aktif. Pengaturan ini GLOBAL (berlaku untuk semua user,
-// bukan per-sender) dan persist ke SQLite — lihat internal/ai/providers.go.
-func handleAICommand(ctx context.Context, mctx *store.MessageContext) error {
-	if len(mctx.Args) > 0 && strings.EqualFold(mctx.Args[0], "provider") {
+// Batas owner vs trusted: model/provider/status/trust/untrust/trustlist/
+// reset -memory KHUSUS owner; user terpercaya hanya boleh ".agent reset"
+// biasa (sesi sendiri). Pengaturan provider/model ini GLOBAL (semua user, persist ke
+// SQLite — lihat internal/ai/providers.go), jadi wajar hanya owner yang
+// boleh mengubahnya.
+func handleAgentCommand(ctx context.Context, mctx *store.MessageContext) error {
+	if !IsOwnerOrTrusted(ctx, mctx) {
+		return store.ReplyText(ctx, mctx, "Flora hanya melayani owner dan user yang dipercaya.")
+	}
+	if len(mctx.Args) == 0 {
+		return store.ReplyText(ctx, mctx, agentUsage())
+	}
+	switch strings.ToLower(mctx.Args[0]) {
+	case "provider":
 		return handleProviderSubcommand(ctx, mctx)
-	}
-	if len(mctx.Args) > 0 && strings.EqualFold(mctx.Args[0], "model") {
+	case "model":
 		return handleModelSubcommand(ctx, mctx)
-	}
-	if len(mctx.Args) > 0 && strings.EqualFold(mctx.Args[0], "status") {
+	case "status":
 		return handleStatusSubcommand(ctx, mctx)
+	case "trust":
+		return handleTrustSubcommand(ctx, mctx, true)
+	case "untrust":
+		return handleTrustSubcommand(ctx, mctx, false)
+	case "trustlist":
+		return handleTrustListSubcommand(ctx, mctx)
+	case "reset":
+		return handleResetSubcommand(ctx, mctx)
+	default:
+		return store.ReplyText(ctx, mctx, agentUsage())
 	}
-
-	text := strings.TrimSpace(strings.Join(mctx.Args, " "))
-
-	if text == "" {
-		return store.ReplyText(ctx, mctx, "Mau ngobrol apa? Contoh: .ai halo, apa kabar?")
-	}
-
-	if strings.EqualFold(text, "reset") {
-		// Kunci sesi dibedakan private/grup (lihat ai.BuildSessionKey) —
-		// ".ai reset" yang diketik di dalam grup HANYA mereset histori
-		// sender itu di grup tersebut, tidak menyentuh histori private-nya
-		// atau histori dia di grup lain.
-		sessionKey := ai.BuildSessionKey(mctx.IsGroup(), mctx.Chat.String(), mctx.Sender.String())
-		ai.GlobalSession.Reset(sessionKey)
-		return store.ReplyText(ctx, mctx, "Oke, sesi percakapan sudah direset.")
-	}
-
-	// Kalau command ".ai <pesan>" ini dikirim sebagai reply ke salah satu
-	// bubble bot, sertakan teks bubble yang di-reply sebagai konteks —
-	// sama seperti trigger natural (lihat handler.go handleAITrigger).
-	quotedText := store.GetQuotedBotText(mctx.RawEvt)
-	text = ai.BuildTextWithQuotedContext(quotedText, text)
-
-	// Sama seperti trigger natural: pemrosesan AI jalan async supaya tidak
-	// memblokir event loop whatsmeow (lihat komentar di handleAITrigger).
-	// HandleAIMessage sudah membalas sendiri ke user (bubble atau pesan
-	// gangguan), jadi handler cukup mengembalikan nil.
-	go func() {
-		if err := HandleAIMessage(context.Background(), mctx, text); err != nil {
-			fmt.Printf("❌ Error memproses command .ai: %v\n", err)
-		}
-	}()
-	return nil
 }
 
-// handleProviderSubcommand menangani ".ai provider" (tampilkan daftar),
-// ".ai provider <nama>" dan ".ai provider <nomor>" (ganti provider aktif,
-// nomor sesuai urutan di daftar).
+// agentUsage adalah teks bantuan untuk ".agent" polos / subcommand salah.
+func agentUsage() string {
+	return "Flora Agent:\n" +
+		".agent model [nomor/nama]\n" +
+		".agent provider [nomor/nama]\n" +
+		".agent status\n" +
+		".agent trust @user\n" +
+		".agent untrust @user\n" +
+		".agent trustlist\n" +
+		".agent reset\n" +
+		".agent reset -memory [@user/nomor]\n" +
+		"Ngobrol: sebut nama Flora / reply pesannya."
+}
+
+// handleResetSubcommand menangani ".agent reset" (reset histori sesi
+// sendiri — boleh untuk user terpercaya) dan ".agent reset -memory"
+// (KHUSUS owner: hapus ingatan jangka panjang + sesi pemanggil).
+//
+// Kunci sesi dibedakan private/grup (lihat ai.BuildSessionKey) — reset yang
+// diketik di dalam grup HANYA mereset histori sender itu di grup tersebut,
+// tidak menyentuh histori private-nya atau histori dia di grup lain.
+func handleResetSubcommand(ctx context.Context, mctx *store.MessageContext) error {
+	sessionKey := ai.BuildSessionKey(mctx.IsGroup(), mctx.Chat.String(), mctx.Sender.String())
+	if len(mctx.Args) > 1 && strings.EqualFold(mctx.Args[1], "-memory") {
+		if msg := requireOwner(mctx); msg != "" {
+			return store.ReplyText(ctx, mctx, msg)
+		}
+		return handleResetMemory(ctx, mctx)
+	}
+	ai.GlobalSession.Reset(sessionKey)
+	return store.ReplyText(ctx, mctx, "Oke, sesi percakapan sudah direset.")
+}
+
+// handleResetMemory menangani ".agent reset -memory [target]" (KHUSUS
+// owner). Tanpa target = milik sendiri (kunci persis seperti saat disimpan).
+// Dengan target (mention / reply / nomor di Args[2:], gabungan untuk nomor
+// ber-spasi) = milik target: fakta dihapus via beberapa kandidat kunci +
+// sesi target di chat ini direset. Jumlah baris fakta yang terhapus
+// dilaporkan jujur (0 = tidak ditemukan).
+func handleResetMemory(ctx context.Context, mctx *store.MessageContext) error {
+	target, hasTarget, err := resolveResetMemoryTarget(mctx)
+	if err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("%v — contoh: .agent reset -memory @user", err))
+	}
+	label := "mu"
+	factKeys := []string{mctx.Sender.String()}
+	sessionKeys := []string{ai.BuildSessionKey(mctx.IsGroup(), mctx.Chat.String(), mctx.Sender.String())}
+	if hasTarget {
+		label = target.User
+		factKeys = nil
+		sessionKeys = nil
+		for _, ck := range memoryCandidateKeys(ctx, mctx, target) {
+			factKeys = append(factKeys, ck)
+			sessionKeys = append(sessionKeys, ai.BuildSessionKey(mctx.IsGroup(), mctx.Chat.String(), ck))
+		}
+	}
+	n, err := store.AI().DeleteFactsForKeys(ctx, factKeys)
+	if err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal hapus ingatan: %v", err))
+	}
+	for _, sk := range sessionKeys {
+		ai.GlobalSession.Reset(sk)
+	}
+	if n > 0 {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Ingatan jangka panjang (%d baris fakta) + sesi %s di chat ini sudah dihapus total.", n, label))
+	}
+	return store.ReplyText(ctx, mctx, fmt.Sprintf("Tidak ada ingatan tersimpan untuk %s; sesinya di chat ini sudah direset.", label))
+}
+
+// resolveResetMemoryTarget mengambil target opsional reset -memory dari
+// mention, pesan reply, atau nomor HP di argumen ketiga dst. Tanpa ketiganya
+// = reset milik sendiri (hasTarget false, bukan error).
+func resolveResetMemoryTarget(mctx *store.MessageContext) (types.JID, bool, error) {
+	if mentioned := mctx.MentionedJIDs(); len(mentioned) > 0 {
+		jid, err := types.ParseJID(mentioned[0])
+		if err != nil {
+			return types.JID{}, false, fmt.Errorf("JID mention tidak valid")
+		}
+		return jid.ToNonAD(), true, nil
+	}
+	if quoted := mctx.QuotedParticipant(); quoted != "" {
+		jid, err := types.ParseJID(quoted)
+		if err != nil {
+			return types.JID{}, false, fmt.Errorf("JID reply tidak valid")
+		}
+		return jid.ToNonAD(), true, nil
+	}
+	if len(mctx.Args) > 2 {
+		jid, err := ParsePhoneToJID(strings.Join(mctx.Args[2:], " "))
+		if err != nil {
+			return types.JID{}, false, err
+		}
+		return jid.ToNonAD(), true, nil
+	}
+	return types.JID{}, false, nil
+}
+
+// memoryCandidateKeys menyusun kandidat kunci fakta untuk satu target: JID
+// target (bare) + hasil resolve alt-JID whatsmeow (pemetaan LID↔PN, pola yang
+// sama dipakai displayID di store/log.go). Best-effort: fakta tersimpan apa
+// adanya dalam bentuk PN atau LID, jadi dicoba semua bentuk yang bisa
+// diturunkan; kalau tetap meleset, pemanggil melaporkan 0 baris.
+func memoryCandidateKeys(ctx context.Context, mctx *store.MessageContext, target types.JID) []string {
+	keys := []string{target.String()}
+	if mctx.Client != nil && mctx.Client.Store != nil {
+		if alt, err := mctx.Client.Store.GetAltJID(ctx, target); err == nil && !alt.IsEmpty() {
+			if s := alt.ToNonAD().String(); s != keys[0] {
+				keys = append(keys, s)
+			}
+		}
+	}
+	return keys
+}
+
+// handleTrustSubcommand menangani ".agent trust @user" /
+// ".agent untrust @user" (KHUSUS owner). Target diambil dari mention,
+// pesan yang di-reply, atau nomor HP di argumen kedua — cermin
+// resolveBanTarget, tapi nomor dibaca dari Args[1] (Args[0] = "trust").
+func handleTrustSubcommand(ctx context.Context, mctx *store.MessageContext, trust bool) error {
+	if msg := requireOwner(mctx); msg != "" {
+		return store.ReplyText(ctx, mctx, msg)
+	}
+	action := "trust"
+	if !trust {
+		action = "untrust"
+	}
+	target, err := resolveTrustTarget(mctx)
+	if err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("%v — contoh: .agent %s @user", err, action))
+	}
+	if trust {
+		if err := store.Groups().TrustUser(ctx, target); err != nil {
+			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal memberi kepercayaan: %v", err))
+		}
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Oke, %s sekarang dipercaya mengakses Flora.", target.User))
+	}
+	removed, err := store.Groups().UntrustUser(ctx, target)
+	if err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal mencabut kepercayaan: %v", err))
+	}
+	if !removed {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("%s tidak ada di daftar trust.", target.User))
+	}
+	return store.ReplyText(ctx, mctx, fmt.Sprintf("Kepercayaan %s sudah dicabut.", target.User))
+}
+
+// handleTrustListSubcommand menangani ".agent trustlist" (KHUSUS owner):
+// menampilkan seluruh user yang dipercaya + waktu ditambahkan.
+func handleTrustListSubcommand(ctx context.Context, mctx *store.MessageContext) error {
+	if msg := requireOwner(mctx); msg != "" {
+		return store.ReplyText(ctx, mctx, msg)
+	}
+	list, err := store.Groups().ListTrustedUsers(ctx)
+	if err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca daftar trust: %v", err))
+	}
+	if len(list) == 0 {
+		return store.ReplyText(ctx, mctx, "Daftar trust kosong — belum ada user yang dipercaya.")
+	}
+	var sb strings.Builder
+	sb.WriteString("Daftar trust Flora:\n")
+	mentions := make([]types.JID, 0, len(list))
+	for i, e := range list {
+		// Tag biru butuh pairing "@<User>" di teks + MentionedJID (aturan
+		// yang sama dengan tagall/ReplyTextWithMentions). JID yang gagal
+		// di-parse tampil polos supaya satu baris rusak tidak menggagalkan
+		// seluruh daftar.
+		if jid, perr := types.ParseJID(e.JID); perr == nil && jid.User != "" {
+			bare := jid.ToNonAD()
+			sb.WriteString(fmt.Sprintf("%d. @%s\n", i+1, bare.User))
+			mentions = append(mentions, bare)
+		} else {
+			name := e.Part
+			if name == "" {
+				name = e.JID
+			}
+			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, name))
+		}
+	}
+	if len(mentions) == 0 {
+		return store.ReplyText(ctx, mctx, sb.String())
+	}
+	return store.ReplyTextWithMentions(ctx, mctx, sb.String(), mentions)
+}
+
+// resolveTrustTarget mengambil target trust/untrust dari mention, pesan
+// reply, atau nomor HP di argumen kedua. Hasil dinormalisasi ToNonAD
+// supaya format penyimpanannya konsisten (lihat store.TrustUser).
+func resolveTrustTarget(mctx *store.MessageContext) (types.JID, error) {
+	if mentioned := mctx.MentionedJIDs(); len(mentioned) > 0 {
+		jid, err := types.ParseJID(mentioned[0])
+		if err != nil {
+			return types.JID{}, fmt.Errorf("JID mention tidak valid")
+		}
+		return jid.ToNonAD(), nil
+	}
+	if quoted := mctx.QuotedParticipant(); quoted != "" {
+		jid, err := types.ParseJID(quoted)
+		if err != nil {
+			return types.JID{}, fmt.Errorf("JID reply tidak valid")
+		}
+		return jid.ToNonAD(), nil
+	}
+	if len(mctx.Args) > 1 {
+		// Gabung SEMUA sisa argumen: nomor ber-spasi ("+62 822-1234-5678")
+		// terpecah jadi beberapa Args oleh strings.Fields — cleaner di
+		// ParsePhoneToJID membuang spasi/strip/plus-nya kembali.
+		jid, err := ParsePhoneToJID(strings.Join(mctx.Args[1:], " "))
+		if err != nil {
+			return types.JID{}, err
+		}
+		return jid.ToNonAD(), nil
+	}
+	return types.JID{}, fmt.Errorf("tag (@user), reply pesan target, atau sertakan nomor")
+}
+
+// handleProviderSubcommand menangani ".agent provider" (tampilkan daftar),
+// ".agent provider <nama>" dan ".agent provider <nomor>" (ganti provider
+// aktif, nomor sesuai urutan di daftar). KHUSUS owner (pengaturan global).
 func handleProviderSubcommand(ctx context.Context, mctx *store.MessageContext) error {
+	if msg := requireOwner(mctx); msg != "" {
+		return store.ReplyText(ctx, mctx, msg)
+	}
 	arg := strings.TrimSpace(strings.Join(mctx.Args[1:], " "))
 
 	if arg == "" {
@@ -100,10 +304,13 @@ func handleProviderSubcommand(ctx context.Context, mctx *store.MessageContext) e
 	return store.ReplyText(ctx, mctx, fmt.Sprintf("Oke, provider AI sekarang: *%s*", name))
 }
 
-// handleModelSubcommand menangani ".ai model" (tampilkan daftar model utk
-// provider aktif), ".ai model <nama>" dan ".ai model <nomor>" (ganti model
-// aktif, nomor sesuai urutan di daftar).
+// handleModelSubcommand menangani ".agent model" (tampilkan daftar model utk
+// provider aktif), ".agent model <nama>" dan ".agent model <nomor>" (ganti
+// model aktif, nomor sesuai urutan di daftar). KHUSUS owner.
 func handleModelSubcommand(ctx context.Context, mctx *store.MessageContext) error {
+	if msg := requireOwner(mctx); msg != "" {
+		return store.ReplyText(ctx, mctx, msg)
+	}
 	arg := strings.TrimSpace(strings.Join(mctx.Args[1:], " "))
 
 	if arg == "" {
@@ -118,19 +325,22 @@ func handleModelSubcommand(ctx context.Context, mctx *store.MessageContext) erro
 	return store.ReplyText(ctx, mctx, fmt.Sprintf("Oke, model AI sekarang: *%s*", name))
 }
 
-// handleStatusSubcommand menangani ".ai status": menampilkan status lock
+// handleStatusSubcommand menangani ".agent status": menampilkan status lock
 // trigger natural (global), provider + model aktif, dan status sesi chat
 // ini (aktif kalau masih dalam idle timeout 30 menit, idle kalau sudah
-// lama tidak chat). Sengaja jalan walau sedang terkunci — gunanya justru
-// untuk mengecek status lock.
+// lama tidak chat). KHUSUS owner. Sengaja jalan walau sedang terkunci —
+// gunanya justru untuk mengecek status lock.
 func handleStatusSubcommand(ctx context.Context, mctx *store.MessageContext) error {
+	if msg := requireOwner(mctx); msg != "" {
+		return store.ReplyText(ctx, mctx, msg)
+	}
 	locked, err := store.Groups().IsAILocked(ctx)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca status lock: %v", err))
 	}
 	lockText := "aktif (trigger natural menyala)"
 	if locked {
-		lockText = "TERKUNCI (trigger natural mati, .ai tetap jalan)"
+		lockText = "TERKUNCI (trigger natural mati)"
 	}
 
 	sessionKey := ai.BuildSessionKey(mctx.IsGroup(), mctx.Chat.String(), mctx.Sender.String())
@@ -145,9 +355,10 @@ func handleStatusSubcommand(ctx context.Context, mctx *store.MessageContext) err
 	))
 }
 
-// HandleAIMessage adalah logic inti pemrosesan AI — dipanggil baik dari
-// command ".ai" (handleAICommand di atas) maupun dari trigger natural
-// (kata kunci/reply/sticker, lihat internal/handler/handler.go).
+// HandleAIMessage adalah logic inti pemrosesan AI — sekarang HANYA dipanggil
+// dari trigger natural (kata kunci/reply/sticker, lihat
+// internal/handler/handler.go); tanya-jawab via command sudah dihapus,
+// command .agent murni admin.
 //
 // Sejak Fase 4: dibungkus spam gate + lock per-sender, mood user disuntik
 // sebagai tambahan system prompt, dan pemanggilan provider memakai retry

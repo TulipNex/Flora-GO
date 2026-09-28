@@ -55,6 +55,42 @@ func requireOwner(mctx *store.MessageContext) string {
 	return ""
 }
 
+// IsOwnerOrTrusted lolos kalau pengirim adalah owner ATAU user yang dipercaya
+// mengakses Flora (daftar trust, lihat store.GroupDB.TrustUser). Dipakai
+// command .agent dan trigger natural AI. SenderAlt ikut dicek seperti
+// IsOwner supaya trust tetap mempan di grup mode LID. DB error = tolak
+// non-owner (fail-closed untuk kontrol akses) + catat ke console.
+func IsOwnerOrTrusted(ctx context.Context, mctx *store.MessageContext) bool {
+	if IsOwner(mctx) {
+		return true
+	}
+	var senderAlt types.JID
+	if mctx.RawEvt != nil {
+		senderAlt = mctx.RawEvt.Info.SenderAlt
+	}
+	ok, err := store.Groups().IsUserTrusted(ctx, mctx.Sender, senderAlt)
+	if err != nil {
+		fmt.Printf("❌ Gagal cek trust Flora untuk %s: %v\n", mctx.Sender.String(), err)
+		return false
+	}
+	return ok
+}
+
+// IsOwnerOrTrustedEvent adalah versi berbasis events.Message mentah (untuk
+// handler, sebelum MessageContext dibangun). IsOwnerEvent sudah mencakup
+// SenderAlt; untuk trust keduanya diteruskan ke IsUserTrusted.
+func IsOwnerOrTrustedEvent(ctx context.Context, evt *events.Message) bool {
+	if IsOwnerEvent(evt) {
+		return true
+	}
+	ok, err := store.Groups().IsUserTrusted(ctx, evt.Info.Sender, evt.Info.SenderAlt)
+	if err != nil {
+		fmt.Printf("❌ Gagal cek trust Flora untuk %s: %v\n", evt.Info.Sender.String(), err)
+		return false
+	}
+	return ok
+}
+
 // resolveBanTarget mengambil target ban/unban dari mention, pesan reply,
 // atau nomor HP di argumen pertama. Hasil selalu dinormalisasi ToNonAD
 // supaya format penyimpanannya konsisten (lihat store.BanUser).

@@ -49,7 +49,7 @@ const (
 // ==========================
 // Konfigurasi AI Agent
 // ==========================
-// Dipakai oleh plugin .ai dan seluruh isi internal/ai/.
+// Dipakai oleh plugin .agent dan seluruh isi internal/ai/.
 // AIApiKey rahasia & per-environment sehingga tetap dibaca dari .env
 // (pola sama seperti LOGIN_METHOD/PHONE_NUMBER di main.go), sedangkan
 // AIModelDefault & AISystemPromptBase statis/compile-time sehingga
@@ -87,7 +87,7 @@ var (
 )
 
 const (
-	// AIModelDefault adalah model Gemini yang dipakai command .ai.
+	// AIModelDefault adalah model Gemini yang dipakai command .agent.
 	// gemini-2.5-flash sudah dimatikan Google (404) per akhir 2026,
 	// diganti ke gemini-3.6-flash (GA, generasi 3.x, harga masih di kelas "flash").
 	AIModelDefault = "gemini-3.6-flash"

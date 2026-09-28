@@ -85,6 +85,11 @@ func InitGroupDB(path string) error {
 		enabled    INTEGER NOT NULL DEFAULT 0,
 		updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 	);
+	CREATE TABLE IF NOT EXISTS trusted_users (
+		user_jid   TEXT PRIMARY KEY,
+		user_part  TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+	);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("gagal membuat schema group.db: %w", err)

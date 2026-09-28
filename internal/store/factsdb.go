@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // InitFactsDB membuat tabel user_facts di database yang sama dengan
@@ -45,6 +46,48 @@ func (a *AIDB) GetFacts(ctx context.Context, senderJID string) (string, error) {
 		return "", err
 	}
 	return factsJSON, nil
+}
+
+// DeleteFacts menghapus SELURUH ingatan jangka panjang satu sender JID
+// (dipakai ".agent reset -memory"). Mengembalikan true kalau memang ada
+// baris yang terhapus.
+func (a *AIDB) DeleteFacts(ctx context.Context, senderJID string) (bool, error) {
+	res, err := a.db.ExecContext(ctx, `DELETE FROM user_facts WHERE sender_jid = ?`, senderJID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// DeleteFactsForKeys menghapus ingatan jangka panjang untuk SEJUMLAH kunci
+// sender sekaligus (dipakai ".agent reset -memory @target" yang mencoba
+// beberapa bentuk JID: target + hasil resolve alt-JID). Mengembalikan
+// jumlah baris yang benar-benar terhapus (0 = tidak ada yang cocok).
+func (a *AIDB) DeleteFactsForKeys(ctx context.Context, keys []string) (int64, error) {
+	clean := make([]string, 0, len(keys))
+	seen := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		clean = append(clean, k)
+	}
+	if len(clean) == 0 {
+		return 0, nil
+	}
+	placeholders := strings.Repeat("?,", len(clean)-1) + "?"
+	args := make([]any, len(clean))
+	for i, k := range clean {
+		args[i] = k
+	}
+	res, err := a.db.ExecContext(ctx, `DELETE FROM user_facts WHERE sender_jid IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // UpsertFacts menyimpan (atau menimpa total) fakta untuk satu sender JID.

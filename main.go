@@ -102,7 +102,7 @@ func main() {
 
 	// ==========================================================
 	// 0c. Siapkan database SQLite untuk histori percakapan AI (command
-	//     .ai + trigger natural). Terpisah dari group.db dan session.db.
+	//     .agent + trigger natural). Terpisah dari group.db dan session.db.
 	// ==========================================================
 	if err := store.InitAIDB("data/ai.db"); err != nil {
 		panic(fmt.Sprintf("gagal inisialisasi ai.db: %v", err))

@@ -232,11 +232,18 @@ func handleAITrigger(client *whatsmeow.Client, evt *events.Message, text string)
 	}
 
 	// Gerbang lock global: saat terkunci, semua trigger natural di semua
-	// chat diabaikan diam-diam. Command eksplisit (.ai, .ai status, ...)
-	// TIDAK lewat sini sehingga tetap jalan.
+	// chat diabaikan diam-diam. Command admin .agent TIDAK lewat sini
+	// sehingga tetap jalan.
 	if locked, err := store.Groups().IsAILocked(context.Background()); err != nil {
 		fmt.Printf("⚠️ Gagal cek lock AI: %v\n", err)
 	} else if locked {
+		return
+	}
+
+	// Gerbang trust Flora: trigger natural hanya melayani owner + user
+	// terpercaya (lihat store.GroupDB.TrustUser). Non-trusted diabaikan
+	// diam-diam — tanpa bocoran bahwa Flora terkunci untuk mereka.
+	if !plugins.IsOwnerOrTrustedEvent(context.Background(), evt) {
 		return
 	}
 

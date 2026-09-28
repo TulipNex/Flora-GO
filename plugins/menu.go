@@ -10,6 +10,8 @@ import (
 	"wabot-go/internal/config"
 	"wabot-go/internal/messaging"
 	"wabot-go/internal/store"
+
+	"go.mau.fi/whatsmeow/types"
 )
 
 func init() {
@@ -105,13 +107,15 @@ func RegisterMenu(r *Registry) {
 			if desc == "" {
 				desc = fmt.Sprintf("%d commands tersedia", shown)
 			}
+			greeting, mentions := greetingHeader(mctx)
 			if err := messaging.SendLinkCard(ctx, mctx, messaging.LinkCard{
 				PageURL:     pageURL,
 				Title:       title,
 				Description: desc,
 				ThumbURL:    strings.TrimSpace(config.MenuThumbURL),
 				FaviconURL:  strings.TrimSpace(config.MenuFaviconURL),
-				Body:        greetingHeader(mctx) + "\n\nDaftar Menu\n" + body,
+				Body:        greeting + "\n\n*Daftar Menu*\n" + body,
+				Mentions:    mentions,
 			}); err != nil {
 				return store.ReplyText(ctx, mctx, err.Error())
 			}
@@ -120,17 +124,25 @@ func RegisterMenu(r *Registry) {
 	})
 }
 
-// greetingHeader menyusun sapaan dua baris: "Halo <nama>, selamat
-// <periode>!" lalu baris baru "Saya <NamaBot>, <deskripsi bot>.".
-// Nama dari PushName pengirim, periode dari jam WITA (fungsi dayPeriod
-// yang sama dengan template welcome).
-func greetingHeader(mctx *store.MessageContext) string {
-	name := "kamu"
-	if push := strings.TrimSpace(mctx.RawEvt.Info.PushName); push != "" {
-		name = push
-	}
+// greetingHeader menyusun sapaan + perkenalan, keduanya bold, dipisah satu
+// baris kosong: "*Halo @<user>, selamat <periode>!*" lalu "*Saya <NamaBot>,
+// <deskripsi>.*". Sambutan men-tag pengirim ASLI (bukan PushName): teks
+// memakai "@<User>" dari JID pengirim yang sudah ToNonAD (di grup mode LID
+// = "@<LID>") supaya pairing mention valid dan klien me-render-nya jadi
+// nama kontak yang bisa diketuk. Periode tetap dari jam WITA (dayPeriod).
+// Mengembalikan teks + daftar JID untuk field Mentions kartu link; kalau
+// pengirim tak ter-resolve, fallback "kamu" TANPA mention agar pairing
+// tidak rusak.
+func greetingHeader(mctx *store.MessageContext) (string, []types.JID) {
 	periode := dayPeriod(time.Now().In(witaLocation))
-	return fmt.Sprintf("Halo %s, selamat %s!\nSaya %s, %s.", name, periode, config.BotName, config.BotDescription)
+	sender := mctx.Sender.ToNonAD()
+	if sender.User == "" {
+		return fmt.Sprintf("*Halo kamu, selamat %s!*\n\n*Saya %s, %s.*",
+			periode, config.BotName, config.BotDescription), nil
+	}
+	return fmt.Sprintf("*Halo @%s, selamat %s!*\n\n*Saya %s, %s.*",
+			sender.User, periode, config.BotName, config.BotDescription),
+		[]types.JID{sender}
 }
 
 // matchCategory mencocokkan argumen ke nama kategori (case-insensitive).
@@ -171,11 +183,11 @@ func buildCategoryMenu(grouped map[string][]string) string {
 		if len(grouped[cat]) == 0 {
 			continue
 		}
-		sb.WriteString(fmt.Sprintf("▸ %s\n", cat))
+		sb.WriteString(fmt.Sprintf("▸ *%s*\n", cat))
 	}
 	for cat, names := range grouped {
 		if !isKnownCategory(cat) && len(names) > 0 {
-			sb.WriteString(fmt.Sprintf("▸ %s\n", cat))
+			sb.WriteString(fmt.Sprintf("▸ *%s*\n", cat))
 		}
 	}
 	sb.WriteString("\n.menu <kategori>\n.menu all")
@@ -227,12 +239,12 @@ func buildSingleMenu(grouped map[string][]string, selected string) string {
 	var sb strings.Builder
 	writeCat := func(cat string, names []string) {
 		if cat == selected {
-			sb.WriteString(fmt.Sprintf("▾ %s\n", cat))
+			sb.WriteString(fmt.Sprintf("▾ *%s*\n", cat))
 			for _, name := range names {
 				sb.WriteString(fmt.Sprintf("  · _%s%s_\n", CommandPrefixForMenu, name))
 			}
 		} else {
-			sb.WriteString(fmt.Sprintf("▸ %s\n", cat))
+			sb.WriteString(fmt.Sprintf("▸ *%s*\n", cat))
 		}
 	}
 	for _, cat := range CategoryOrder {
