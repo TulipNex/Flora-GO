@@ -11,12 +11,10 @@ import (
 	"time"
 )
 
-// FetchSpotify mengambil audio Spotify via waterfall: nexray → musicfab.
-// Port dari spotify-down.js (minus jurus yt-dlp-search: butuh judul+artis
-// yang hanya diketahui dari metadata eksternal — di bot kita, kalau kedua
-// API gagal, engine downloader jatuh ke yt-dlp biasa yang akan gagal
-// dengan pesan jelas). Keduanya mengembalikan audio ASLI Spotify (bukan
-// YouTube-search) + validasi judul.
+// FetchSpotify mengambil audio Spotify via waterfall: nexray → musicfab →
+// omnify. Port dari spotify-down.js (minus jurus yt-dlp-search: butuh
+// judul+artis yang hanya diketahui dari metadata eksternal). Semuanya
+// mengembalikan audio ASLI Spotify (bukan YouTube-search) + validasi judul.
 func FetchSpotify(ctx context.Context, pageURL string) (*ScrapeResult, error) {
 	id := extractSpotifyID(pageURL)
 	if id == "" {

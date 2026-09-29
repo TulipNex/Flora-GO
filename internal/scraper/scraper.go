@@ -1,12 +1,10 @@
 // Package scraper mengambil media langsung dari platform sosial via API
-// scraper pihak ketiga (port dari koleksi D:\scrape), sebagai PENGGANTI
-// yt-dlp untuk kasus umum. yt-dlp tetap dipertahankan sebagai fallback
-// terakhir di plugins (lebih lambat tapi bicara langsung ke platform).
+// scraper pihak ketiga (port dari koleksi D:\scrape). yt-dlp SUDAH DIHAPUS
+// total (keputusan owner) — tidak ada fallback exec lagi.
 //
 // PENTING: API-API ini tidak resmi, tanpa SLA, bisa mati/berubah kapan
 // saja — makanya tiap platform punya RANTAI fallback berjenjang (meniru
-// pola tiktok.js / instagram.js aslinya) dan plugins jatuh ke yt-dlp
-// kalau semua gagal. Jangan andalkan satu sumber saja.
+// pola tiktok.js / instagram.js aslinya). Jangan andalkan satu sumber saja.
 package scraper
 
 import (

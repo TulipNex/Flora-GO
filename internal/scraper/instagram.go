@@ -2,23 +2,20 @@ package scraper
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 )
 
-// FetchInstagram mengambil media Instagram via rantai: fastdl → savereels.
-// Port dari instagram.js + fastdl.js + savereels.js. (snapinsta butuh
-// bypass Cloudflare + eval JS — slotnya diganti universal j2download di
-// level engine.)
+// FetchInstagram mengambil media Instagram via rantai: igexport → savereels.
+// fastdl SUDAH DIHAPUS (signing-nya ditolak server per akhir Sep 2026).
+// Port dari instagram.js + savereels.js + script igexport (igexport.com).
+// (snapinsta butuh bypass Cloudflare + eval JS — slotnya diganti universal
+// j2download di level engine.)
 func FetchInstagram(ctx context.Context, pageURL string) (*ScrapeResult, error) {
-	if res, err := fastdlFetch(ctx, pageURL); err == nil {
-		res.Source = "fastdl"
+	if res, err := igexportFetch(ctx, pageURL); err == nil {
+		res.Source = "igexport"
 		return res, nil
 	} else {
 		err1 := err
@@ -26,166 +23,72 @@ func FetchInstagram(ctx context.Context, pageURL string) (*ScrapeResult, error) 
 			res.Source = "savereels"
 			return res, nil
 		} else {
-			return nil, fmt.Errorf("instagram gagal semua: fastdl: %v | savereels: %v", err1, err)
+			return nil, fmt.Errorf("instagram gagal semua: igexport: %v | savereels: %v", err1, err)
 		}
 	}
 }
-
-// --- fastdl (utama): POST signed ke fastdl.app ---
-
-const (
-	fastdlKeyHex   = "792525efde6d921d6055a5d62dcebd39c8b5364e99fa87c5adf0e89391266d9c"
-	fastdlTsBase   = 1773148641059
-	fastdlEndpoint = "https://api-wh.fastdl.app/api/convert"
-	fastdlProxy    = "https://cors.siputzx.my.id/"
-)
 
 // igPostRe memvalidasi URL post/reel/tv Instagram.
 var igPostRe = regexp.MustCompile(`instagram\.com/(p|reel|tv)/`)
 
-type fastdlItem struct {
-	URL   any    `json:"url"`
-	Type  string `json:"type"`
-	Thumb string `json:"thumb"`
-	Meta  *struct {
-		Title    string `json:"title"`
-		Username string `json:"username"`
-	} `json:"meta"`
+// --- igexport (utama): GET igexport.com/api/ig-photo, URL CDN langsung ---
+
+type igexportItem struct {
+	Type         string `json:"type"`
+	URL          string `json:"url"`
+	ThumbnailURL string `json:"thumbnailUrl"`
 }
 
-func fastdlItemURL(u any) string {
-	switch v := u.(type) {
-	case string:
-		return v
-	case []any:
-		if len(v) > 0 {
-			if s, ok := v[0].(string); ok {
-				return s
-			}
-		}
-	}
-	return ""
+type igexportResp struct {
+	OK    bool `json:"ok"`
+	Media *struct {
+		Shortcode string         `json:"shortcode"`
+		Items     []igexportItem `json:"items"`
+	} `json:"media"`
 }
 
-func fastdlFetch(ctx context.Context, pageURL string) (*ScrapeResult, error) {
-	const engine = "fastdl"
+// igexportFetch mengambil foto carousel maupun reel: respons berisi URL CDN
+// langsung kualitas penuh (tanpa varian resolusi yang perlu dipilih).
+// API tidak menyediakan judul/author — caption dikosongkan.
+func igexportFetch(ctx context.Context, pageURL string) (*ScrapeResult, error) {
+	const engine = "igexport"
 	clean := strings.TrimSuffix(strings.SplitN(pageURL, "?", 2)[0], "/") + "/"
 	if !igPostRe.MatchString(clean) {
 		return nil, fmt.Errorf("%s: bukan URL post/reel/tv", engine)
 	}
-	ts := time.Now().UnixMilli()
-	key, err := hex.DecodeString(fastdlKeyHex)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %v", engine, err)
-	}
-	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(clean + strconv.FormatInt(ts, 10)))
-
-	endpoint := fastdlProxy + fastdlEndpoint
-	form := map[string]string{
-		"sf_url": clean,
-		"ts":     strconv.FormatInt(ts, 10),
-		"_ts":    strconv.Itoa(fastdlTsBase),
-		"_tsc":   "0",
-		"_sv":    "2",
-		"_s":     hex.EncodeToString(mac.Sum(nil)),
-	}
+	var r igexportResp
 	headers := map[string]string{
-		"Origin":  "https://fastdl.app",
-		"Referer": "https://fastdl.app/",
+		"Referer": "https://igexport.com/",
+		"Accept":  "application/json",
 	}
-	// fastdl mengembalikan array (album) ATAU object (single) — coba array
-	// dulu, gagal baru object (keduanya valid, bukan error).
-	var arr []fastdlItem
-	if err := postFormJSON(ctx, engine, endpoint, form, headers, &arr); err == nil && len(arr) > 0 {
-		return fastdlAlbum(arr), nil
+	api := "https://igexport.com/api/ig-photo/?url=" + urlQueryEscapeGo(pageURL)
+	if err := fetchJSON(ctx, engine, api, headers, &r); err != nil {
+		return nil, err
 	}
-	var single fastdlSingle
-	if err := postFormJSON(ctx, engine, endpoint, form, headers, &single); err != nil {
-		return nil, fmt.Errorf("%s: %v", engine, err)
+	if !r.OK || r.Media == nil || len(r.Media.Items) == 0 {
+		return nil, fmt.Errorf("%s: media tidak ditemukan", engine)
 	}
-	return fastdlSingleResult(single)
-}
-
-func fastdlAlbum(arr []fastdlItem) *ScrapeResult {
-	items := make([]ScrapeItem, 0, len(arr))
-	for _, it := range arr {
-		link := fastdlItemURL(it.URL)
+	items := make([]ScrapeItem, 0, len(r.Media.Items))
+	for _, it := range r.Media.Items {
+		link := strings.TrimSpace(it.URL)
 		if link == "" {
 			continue
 		}
-		kind := KindPhoto
-		if it.Type == "video" {
+		var kind MediaKind
+		switch strings.ToLower(it.Type) {
+		case "video":
 			kind = KindVideo
+		case "image", "photo":
+			kind = KindPhoto
+		default:
+			continue
 		}
-		items = append(items, ScrapeItem{URL: link, Thumb: it.Thumb, Kind: kind})
+		items = append(items, ScrapeItem{URL: link, Thumb: it.ThumbnailURL, Kind: kind})
 	}
-	var title, user string
-	if arr[0].Meta != nil {
-		title, user = arr[0].Meta.Title, arr[0].Meta.Username
+	if len(items) == 0 {
+		return nil, fmt.Errorf("%s: tidak ada item valid", engine)
 	}
-	return &ScrapeResult{Title: title, Author: user, Items: items}
-}
-
-type fastdlSingle struct {
-	URL   any    `json:"url"`
-	Thumb string `json:"thumb"`
-	Meta  *struct {
-		Title    string `json:"title"`
-		Username string `json:"username"`
-	} `json:"meta"`
-}
-
-func fastdlSingleResult(s fastdlSingle) (*ScrapeResult, error) {
-	urls := []fastdlURL{}
-	switch v := s.URL.(type) {
-	case []any:
-		for _, e := range v {
-			if m, ok := e.(map[string]any); ok {
-				var u fastdlURL
-				if t, ok := m["type"].(string); ok {
-					u.Type = t
-				}
-				if q, ok := m["quality"].(float64); ok {
-					u.Quality = int(q)
-				}
-				if uu, ok := m["url"].(string); ok {
-					u.URL = uu
-				}
-				urls = append(urls, u)
-			}
-		}
-	case string:
-		urls = []fastdlURL{{URL: v, Type: "video"}}
-	}
-	if len(urls) == 0 {
-		return nil, fmt.Errorf("fastdl: tidak ada URL media")
-	}
-	best := urls[0]
-	for _, u := range urls[1:] {
-		if u.Quality > best.Quality {
-			best = u
-		}
-	}
-	kind := KindVideo
-	if best.Type != "" && best.Type != "video" {
-		kind = KindPhoto
-	}
-	var title, user string
-	if s.Meta != nil {
-		title, user = s.Meta.Title, s.Meta.Username
-	}
-	return &ScrapeResult{
-		Title:  title,
-		Author: user,
-		Items:  []ScrapeItem{{URL: best.URL, Thumb: s.Thumb, Kind: kind}},
-	}, nil
-}
-
-type fastdlURL struct {
-	URL     string
-	Type    string
-	Quality int
+	return &ScrapeResult{Items: items}, nil
 }
 
 // --- savereels (fallback): POST ajaxSearch + parse HTML ---
@@ -245,10 +148,34 @@ func parseSavereelsHTML(page string) []savereelsItem {
 	return items
 }
 
+// resDimRe mem-parse label resolusi "1575x1970" (spasi opsional, x/X/×).
+var resDimRe = regexp.MustCompile(`(?i)(\d+)\s*[x×]\s*(\d+)`)
+
+// resLabelArea mengembalikan luas area dari label resolusi + true kalau
+// ter-parse. Dipakai memilih varian TERBESAR dari <option> savereels —
+// PANJANG URL tidak berkorelasi dengan ukuran gambar (URL token JWT yang
+// panjangnya acak), dan heuristik lama "value terpanjang menang" terbukti
+// mengambil varian kecil (750x750) sementara yang penuh (1575x1970)
+// justru terpendek.
+func resLabelArea(label string) (int64, bool) {
+	m := resDimRe.FindStringSubmatch(label)
+	if m == nil {
+		return 0, false
+	}
+	w, err1 := strconv.Atoi(m[1])
+	h, err2 := strconv.Atoi(m[2])
+	if err1 != nil || err2 != nil || w <= 0 || h <= 0 {
+		return 0, false
+	}
+	return int64(w) * int64(h), true
+}
+
 func parseSavereelsBlock(div *htmlNode) savereelsItem {
 	var it savereelsItem
 	it.kind = KindPhoto
 	var bestRes string
+	var bestArea int64
+	var hasArea bool
 	var walk func(*htmlNode)
 	walk = func(n *htmlNode) {
 		if n.Type != htmlElementNode {
@@ -279,7 +206,15 @@ func parseSavereelsBlock(div *htmlNode) savereelsItem {
 			}
 		case "option":
 			if val := strings.TrimSpace(attrVal(n, "value")); val != "" {
-				if bestRes == "" || len(val) > len(bestRes) {
+				// Prioritas: luas area terbesar dari label (mis. 1575x1970
+				// mengalahkan 750x750). Tanpa label ter-parse (blok video
+				// berlabel non-dimensi) = fallback terpanjang seperti dulu
+				// supaya tidak ada regresi video.
+				if area, ok := resLabelArea(textContent(n)); ok {
+					if !hasArea || area > bestArea {
+						bestArea, bestRes, hasArea = area, val, true
+					}
+				} else if !hasArea && (bestRes == "" || len(val) > len(bestRes)) {
 					bestRes = val
 				}
 			}
