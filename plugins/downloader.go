@@ -34,7 +34,10 @@ func init() {
 // ikut batas WhatsApp), tapi antrean + tameng SSRF tetap dipasang supaya
 // panel tidak tumbang.
 const (
-	dlMaxPar = 2 // download bersamaan; sisanya ditolak sopan
+	dlTimeout   = 4 * time.Minute // yt-dlp primer: gagal-cepat lalu fallback scraper
+	dlMaxPar    = 2               // download bersamaan; sisanya ditolak sopan
+	dlVideoFmt  = "bv*[height<=720]+ba/b[height<=720]/b"
+	dlStaleDays = 24 * time.Hour // umur temp yatim sebelum disapu startup
 	// Album TIDAK dibatasi (keputusan owner): semua item hasil scrape
 	// dikirim satu per satu, berapa pun jumlahnya.
 )
@@ -222,13 +225,21 @@ func dlURLHost(rawURL string) string {
 	return strings.ToLower(strings.Trim(rest, "[]"))
 }
 
-// downloadAndSend adalah engine utama: rantai scraper API per platform
-// (cepat, tanpa exec, plus dukung foto & album). yt-dlp SUDAH DIHAPUS
-// total (keputusan owner — sering error); kalau semua scraper gagal,
-// error gabungan dibalas ke user oleh pemanggil. Album TANPA batas jumlah
-// (keputusan owner). Status "Mengunduh..." SENGAJA dibiarkan dan tidak ada
-// pesan penutup — media terakhir adalah penanda selesainya.
+// downloadAndSend adalah engine utama. YouTube: yt-dlp PRIMER (pilih
+// format compliant sejak unduh — tanpa transcode, tanpa polling), gagal-
+// cepat 4 menit lalu jatuh ke rantai scraper. Platform lain: langsung
+// rantai scraper. Kalau semua gagal, error gabungan dibalas ke user oleh
+// pemanggil. Album TANPA batas jumlah (keputusan owner). Status
+// "Mengunduh..." SENGAJA dibiarkan dan tidak ada pesan penutup — media
+// terakhir adalah penanda selesainya.
 func downloadAndSend(ctx context.Context, mctx *store.MessageContext, rawURL string, p *dlPlatform, audioOnly bool, status types.MessageID) error {
+	if p.command == "youtube" || p.command == "youtubemp3" {
+		if err := downloadViaYtdlp(ctx, mctx, rawURL, audioOnly, status); err == nil {
+			return nil
+		} else {
+			fmt.Printf("⚠️ downloader: yt-dlp gagal (%v), fallback scraper.\n", err)
+		}
+	}
 	res, err := fetchScraper(ctx, p, rawURL, audioOnly)
 	if err != nil {
 		fmt.Printf("⚠️ downloader: semua scraper gagal (%v)\n", err)
@@ -515,6 +526,117 @@ func labelFromURL(rawURL string) string {
 	return rest
 }
 
+// downloadViaYtdlp adalah jalur exec yt-dlp → temp → kirim, KHUSUS primer
+// YouTube (keputusan owner): pilih format compliant sejak unduh (H.264+AAC
+// ≤720p, fallback berlapis) sehingga hasilnya langsung bisa diputar tanpa
+// transcode panel. Gagal-cepat timeout dlTimeout lalu pemanggil jatuh ke
+// scraper — error yt-dlp tidak lagi fatal seperti dulu.
+func downloadViaYtdlp(ctx context.Context, mctx *store.MessageContext, rawURL string, audioOnly bool, status types.MessageID) error {
+	dir, err := os.MkdirTemp("", "wabot-dl-*")
+	if err != nil {
+		return fmt.Errorf("gagal siapkan temp: %v", err)
+	}
+	defer os.RemoveAll(dir) // umur file = umur job ini saja
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, dlTimeout)
+	defer cancel()
+
+	tmpl := filepath.Join(dir, "%(title).80s.%(ext)s")
+	args := []string{"--no-playlist", "-o", tmpl}
+	if audioOnly {
+		args = append(args, "-f", "bestaudio/best", "-x", "--audio-format", "mp3")
+	} else {
+		// Preferensi codec player-chat WhatsApp (terutama Android): H.264
+		// + AAC. Tanpa ini yt-dlp bisa mengambil VP9/AV1 + Opus yang
+		// ditolak player dengan "masalah dengan file video". Fallback
+		// berlapis: avc1+m4a dulu, baru format umum (dlVideoFmt), lalu
+		// best apa adanya — tetap terkirim walau sumbernya tidak punya
+		// varian H.264 sama sekali.
+		// --postprocessor-args Merger: moov di depan (faststart) supaya
+		// bisa streaming saat download penerima belum selesai.
+		args = append(args,
+			"-f", "bv*[height<=720][vcodec^=avc1]+ba[m4a]/b[height<=720][vcodec^=avc1]/"+dlVideoFmt+"/b",
+			"--merge-output-format", "mp4",
+			"--postprocessor-args", "Merger+ffmpeg:-movflags +faststart",
+		)
+	}
+	args = append(args, rawURL)
+
+	// Exec TANPA shell (arg list) — URL jahat tidak bisa jadi injeksi.
+	cmd := exec.CommandContext(timeoutCtx, "yt-dlp", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if timeoutCtx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("download melebihi %s, dibatalkan.", dlTimeout)
+		}
+		return fmt.Errorf("gagal download: %v", firstDlErrorLine(out))
+	}
+
+	file, err := pickDlFile(dir)
+	if err != nil {
+		return err
+	}
+	caption := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
+
+	if audioOnly {
+		err = sendDlAudio(ctx, mctx, file)
+	} else {
+		err = sendDlVideo(ctx, mctx, file, caption)
+	}
+	// Pesan status "Mengunduh..." SENGAJA dibiarkan (keputusan owner) dan
+	// tidak ada pesan penutup — media terakhir adalah penanda selesainya.
+	if err != nil {
+		return fmt.Errorf("gagal kirim hasil: %v", err)
+	}
+	return nil
+}
+
+// firstDlErrorLine mengambil baris ERROR yt-dlp (paling informatif untuk
+// user: privat, login-wall, region-block, dsb), fallback ke 300 char awal.
+func firstDlErrorLine(out []byte) string {
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, "ERROR") {
+			return strings.TrimSpace(line)
+		}
+	}
+	runes := []rune(strings.TrimSpace(string(out)))
+	if len(runes) > 300 {
+		return string(runes[:300]) + "..."
+	}
+	if len(runes) == 0 {
+		return "error tidak diketahui"
+	}
+	return string(runes)
+}
+
+// pickDlFile memilih file hasil unduhan (terbesar, abaikan sisa .part).
+func pickDlFile(dir string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) == 0 {
+		return "", fmt.Errorf("tidak ada file yang terdownload (konten privat/dihapus?)")
+	}
+	best := ""
+	var bestSize int64 = -1
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasSuffix(name, ".part") || strings.HasSuffix(name, ".ytdl") || strings.HasSuffix(name, ".temp") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if info.Size() > bestSize {
+			bestSize = info.Size()
+			best = filepath.Join(dir, name)
+		}
+	}
+	if best == "" {
+		return "", fmt.Errorf("tidak ada file valid yang terdownload.")
+	}
+	return best, nil
+}
+
 // sendDlStatus mengirim pesan status + mengembalikan ID-nya untuk dihapus
 // nanti setelah media terkirim.
 func sendDlStatus(ctx context.Context, mctx *store.MessageContext, text string) (types.MessageID, error) {
@@ -528,7 +650,16 @@ func sendDlStatus(ctx context.Context, mctx *store.MessageContext, text string) 
 	return resp.ID, nil
 }
 
-// sendDlBytesVideo mengirim byte sebagai video (jalur scraper).
+// sendDlVideo mengupload + mengirim file sebagai video dengan caption judul.
+func sendDlVideo(ctx context.Context, mctx *store.MessageContext, file, caption string) error {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	return sendDlBytesVideo(ctx, mctx, data, caption)
+}
+
+// sendDlBytesVideo mengirim byte sebagai video (jalur scraper + yt-dlp).
 // Thumbnail inline (1 frame via ffmpeg) + dimensi dipasang supaya daftar
 // chat menampilkan pratinjau, bukan kartu mini kosong. Dimensi diambil dari
 // thumbnail (aspeknya sama dengan video asli).
@@ -588,7 +719,17 @@ func sendDlBytesVideoAlbum(ctx context.Context, mctx *store.MessageContext, data
 	return nil
 }
 
-// sendDlBytesAudio mengirim byte sebagai audio (jalur scraper).
+// sendDlAudio mengupload + mengirim file sebagai audio (bukan voice note).
+func sendDlAudio(ctx context.Context, mctx *store.MessageContext, file string) error {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	label := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
+	return sendDlBytesAudio(ctx, mctx, data, label)
+}
+
+// sendDlBytesAudio mengirim byte sebagai audio (jalur scraper + yt-dlp).
 func sendDlBytesAudio(ctx context.Context, mctx *store.MessageContext, data []byte, label string) error {
 	uploaded, err := mctx.Client.Upload(ctx, data, whatsmeow.MediaAudio)
 	if err != nil {
@@ -884,4 +1025,27 @@ func CheckAutodownload(client *whatsmeow.Client, evt *events.Message, text strin
 			_ = store.ReplyText(bg, mctx, fmt.Sprintf("Gagal autodownload: %v", rerr))
 		}
 	}()
+}
+
+// CleanStaleDownloads menyapu folder temp yatim (wabot-dl-*) yang umurnya
+// lebih dari dlStaleDays — pengaman kalau proses mati di tengah download
+// sehingga defer RemoveAll tidak sempat jalan. Dipanggil sekali saat startup.
+func CleanStaleDownloads() {
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), "wabot-dl-") {
+			continue
+		}
+		p := filepath.Join(os.TempDir(), e.Name())
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.IsDir() && time.Since(info.ModTime()) > dlStaleDays {
+			_ = os.RemoveAll(p)
+		}
+	}
 }
