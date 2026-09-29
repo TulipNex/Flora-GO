@@ -86,13 +86,6 @@ func main() {
 	printBanner()
 
 	// ==========================================================
-	// 0a. Sapu folder temp yatim downloader (wabot-dl-*) yang umurnya
-	//    lebih dari 24 jam — sisa crash di tengah download yang defer-nya
-	//    tidak sempat jalan. Aman & cepat, fail-soft di dalamnya.
-	// ==========================================================
-	plugins.CleanStaleDownloads()
-
-	// ==========================================================
 	// 0b. Siapkan database SQLite untuk pengaturan grup (kick, promote,
 	//    open/close, dll). Terpisah dari data/session.db milik whatsmeow.
 	// ==========================================================

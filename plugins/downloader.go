@@ -3,6 +3,7 @@ package plugins
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"image"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"wabot-go/internal/config"
 	"wabot-go/internal/messaging"
 	"wabot-go/internal/scraper"
 	"wabot-go/internal/store"
@@ -29,19 +31,16 @@ func init() {
 }
 
 // Batasan downloader medsos. Tanpa cap ukuran file (keputusan owner —
-// ikut batas yt-dlp/WhatsApp), tapi antrean + timeout + tameng SSRF
-// tetap dipasang supaya panel tidak tumbang.
+// ikut batas WhatsApp), tapi antrean + tameng SSRF tetap dipasang supaya
+// panel tidak tumbang.
 const (
-	dlTimeout   = 10 * time.Minute // bunuh yt-dlp yang macet
-	dlMaxPar    = 2                // download bersamaan; sisanya ditolak sopan
-	dlVideoFmt  = "bv*[height<=720]+ba/b[height<=720]/b"
-	dlStaleDays = 24 * time.Hour // umur temp yatim sebelum disapu startup
+	dlMaxPar = 2 // download bersamaan; sisanya ditolak sopan
 	// Album TIDAK dibatasi (keputusan owner): semua item hasil scrape
 	// dikirim satu per satu, berapa pun jumlahnya.
 )
 
-// dlSem membatasi download bersamaan (yt-dlp + upload boros bandwidth,
-// RAM, dan disk). Non-blocking: penuh = tolak langsung, bukan antre diam.
+// dlSem membatasi download bersamaan (unduh + upload boros bandwidth, RAM,
+// dan disk). Non-blocking: penuh = tolak langsung, bukan antre diam.
 var dlSem = make(chan struct{}, dlMaxPar)
 
 // dlPlatform mendeskripsikan satu command downloader: domain yang diterima
@@ -57,10 +56,8 @@ type dlPlatform struct {
 // dlPlatforms adalah daftar SEMUA platform yang didukung — dipakai command
 // manual (.tt/.yt/...) DAN deteksi autodownload, supaya keduanya selalu
 // sinkron (tambah platform cukup di satu tempat).
-// CATATAN: pinterest & soundcloud DITUNDA atas permintaan owner — entrinya
-// dihapus dari daftar (bukan sekadar dimatikan) supaya tidak muncul di
-// .menu. Balikkan dengan menambah satu baris (universal j2download sudah
-// mendukung keduanya, tinggal tambah adapter bila mau rantai khusus).
+// CATATAN: soundcloud DITUNDA atas permintaan owner — entrinya dihapus dari
+// daftar (bukan sekadar dimatikan) supaya tidak muncul di .menu.
 //
 // Nama kanonis adalah yang FULL (.tiktok bukan .tt) supaya .menu tidak
 // menampilkan singkatan — alias pendek tetap jalan seperti biasa.
@@ -71,6 +68,7 @@ var dlPlatforms = []dlPlatform{
 	{command: "instagram", aliases: []string{"ig"}, desc: "Download Reel/post Instagram (.instagram <url>)", hosts: []string{"instagram.com"}},
 	{command: "twitter", aliases: []string{"x", "tw"}, desc: "Download video X/Twitter (.twitter <url>)", hosts: []string{"x.com", "twitter.com"}},
 	{command: "facebook", aliases: []string{"fb"}, desc: "Download video Facebook (.facebook <url>)", hosts: []string{"facebook.com", "fb.watch"}},
+	{command: "pinterest", aliases: []string{"pin"}, desc: "Download pin Pinterest (.pinterest <url>)", hosts: []string{"pinterest.com", "pin.it"}},
 	{command: "spotify", aliases: []string{"sp"}, desc: "Download audio Spotify (.spotify <url>)", hosts: []string{"open.spotify.com", "spotify.link"}, audio: true},
 }
 
@@ -190,7 +188,7 @@ func handleDownload(ctx context.Context, mctx *store.MessageContext, p dlPlatfor
 
 // validateDlURL memastikan URL ber-skema http/https, host-nya cocok dengan
 // platform command, DAN lolos tameng SSRF (reuse isPublicGetURL milik .get
-// — yt-dlp fetch server-side, tanpa ini bisa jadi exfil internal).
+// — scraper fetch server-side, tanpa ini bisa jadi exfil internal).
 func validateDlURL(ctx context.Context, rawURL string, hosts []string) error {
 	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
 		rawURL = "https://" + rawURL
@@ -224,29 +222,24 @@ func dlURLHost(rawURL string) string {
 	return strings.ToLower(strings.Trim(rest, "[]"))
 }
 
-// downloadAndSend adalah engine utama: coba scraper API dulu (cepat,
-// tanpa exec, plus dukung foto & album), jatuh ke yt-dlp kalau semua
-// gagal (lambat tapi bicara langsung ke platform). Album TANPA batas
-// jumlah (keputusan owner). Status "Mengunduh..." SENGAJA dibiarkan dan
-// tidak ada pesan penutup — media terakhir adalah penanda selesainya.
+// downloadAndSend adalah engine utama: rantai scraper API per platform
+// (cepat, tanpa exec, plus dukung foto & album). yt-dlp SUDAH DIHAPUS
+// total (keputusan owner — sering error); kalau semua scraper gagal,
+// error gabungan dibalas ke user oleh pemanggil. Album TANPA batas jumlah
+// (keputusan owner). Status "Mengunduh..." SENGAJA dibiarkan dan tidak ada
+// pesan penutup — media terakhir adalah penanda selesainya.
 func downloadAndSend(ctx context.Context, mctx *store.MessageContext, rawURL string, p *dlPlatform, audioOnly bool, status types.MessageID) error {
-	// Jalur 1 — scraper, untuk semua platform KECUALI youtube: yt-dlp
-	// juaranya tak tergantikan di sana (termasuk mode --mp3 yang butuh
-	// konversi). Spotify WAJIB lewat scraper (yt-dlp buta Spotify).
-	if p.command != "youtube" {
-		if res, err := fetchScraper(ctx, p, rawURL); err == nil {
-			return sendScrapeResult(ctx, mctx, res, status)
-		} else {
-			fmt.Printf("⚠️ downloader: scraper gagal, fallback yt-dlp (%v)\n", err)
-		}
+	res, err := fetchScraper(ctx, p, rawURL, audioOnly)
+	if err != nil {
+		fmt.Printf("⚠️ downloader: semua scraper gagal (%v)\n", err)
+		return err
 	}
-	// Jalur 2 — yt-dlp (fallback universal + utama YouTube/audio).
-	return downloadViaYtdlp(ctx, mctx, rawURL, audioOnly, status)
+	return sendScrapeResult(ctx, mctx, res, status)
 }
 
-// fetchScraper menjalankan rantai adapter per platform + universal
-// j2download sebagai jaring pengaman terakhir SEBELUM yt-dlp.
-func fetchScraper(ctx context.Context, p *dlPlatform, rawURL string) (*scraper.ScrapeResult, error) {
+// fetchScraper menjalankan rantai adapter per platform + omnify universal
+// sebagai jaring pengaman terakhir (lihat withUniversal).
+func fetchScraper(ctx context.Context, p *dlPlatform, rawURL string, audioOnly bool) (*scraper.ScrapeResult, error) {
 	// withUniversal menjalankan fetch utama, jatuh ke universal bila gagal,
 	// dan merangkai error gabungan yang informatif bila keduanya gagal.
 	withUniversal := func(name string, fetch func(context.Context, string) (*scraper.ScrapeResult, error)) (*scraper.ScrapeResult, error) {
@@ -270,7 +263,24 @@ func fetchScraper(ctx context.Context, p *dlPlatform, rawURL string) (*scraper.S
 		return withUniversal("twitter", scraper.FetchTwitter)
 	case "spotify":
 		return withUniversal("spotify", scraper.FetchSpotify)
-	default: // facebook (+ platform baru lain): langsung universal
+	case "facebook":
+		return withUniversal("facebook", scraper.FetchFacebook)
+	case "pinterest":
+		return withUniversal("pinterest", scraper.FetchPinterest)
+	case "youtube", "youtubemp3":
+		// YouTube lewat scraper (y2mate → omnify), flag audio diteruskan
+		// untuk mode --mp3/.youtubemp3.
+		if res, err := scraper.FetchYouTube(ctx, rawURL, audioOnly); err == nil {
+			return res, nil
+		} else {
+			firstErr := err
+			if res, err := scraper.FetchUniversal(ctx, rawURL); err == nil {
+				return res, nil
+			} else {
+				return nil, fmt.Errorf("youtube: %v | universal: %v", firstErr, err)
+			}
+		}
+	default:
 		return scraper.FetchUniversal(ctx, rawURL)
 	}
 }
@@ -289,6 +299,13 @@ func sendScrapeResult(ctx context.Context, mctx *store.MessageContext, res *scra
 	}
 
 	caption := strings.TrimSpace(res.Title)
+
+	// Album: hasil multi foto/video (mis. carousel TikTok) digabung jadi
+	// satu bubble album, bukan N bubble terpisah — lihat messaging/album.go.
+	if albumEligible(items) {
+		return sendScrapeAlbum(ctx, mctx, items, caption)
+	}
+
 	sent, failed := 0, 0
 	for i, item := range items {
 		data, err := scraper.DownloadBytes(ctx, item.URL)
@@ -306,7 +323,7 @@ func sendScrapeResult(ctx context.Context, mctx *store.MessageContext, res *scra
 		case scraper.KindAudio:
 			serr = sendDlBytesAudio(ctx, mctx, data, labelFromURL(item.URL))
 		case scraper.KindPhoto:
-			serr = sendDlBytesImage(ctx, mctx, data, cap)
+			serr = sendDlPhotoSmart(ctx, mctx, data, cap)
 		default:
 			serr = sendDlBytesVideo(ctx, mctx, data, cap)
 		}
@@ -322,6 +339,156 @@ func sendScrapeResult(ctx context.Context, mctx *store.MessageContext, res *scra
 		return fmt.Errorf("semua %d item gagal diproses (%s)", failed, res.Source)
 	}
 	return nil
+}
+
+// albumEligible true kalau ada ≥2 item foto/video (syarat minimal album).
+// Audio tidak dihitung — tidak ikut album.
+func albumEligible(items []scraper.ScrapeItem) bool {
+	n := 0
+	for _, item := range items {
+		if item.Kind == scraper.KindPhoto || item.Kind == scraper.KindVideo {
+			n++
+		}
+	}
+	return n >= 2
+}
+
+// sendScrapeAlbum mengunduh semua item lalu mengirim foto/video sebagai satu
+// album (induk counts dulu, baru anak-anak dengan association). Audio tetap
+// dikirim satuan seperti biasa. Item yang gagal diunduh dilewati; kalau
+// media yang lolos tinggal <2, fallback ke kirim satuan (bukan album
+// dengan counts yang meleset).
+// albumMediaItem adalah satu media (foto/video) yang sudah diunduh dan siap
+// dikirim sebagai anak album.
+type albumMediaItem struct {
+	video bool
+	data  []byte
+}
+
+func sendScrapeAlbum(ctx context.Context, mctx *store.MessageContext, items []scraper.ScrapeItem, caption string) error {
+	var media []albumMediaItem
+	sent, failed := 0, 0
+	for i, item := range items {
+		data, err := scraper.DownloadBytes(ctx, item.URL)
+		if err != nil {
+			fmt.Printf("⚠️ downloader: unduh item %d gagal (%v)\n", i+1, err)
+			failed++
+			continue
+		}
+		if item.Kind == scraper.KindAudio {
+			if serr := sendDlBytesAudio(ctx, mctx, data, labelFromURL(item.URL)); serr != nil {
+				fmt.Printf("⚠️ downloader: kirim item %d gagal (%v)\n", i+1, serr)
+				failed++
+				continue
+			}
+			sent++
+			continue
+		}
+		if item.Kind == scraper.KindVideo {
+			media = append(media, albumMediaItem{video: true, data: data})
+			continue
+		}
+		// Foto: normalisasi WebP dulu (statis→JPEG, animasi→MP4, gagal
+		// konversi→stiker satuan) supaya album hanya berisi byte yang pasti
+		// ke-render klien. Caption album tetap di anak pertama.
+		out, isVideo, asSticker := normalizePhotoBytes(ctx, data)
+		if asSticker {
+			label := caption
+			if label == "" {
+				label = labelFromURL(item.URL)
+			}
+			if serr := sendWebPAsSticker(ctx, mctx, out, label); serr != nil {
+				fmt.Printf("⚠️ downloader: kirim stiker item %d gagal (%v)\n", i+1, serr)
+				failed++
+				continue
+			}
+			sent++
+			continue
+		}
+		media = append(media, albumMediaItem{video: isVideo, data: out})
+	}
+	if len(media) >= 2 {
+		s, f := sendAlbumMedia(ctx, mctx, media, caption)
+		sent += s
+		failed += f
+	} else {
+		// Fallback single: caption di media pertama (cermin perilaku i==0
+		// di jalur non-album — audio tidak membawa caption).
+		s, f := sendAlbumSingles(ctx, mctx, media, caption)
+		sent += s
+		failed += f
+	}
+	if sent == 0 {
+		return fmt.Errorf("semua %d item gagal diproses (album)", failed)
+	}
+	return nil
+}
+
+// sendAlbumMedia mengirim slice media yang sudah diunduh sebagai satu album:
+// induk counts dulu, lalu tiap anak dengan association + ID sendiri.
+// Caption di anak pertama. Anak yang gagal tidak mengurangi counts induk
+// (keterbatasan v1 — counts dihitung dari yang berhasil diunduh, bukan yang
+// berhasil terkirim).
+func sendAlbumMedia(ctx context.Context, mctx *store.MessageContext, media []albumMediaItem, caption string) (sent, failed int) {
+	nImg, nVid := 0, 0
+	for _, m := range media {
+		if m.video {
+			nVid++
+		} else {
+			nImg++
+		}
+	}
+	parentID := whatsmeow.GenerateMessageID()
+	parentKey := messaging.AlbumParentKey(mctx.Chat, parentID)
+	if err := messaging.SendAlbumParent(ctx, mctx, parentID, nImg, nVid); err != nil {
+		fmt.Printf("⚠️ downloader: induk album gagal (%v), fallback satuan.\n", err)
+		return sendAlbumSingles(ctx, mctx, media, caption)
+	}
+	assoc := messaging.AlbumAssociation(parentKey)
+	for i, m := range media {
+		cap := ""
+		if i == 0 {
+			cap = caption
+		}
+		childID := whatsmeow.GenerateMessageID()
+		var serr error
+		if m.video {
+			serr = sendDlBytesVideoAlbum(ctx, mctx, m.data, cap, childID, assoc)
+		} else {
+			serr = sendDlBytesImageAlbum(ctx, mctx, m.data, cap, childID, assoc)
+		}
+		if serr != nil {
+			fmt.Printf("⚠️ downloader: kirim anak album %d gagal (%v)\n", i+1, serr)
+			failed++
+			continue
+		}
+		sent++
+	}
+	return sent, failed
+}
+
+// sendAlbumSingles mengirim slice media satu per satu (fallback kalau induk
+// album gagal, atau media lolos <2). Caption di media pertama.
+func sendAlbumSingles(ctx context.Context, mctx *store.MessageContext, media []albumMediaItem, caption string) (sent, failed int) {
+	for i, m := range media {
+		cap := ""
+		if i == 0 {
+			cap = caption
+		}
+		var serr error
+		if m.video {
+			serr = sendDlBytesVideo(ctx, mctx, m.data, cap)
+		} else {
+			serr = sendDlBytesImage(ctx, mctx, m.data, cap)
+		}
+		if serr != nil {
+			fmt.Printf("⚠️ downloader: kirim media gagal (%v)\n", serr)
+			failed++
+			continue
+		}
+		sent++
+	}
+	return sent, failed
 }
 
 // labelFromURL mengambil nama file untuk log dari URL media.
@@ -345,115 +512,6 @@ func labelFromURL(rawURL string) string {
 	return rest
 }
 
-// downloadViaYtdlp adalah jalur lama (exec yt-dlp → temp → kirim):
-// dipakai utama untuk YouTube/audio dan fallback universal saat scraper
-// gagal total. Dipertahankan apa adanya karena sudah terbukti di panel.
-func downloadViaYtdlp(ctx context.Context, mctx *store.MessageContext, rawURL string, audioOnly bool, status types.MessageID) error {
-	dir, err := os.MkdirTemp("", "wabot-dl-*")
-	if err != nil {
-		return fmt.Errorf("gagal siapkan temp: %v", err)
-	}
-	defer os.RemoveAll(dir) // umur file = umur job ini saja
-
-	timeoutCtx, cancel := context.WithTimeout(ctx, dlTimeout)
-	defer cancel()
-
-	tmpl := filepath.Join(dir, "%(title).80s.%(ext)s")
-	args := []string{"--no-playlist", "-o", tmpl}
-	if audioOnly {
-		args = append(args, "-f", "bestaudio/best", "-x", "--audio-format", "mp3")
-	} else {
-		// Preferensi codec player-chat WhatsApp (terutama Android): H.264
-		// + AAC. Tanpa ini yt-dlp bisa mengambil VP9/AV1 + Opus yang
-		// ditolak player dengan "masalah dengan file video". Fallback
-		// berlapis: avc1+m4a dulu, baru format umum (dlVideoFmt), lalu
-		// best apa adanya — tetap terkirim walau sumbernya tidak punya
-		// varian H.264 sama sekali.
-		// --postprocessor-args Merger: moov di depan (faststart) supaya
-		// bisa streaming saat download penerima belum selesai.
-		args = append(args,
-			"-f", "bv*[height<=720][vcodec^=avc1]+ba[m4a]/b[height<=720][vcodec^=avc1]/"+dlVideoFmt+"/b",
-			"--merge-output-format", "mp4",
-			"--postprocessor-args", "Merger+ffmpeg:-movflags +faststart",
-		)
-	}
-	args = append(args, rawURL)
-
-	// Exec TANPA shell (arg list) — URL jahat tidak bisa jadi injeksi.
-	cmd := exec.CommandContext(timeoutCtx, "yt-dlp", args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		if timeoutCtx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("download melebihi %s, dibatalkan.", dlTimeout)
-		}
-		return fmt.Errorf("gagal download: %v", firstDlErrorLine(out))
-	}
-
-	file, err := pickDlFile(dir)
-	if err != nil {
-		return err
-	}
-	caption := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
-
-	if audioOnly {
-		err = sendDlAudio(ctx, mctx, file)
-	} else {
-		err = sendDlVideo(ctx, mctx, file, caption)
-	}
-	// Pesan status "Mengunduh..." SENGAJA dibiarkan (keputusan owner) dan
-	// tidak ada pesan penutup — media terakhir adalah penanda selesainya.
-	if err != nil {
-		return fmt.Errorf("gagal kirim hasil: %v", err)
-	}
-	return nil
-}
-
-// firstDlErrorLine mengambil baris ERROR yt-dlp (paling informatif untuk
-// user: privat, login-wall, region-block, dsb), fallback ke 300 char awal.
-func firstDlErrorLine(out []byte) string {
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, "ERROR") {
-			return strings.TrimSpace(line)
-		}
-	}
-	runes := []rune(strings.TrimSpace(string(out)))
-	if len(runes) > 300 {
-		return string(runes[:300]) + "..."
-	}
-	if len(runes) == 0 {
-		return "error tidak diketahui"
-	}
-	return string(runes)
-}
-
-// pickDlFile memilih file hasil unduhan (terbesar, abaikan sisa .part).
-func pickDlFile(dir string) (string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) == 0 {
-		return "", fmt.Errorf("tidak ada file yang terdownload (konten privat/dihapus?)")
-	}
-	best := ""
-	var bestSize int64 = -1
-	for _, e := range entries {
-		name := e.Name()
-		if strings.HasSuffix(name, ".part") || strings.HasSuffix(name, ".ytdl") || strings.HasSuffix(name, ".temp") {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil || info.IsDir() {
-			continue
-		}
-		if info.Size() > bestSize {
-			bestSize = info.Size()
-			best = filepath.Join(dir, name)
-		}
-	}
-	if best == "" {
-		return "", fmt.Errorf("tidak ada file valid yang terdownload.")
-	}
-	return best, nil
-}
-
 // sendDlStatus mengirim pesan status + mengembalikan ID-nya untuk dihapus
 // nanti setelah media terkirim.
 func sendDlStatus(ctx context.Context, mctx *store.MessageContext, text string) (types.MessageID, error) {
@@ -467,20 +525,19 @@ func sendDlStatus(ctx context.Context, mctx *store.MessageContext, text string) 
 	return resp.ID, nil
 }
 
-// sendDlVideo mengupload + mengirim file sebagai video dengan caption judul.
-func sendDlVideo(ctx context.Context, mctx *store.MessageContext, file, caption string) error {
-	data, err := os.ReadFile(file)
-	if err != nil {
-		return err
-	}
-	return sendDlBytesVideo(ctx, mctx, data, caption)
-}
-
-// sendDlBytesVideo mengirim byte sebagai video (jalur scraper + yt-dlp).
+// sendDlBytesVideo mengirim byte sebagai video (jalur scraper).
 // Thumbnail inline (1 frame via ffmpeg) + dimensi dipasang supaya daftar
 // chat menampilkan pratinjau, bukan kartu mini kosong. Dimensi diambil dari
 // thumbnail (aspeknya sama dengan video asli).
 func sendDlBytesVideo(ctx context.Context, mctx *store.MessageContext, data []byte, caption string) error {
+	return sendDlBytesVideoAlbum(ctx, mctx, data, caption, "", nil)
+}
+
+// sendDlBytesVideoAlbum adalah varian album dari sendDlBytesVideo: msgID
+// memaksa ID pesan (untuk anak album, ID-nya di-generate duluan) dan assoc
+// menempelkan MessageContextInfo association MEDIA_ALBUM. Keduanya kosong =
+// perilaku single seperti sebelumnya.
+func sendDlBytesVideoAlbum(ctx context.Context, mctx *store.MessageContext, data []byte, caption string, msgID types.MessageID, assoc *waE2E.MessageAssociation) error {
 	uploaded, err := mctx.Client.Upload(ctx, data, whatsmeow.MediaVideo)
 	if err != nil {
 		return err
@@ -504,9 +561,16 @@ func sendDlBytesVideo(ctx context.Context, mctx *store.MessageContext, data []by
 			vm.Height = proto.Uint32(uint32(cfg.Height))
 		}
 	}
-	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{
-		VideoMessage: vm,
-	})
+	msg := &waE2E.Message{VideoMessage: vm}
+	if assoc != nil {
+		msg.MessageContextInfo = &waE2E.MessageContextInfo{MessageAssociation: assoc}
+	}
+	var resp whatsmeow.SendResponse
+	if msgID != "" {
+		resp, err = mctx.Client.SendMessage(ctx, mctx.Chat, msg, whatsmeow.SendRequestExtra{ID: msgID})
+	} else {
+		resp, err = mctx.Client.SendMessage(ctx, mctx.Chat, msg)
+	}
 	if err != nil {
 		return err
 	}
@@ -515,17 +579,7 @@ func sendDlBytesVideo(ctx context.Context, mctx *store.MessageContext, data []by
 	return nil
 }
 
-// sendDlAudio mengupload + mengirim file sebagai audio (bukan voice note).
-func sendDlAudio(ctx context.Context, mctx *store.MessageContext, file string) error {
-	data, err := os.ReadFile(file)
-	if err != nil {
-		return err
-	}
-	label := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
-	return sendDlBytesAudio(ctx, mctx, data, label)
-}
-
-// sendDlBytesAudio mengirim byte sebagai audio (jalur scraper + yt-dlp).
+// sendDlBytesAudio mengirim byte sebagai audio (jalur scraper).
 func sendDlBytesAudio(ctx context.Context, mctx *store.MessageContext, data []byte, label string) error {
 	uploaded, err := mctx.Client.Upload(ctx, data, whatsmeow.MediaAudio)
 	if err != nil {
@@ -557,6 +611,12 @@ func sendDlBytesAudio(ctx context.Context, mctx *store.MessageContext, data []by
 // terdaftar di package ini via sticker.go) — gagal baca = kirim tanpa
 // dimensi, bukan gagal total.
 func sendDlBytesImage(ctx context.Context, mctx *store.MessageContext, data []byte, caption string) error {
+	return sendDlBytesImageAlbum(ctx, mctx, data, caption, "", nil)
+}
+
+// sendDlBytesImageAlbum adalah varian album dari sendDlBytesImage (lihat
+// sendDlBytesVideoAlbum untuk arti msgID/assoc).
+func sendDlBytesImageAlbum(ctx context.Context, mctx *store.MessageContext, data []byte, caption string, msgID types.MessageID, assoc *waE2E.MessageAssociation) error {
 	uploaded, err := mctx.Client.Upload(ctx, data, whatsmeow.MediaImage)
 	if err != nil {
 		return err
@@ -578,7 +638,16 @@ func sendDlBytesImage(ctx context.Context, mctx *store.MessageContext, data []by
 		im.Width = proto.Uint32(uint32(cfg.Width))
 		im.Height = proto.Uint32(uint32(cfg.Height))
 	}
-	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{ImageMessage: im})
+	msg := &waE2E.Message{ImageMessage: im}
+	if assoc != nil {
+		msg.MessageContextInfo = &waE2E.MessageContextInfo{MessageAssociation: assoc}
+	}
+	var resp whatsmeow.SendResponse
+	if msgID != "" {
+		resp, err = mctx.Client.SendMessage(ctx, mctx.Chat, msg, whatsmeow.SendRequestExtra{ID: msgID})
+	} else {
+		resp, err = mctx.Client.SendMessage(ctx, mctx.Chat, msg)
+	}
 	if err != nil {
 		return err
 	}
@@ -601,6 +670,134 @@ func detectDlImageMIME(data []byte) string {
 	default:
 		return "image/jpeg"
 	}
+}
+
+// isWebPBytes true kalau byte ber-magic RIFF....WEBP — tanpa percaya
+// ekstensi URL (server sering menyajikan webp di balik URL .jpg).
+func isWebPBytes(data []byte) bool {
+	return len(data) > 12 && string(data[0:4]) == "RIFF" && string(data[8:12]) == "WEBP"
+}
+
+// isAnimatedWebP menelusuri chunk container WebP dan true kalau ada chunk
+// ANMF (frame animasi). Walk manual supaya tanpa dependensi decoder webp —
+// bytes.Contains mentah rawan false-positive dari payload gambar.
+// Payload ganjil di-pad 1 byte (aturan RIFF).
+func isAnimatedWebP(data []byte) bool {
+	if !isWebPBytes(data) {
+		return false
+	}
+	off := 12 // lewati header RIFF
+	for off+8 <= len(data) {
+		fourCC := string(data[off : off+4])
+		size := int(binary.LittleEndian.Uint32(data[off+4 : off+8]))
+		if fourCC == "ANMF" {
+			return true
+		}
+		if size < 0 || off+8+size > len(data) {
+			break
+		}
+		off += 8 + size + (size & 1)
+	}
+	return false
+}
+
+// webpConvertTimeout membatasi sekali konversi ffmpeg webp (file carousel
+// kecil, hitungan detik) supaya webp korup tidak menggantung pengiriman.
+const webpConvertTimeout = 60 * time.Second
+
+// runFfmpegConvert menjalankan ffmpeg (input byte → file output) lalu
+// membaca hasilnya kembali. Pola temp+stderr sama dengan
+// convertToStickerWebp di sticker.go.
+func runFfmpegConvert(ctx context.Context, data []byte, inExt, outName string, args ...string) ([]byte, error) {
+	tmpDir, err := os.MkdirTemp("", "dl-webp-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+	inPath := filepath.Join(tmpDir, "input"+inExt)
+	outPath := filepath.Join(tmpDir, outName)
+	if err := os.WriteFile(inPath, data, 0600); err != nil {
+		return nil, err
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, webpConvertTimeout)
+	defer cancel()
+	full := append([]string{"-y", "-i", inPath}, args...)
+	full = append(full, outPath)
+	cmd := exec.CommandContext(timeoutCtx, "ffmpeg", full...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ffmpeg: %v (%s)", err, stderr.String())
+	}
+	return os.ReadFile(outPath)
+}
+
+// convertWebPToJPEG mengubah webp STATIS jadi JPEG (dimensi asli
+// dipertahankan — bukan kanvas stiker 512x512, karena tujuannya anak
+// album/gambar biasa).
+func convertWebPToJPEG(ctx context.Context, data []byte) ([]byte, error) {
+	return runFfmpegConvert(ctx, data, ".webp", "out.jpg", "-frames:v", "1", "-q:v", "3")
+}
+
+// convertWebPToMP4 mengubah webp ANIMASI jadi MP4 h264 (durasi animasi asli
+// terbawa) supaya bisa menjadi anak VIDEO album.
+func convertWebPToMP4(ctx context.Context, data []byte) ([]byte, error) {
+	return runFfmpegConvert(ctx, data, ".webp", "out.mp4",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart")
+}
+
+// normalizePhotoBytes menyiapkan byte foto untuk dikirim: WebP statis →
+// JPEG, WebP animasi → MP4 (isVideo true), non-WebP → apa adanya (JPEG/PNG
+// tidak pernah di-re-encode). Konversi gagal = asSticker true (kirim mentah
+// sebagai stiker — animasi/statis tetap hidup, lebih baik daripada bubble
+// kosong yang tidak ke-render).
+func normalizePhotoBytes(ctx context.Context, data []byte) (out []byte, isVideo, asSticker bool) {
+	if !isWebPBytes(data) {
+		return data, false, false
+	}
+	if isAnimatedWebP(data) {
+		if mp4, err := convertWebPToMP4(ctx, data); err == nil && len(mp4) > 0 {
+			return mp4, true, false
+		}
+		fmt.Printf("⚠️ downloader: webp animasi gagal jadi mp4, fallback stiker.\n")
+		return data, false, true
+	}
+	if jpg, err := convertWebPToJPEG(ctx, data); err == nil && len(jpg) > 0 {
+		return jpg, false, false
+	}
+	fmt.Printf("⚠️ downloader: webp gagal jadi jpeg, fallback stiker.\n")
+	return data, false, true
+}
+
+// sendDlPhotoSmart mengirim byte foto dengan penanganan WebP: statis → JPEG
+// (jalur gambar), animasi → MP4 (jalur video + thumb), gagal konversi →
+// stiker mentah. Dipakai loop single downloader.
+func sendDlPhotoSmart(ctx context.Context, mctx *store.MessageContext, data []byte, caption string) error {
+	out, isVideo, asSticker := normalizePhotoBytes(ctx, data)
+	if asSticker {
+		label := caption
+		if label == "" {
+			label = "webp"
+		}
+		return sendWebPAsSticker(ctx, mctx, out, label)
+	}
+	if isVideo {
+		return sendDlBytesVideo(ctx, mctx, out, caption)
+	}
+	return sendDlBytesImage(ctx, mctx, out, caption)
+}
+
+// sendWebPAsSticker mengirim byte webp mentah sebagai stiker (fallback bila
+// konversi gagal). EXIF pack/author standar; gagal EXIF = kirim mentah
+// (stiker tanpa metadata tetap tampil — lebih baik daripada dilewati).
+func sendWebPAsSticker(ctx context.Context, mctx *store.MessageContext, data []byte, label string) error {
+	webp := data
+	if ex, err := store.WriteStickerExif(data, config.StickerPackname, config.StickerAuthor); err == nil {
+		webp = ex
+	} else {
+		fmt.Printf("⚠️ downloader: EXIF stiker gagal (%v), kirim mentah.\n", err)
+	}
+	return sendStickerWebp(ctx, mctx, webp, "dl-sticker", label)
 }
 
 // urlRe mendeteksi URL http/https di teks bebas untuk autodownload.
@@ -675,27 +872,4 @@ func CheckAutodownload(client *whatsmeow.Client, evt *events.Message, text strin
 			_ = store.ReplyText(bg, mctx, fmt.Sprintf("Gagal autodownload: %v", rerr))
 		}
 	}()
-}
-
-// CleanStaleDownloads menyapu folder temp yatim (wabot-dl-*) yang umurnya
-// lebih dari dlStaleDays — pengaman kalau proses mati di tengah download
-// sehingga defer RemoveAll tidak sempat jalan. Dipanggil sekali saat startup.
-func CleanStaleDownloads() {
-	entries, err := os.ReadDir(os.TempDir())
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), "wabot-dl-") {
-			continue
-		}
-		p := filepath.Join(os.TempDir(), e.Name())
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if info.IsDir() && time.Since(info.ModTime()) > dlStaleDays {
-			_ = os.RemoveAll(p)
-		}
-	}
 }
