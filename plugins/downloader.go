@@ -555,7 +555,7 @@ func downloadViaYtdlp(ctx context.Context, mctx *store.MessageContext, rawURL st
 		// --postprocessor-args Merger: moov di depan (faststart) supaya
 		// bisa streaming saat download penerima belum selesai.
 		args = append(args,
-			"-f", "bv*[height<=720][vcodec^=avc1]+ba[m4a]/b[height<=720][vcodec^=avc1]/"+dlVideoFmt+"/b",
+			"-f", "bv*[height<=720][vcodec^=avc1]+ba[acodec^=mp4a]/b[height<=720][vcodec^=avc1]/"+dlVideoFmt+"/b",
 			"--merge-output-format", "mp4",
 			"--postprocessor-args", "Merger+ffmpeg:-movflags +faststart",
 		)
