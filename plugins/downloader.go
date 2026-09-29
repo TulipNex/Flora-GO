@@ -541,6 +541,12 @@ func sendDlBytesVideo(ctx context.Context, mctx *store.MessageContext, data []by
 // menempelkan MessageContextInfo association MEDIA_ALBUM. Keduanya kosong =
 // perilaku single seperti sebelumnya.
 func sendDlBytesVideoAlbum(ctx context.Context, mctx *store.MessageContext, data []byte, caption string, msgID types.MessageID, assoc *waE2E.MessageAssociation) error {
+	// Normalisasi DULU (tolak kosong/HTML, transcode kontainer asing),
+	// baru upload + thumb dari hasilnya — supaya tak terkirim bubble hantu.
+	data, err := messaging.PrepareVideoBytes(ctx, data)
+	if err != nil {
+		return err
+	}
 	uploaded, err := mctx.Client.Upload(ctx, data, whatsmeow.MediaVideo)
 	if err != nil {
 		return err
@@ -620,6 +626,9 @@ func sendDlBytesImage(ctx context.Context, mctx *store.MessageContext, data []by
 // sendDlBytesImageAlbum adalah varian album dari sendDlBytesImage (lihat
 // sendDlBytesVideoAlbum untuk arti msgID/assoc).
 func sendDlBytesImageAlbum(ctx context.Context, mctx *store.MessageContext, data []byte, caption string, msgID types.MessageID, assoc *waE2E.MessageAssociation) error {
+	if err := messaging.CheckMediaBytes(data); err != nil {
+		return err
+	}
 	uploaded, err := mctx.Client.Upload(ctx, data, whatsmeow.MediaImage)
 	if err != nil {
 		return err

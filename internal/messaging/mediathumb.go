@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -86,7 +85,7 @@ func InlineThumbForVideo(ctx context.Context, data []byte) []byte {
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
-			fmt.Printf("⚠️ mediathumb: ffmpeg frame gagal (strategi %d): %v (%s)\n", i+1, err, firstLine(stderr.String()))
+			fmt.Printf("⚠️ mediathumb: ffmpeg frame gagal (strategi %d): %v (%s)\n", i+1, err, lastLine(stderr.String()))
 			continue
 		}
 		thumb, err := os.ReadFile(out)
@@ -96,15 +95,4 @@ func InlineThumbForVideo(ctx context.Context, data []byte) []byte {
 		return InlineThumbForImage(thumb)
 	}
 	return nil
-}
-
-// firstLine mengambil baris pertama non-kosong (untuk log stderr ffmpeg
-// yang berbaris-baris).
-func firstLine(s string) string {
-	for _, line := range strings.Split(s, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			return line
-		}
-	}
-	return "-"
 }

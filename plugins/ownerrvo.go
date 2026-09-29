@@ -75,6 +75,18 @@ func resendRVOMedia(ctx context.Context, mctx *store.MessageContext, media whats
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Media terlalu besar untuk dibuka (%.1f MB, batas 100MB).", float64(len(data))/(1<<20)))
 	}
 
+	// Normalisasi/gate SEBELUM upload (lihat sendDlBytesVideoAlbum).
+	if mediaType == whatsmeow.MediaVideo {
+		var err error
+		data, err = messaging.PrepareVideoBytes(ctx, data)
+		if err != nil {
+			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal siapkan video: %v", err))
+		}
+	} else if mediaType == whatsmeow.MediaImage {
+		if err := messaging.CheckMediaBytes(data); err != nil {
+			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal siapkan gambar: %v", err))
+		}
+	}
 	uploaded, err := mctx.Client.Upload(ctx, data, mediaType)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal upload media: %v", err))

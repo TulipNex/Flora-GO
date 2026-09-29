@@ -296,6 +296,19 @@ func truncateGetText(text string) string {
 // package plugins via sticker.go) — gagal baca dimensi = kirim tanpa
 // dimensi, bukan gagal total.
 func sendGetMedia(ctx context.Context, mctx *store.MessageContext, data []byte, mimeType string, mediaType whatsmeow.MediaType, filename, logLabel string) error {
+	// Normalisasi/gate SEBELUM upload (lihat sendDlBytesVideoAlbum):
+	// tolak kosong/HTML, transcode kontainer asing ke MP4.
+	if mediaType == whatsmeow.MediaVideo {
+		var err error
+		data, err = messaging.PrepareVideoBytes(ctx, data)
+		if err != nil {
+			return fmt.Errorf("gagal siapkan video %s: %v", logLabel, err)
+		}
+	} else if mediaType == whatsmeow.MediaImage {
+		if err := messaging.CheckMediaBytes(data); err != nil {
+			return fmt.Errorf("gagal siapkan gambar %s: %v", logLabel, err)
+		}
+	}
 	uploaded, err := mctx.Client.Upload(ctx, data, mediaType)
 	if err != nil {
 		return fmt.Errorf("gagal upload %s: %v", logLabel, err)
