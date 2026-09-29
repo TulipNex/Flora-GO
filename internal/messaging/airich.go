@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"wabot-go/internal/store"
@@ -17,6 +18,159 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// richCodeKeywords adalah kata kunci per bahasa untuk highlight (cermin
+// referensi; bahasa tak dikenal = satu blok DEFAULT utuh).
+var richCodeKeywords = map[string]map[string]bool{
+	"go": {
+		"break": true, "case": true, "chan": true, "const": true, "continue": true,
+		"default": true, "defer": true, "else": true, "fallthrough": true, "for": true,
+		"func": true, "go": true, "goto": true, "if": true, "import": true,
+		"interface": true, "map": true, "package": true, "range": true, "return": true,
+		"select": true, "struct": true, "switch": true, "type": true, "var": true,
+	},
+	"javascript": {
+		"break": true, "case": true, "catch": true, "class": true, "const": true,
+		"continue": true, "debugger": true, "default": true, "delete": true, "do": true,
+		"else": true, "export": true, "extends": true, "finally": true, "for": true,
+		"function": true, "if": true, "import": true, "in": true, "instanceof": true,
+		"let": true, "new": true, "return": true, "static": true, "super": true,
+		"switch": true, "this": true, "throw": true, "try": true, "typeof": true,
+		"var": true, "void": true, "while": true, "with": true, "yield": true,
+		"true": true, "false": true, "null": true, "undefined": true, "async": true,
+		"await": true,
+	},
+	"python": {
+		"False": true, "None": true, "True": true, "and": true, "as": true,
+		"assert": true, "async": true, "await": true, "break": true, "class": true,
+		"continue": true, "def": true, "del": true, "elif": true, "else": true,
+		"except": true, "finally": true, "for": true, "from": true, "global": true,
+		"if": true, "import": true, "in": true, "is": true, "lambda": true,
+		"nonlocal": true, "not": true, "or": true, "pass": true, "raise": true,
+		"return": true, "try": true, "while": true, "with": true, "yield": true,
+	},
+}
+
+type richCodeHighlight = waAICommonDeprecated.AIRichResponseCodeMetadata_AIRichResponseCodeHighlightType
+
+const (
+	richHlDefault richCodeHighlight = waAICommonDeprecated.AIRichResponseCodeMetadata_AI_RICH_RESPONSE_CODE_HIGHLIGHT_DEFAULT
+	richHlKeyword richCodeHighlight = waAICommonDeprecated.AIRichResponseCodeMetadata_AI_RICH_RESPONSE_CODE_HIGHLIGHT_KEYWORD
+	richHlMethod  richCodeHighlight = waAICommonDeprecated.AIRichResponseCodeMetadata_AI_RICH_RESPONSE_CODE_HIGHLIGHT_METHOD
+	richHlString  richCodeHighlight = waAICommonDeprecated.AIRichResponseCodeMetadata_AI_RICH_RESPONSE_CODE_HIGHLIGHT_STRING
+	richHlNumber  richCodeHighlight = waAICommonDeprecated.AIRichResponseCodeMetadata_AI_RICH_RESPONSE_CODE_HIGHLIGHT_NUMBER
+	richHlComment richCodeHighlight = waAICommonDeprecated.AIRichResponseCodeMetadata_AI_RICH_RESPONSE_CODE_HIGHLIGHT_COMMENT
+)
+
+// tokenizeRichCode memecah kode jadi blok highlight: komentar (//...),
+// string ("..."), angka, keyword bahasa, method (kata + "("), sisanya default.
+// Token se-tipe yang berurutan digabung (cermin referensi).
+func tokenizeRichCode(code, lang string) []*waAICommonDeprecated.AIRichResponseCodeMetadata_AIRichResponseCodeBlock {
+	keywords := richCodeKeywords[strings.ToLower(lang)]
+	push := func(tokens []*waAICommonDeprecated.AIRichResponseCodeMetadata_AIRichResponseCodeBlock, content string, typ richCodeHighlight) []*waAICommonDeprecated.AIRichResponseCodeMetadata_AIRichResponseCodeBlock {
+		if content == "" {
+			return tokens
+		}
+		if n := len(tokens); n > 0 && tokens[n-1].GetHighlightType() == typ {
+			tokens[n-1].CodeContent = proto.String(tokens[n-1].GetCodeContent() + content)
+			return tokens
+		}
+		return append(tokens, &waAICommonDeprecated.AIRichResponseCodeMetadata_AIRichResponseCodeBlock{
+			HighlightType: typ.Enum(),
+			CodeContent:   proto.String(content),
+		})
+	}
+	var tokens []*waAICommonDeprecated.AIRichResponseCodeMetadata_AIRichResponseCodeBlock
+	isSpace := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+	isWord := func(c byte) bool {
+		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '$'
+	}
+	i := 0
+	for i < len(code) {
+		c := code[i]
+		switch {
+		case isSpace(c):
+			s := i
+			for i < len(code) && isSpace(code[i]) {
+				i++
+			}
+			tokens = push(tokens, code[s:i], richHlDefault)
+		case c == '/' && i+1 < len(code) && code[i+1] == '/':
+			s := i
+			for i < len(code) && code[i] != '\n' {
+				i++
+			}
+			tokens = push(tokens, code[s:i], richHlComment)
+		case c == '"' || c == '\'' || c == '`':
+			s, q := i, c
+			i++
+			for i < len(code) {
+				if code[i] == '\\' && i+1 < len(code) {
+					i += 2
+				} else if code[i] == q {
+					i++
+					break
+				} else {
+					i++
+				}
+			}
+			tokens = push(tokens, code[s:i], richHlString)
+		case c >= '0' && c <= '9':
+			s := i
+			for i < len(code) && (code[i] >= '0' && code[i] <= '9' || code[i] == '.' || code[i] == '_') {
+				i++
+			}
+			tokens = push(tokens, code[s:i], richHlNumber)
+		case isWord(c):
+			s := i
+			for i < len(code) && isWord(code[i]) {
+				i++
+			}
+			word := code[s:i]
+			typ := richHlDefault
+			if keywords[word] {
+				typ = richHlKeyword
+			} else {
+				j := i
+				for j < len(code) && (code[j] == ' ' || code[j] == '\t') {
+					j++
+				}
+				if j < len(code) && code[j] == '(' {
+					typ = richHlMethod
+				}
+			}
+			tokens = push(tokens, word, typ)
+		default:
+			tokens = push(tokens, string(c), richHlDefault)
+			i++
+		}
+	}
+	if len(tokens) == 0 {
+		tokens = push(tokens, code, richHlDefault)
+	}
+	return tokens
+}
+
+// unifiedRichCodeBlocks memetakan blok highlight ke bentuk unified
+// ({content, type: DEFAULT|KEYWORD|METHOD|STR|NUMBER|COMMENT}).
+func unifiedRichCodeBlocks(blocks []*waAICommonDeprecated.AIRichResponseCodeMetadata_AIRichResponseCodeBlock) []any {
+	typeMap := map[richCodeHighlight]string{
+		richHlDefault: "DEFAULT",
+		richHlKeyword: "KEYWORD",
+		richHlMethod:  "METHOD",
+		richHlString:  "STR",
+		richHlNumber:  "NUMBER",
+		richHlComment: "COMMENT",
+	}
+	var out []any
+	for _, b := range blocks {
+		out = append(out, map[string]any{
+			"content": b.GetCodeContent(),
+			"type":    typeMap[b.GetHighlightType()],
+		})
+	}
+	return out
+}
+
 // Builder AI Rich (pesan kaya ala bot Meta AI). Referensi struktur:
 // YuukiBot (Riflxz) messagebuilder.go (NIXCODE port) — lisensinya mewajibkan
 // credit, maka dicatat di sini; implementasi ditulis ulang clean-room dari
@@ -27,7 +181,9 @@ import (
 // Jadi: kirim mentah SELALU, tanpa wrapper. Kode varian + command uji sudah
 // dihapus.
 
-// AIRichBuilder merakit blok teks dan tabel GenAI.
+// AIRichBuilder merakit blok teks, tabel, kode, sumber, tip, dan saran
+// GenAI. Pola tiap Add*: submessage proto + section unified. Referensi:
+// YuukiBot messagebuilder.go (AIRich).
 type AIRichBuilder struct {
 	title       string
 	submessages []*waAICommonDeprecated.AIRichResponseSubMessage
@@ -128,8 +284,81 @@ func richForwardedContext() *waE2E.ContextInfo {
 	}
 }
 
+// AddCode menambah blok kode dengan highlight (GenAICodeUXPrimitive).
+func (b *AIRichBuilder) AddCode(language, code string) *AIRichBuilder {
+	blocks := tokenizeRichCode(code, language)
+	b.submessages = append(b.submessages, &waAICommonDeprecated.AIRichResponseSubMessage{
+		MessageType: waAICommonDeprecated.AIRichResponseSubMessageType_AI_RICH_RESPONSE_CODE.Enum(),
+		CodeMetadata: &waAICommonDeprecated.AIRichResponseCodeMetadata{
+			CodeLanguage: proto.String(language),
+			CodeBlocks:   blocks,
+		},
+	})
+	b.sections = append(b.sections, newRichLayout("Single", map[string]any{
+		"language":    language,
+		"code_blocks": unifiedRichCodeBlocks(blocks),
+		"__typename":  "GenAICodeUXPrimitive",
+	}))
+	return b
+}
+
+// AddSource menambah kartu sumber referensi (GenAISearchResultPrimitive).
+// Satu panggilan = satu sumber {iconURL, url, displayName}. CATATAN: versi
+// whatsmeow terpasang tak punya field BotMetadata.RichResponseSourcesMetadata
+// (ada di versi referensi, hilang di upstream) — sumber hanya dibawa di
+// section unified (cukup untuk render; metadata proto-nya opsional).
+func (b *AIRichBuilder) AddSource(iconURL, url, displayName string) *AIRichBuilder {
+	b.sections = append(b.sections, newRichLayout("Single", map[string]any{
+		"sources": []any{
+			map[string]any{
+				"source_type":         "THIRD_PARTY",
+				"source_display_name": displayName,
+				"source_subtitle":     "AI",
+				"source_url":          url,
+				"favicon": map[string]any{
+					"url":       iconURL,
+					"mime_type": "image/jpeg",
+					"width":     16,
+					"height":    16,
+				},
+			},
+		},
+		"__typename": "GenAISearchResultPrimitive",
+	}))
+	return b
+}
+
+// AddTip menambah teks metadata kecil (GenAIMetadataTextPrimitive).
+func (b *AIRichBuilder) AddTip(text string) *AIRichBuilder {
+	b.submessages = append(b.submessages, &waAICommonDeprecated.AIRichResponseSubMessage{
+		MessageType: waAICommonDeprecated.AIRichResponseSubMessageType_AI_RICH_RESPONSE_TEXT.Enum(),
+		MessageText: proto.String(text),
+	})
+	b.sections = append(b.sections, newRichLayout("Single", map[string]any{
+		"text":       text,
+		"__typename": "GenAIMetadataTextPrimitive",
+	}))
+	return b
+}
+
+// AddSuggest menambah saran follow-up (GenAIFollowUpSuggestionPillPrimitive)
+// sebagai section HScroll.
+func (b *AIRichBuilder) AddSuggest(suggestions []string) *AIRichBuilder {
+	var pills []any
+	for _, s := range suggestions {
+		pills = append(pills, map[string]any{
+			"prompt_text": s,
+			"prompt_type": "SUGGESTED_PROMPT",
+			"__typename":  "GenAIFollowUpSuggestionPillPrimitive",
+		})
+	}
+	b.sections = append(b.sections, newRichLayout("HScroll", pills))
+	return b
+}
+
 // build merakit pesan rich LENGKAP (submessages + unified base64 +
-// envelope bot). Dipisah dari Send supaya bisa di-unit-test tanpa koneksi.
+// envelope bot + metadata sumber). Dipisah dari Send supaya bisa
+// di-unit-test tanpa koneksi.
 func (b *AIRichBuilder) build() *waE2E.Message {
 	sections := b.sections
 	unified := map[string]any{
@@ -163,8 +392,8 @@ func (b *AIRichBuilder) build() *waE2E.Message {
 // Send mengirim pesan rich MENTAH (varian menang V1 — tanpa wrapper
 // ViewOnceMessage yang terbukti menghilangkan pesan). Error = gagal kirim.
 func (b *AIRichBuilder) Send(ctx context.Context, mctx *store.MessageContext) (types.MessageID, error) {
-	if len(b.submessages) == 0 {
-		return "", fmt.Errorf("AIRich butuh minimal satu blok (AddText/AddTable)")
+	if len(b.submessages) == 0 && len(b.sections) == 0 {
+		return "", fmt.Errorf("AIRich butuh minimal satu blok (AddText/AddTable/AddCode/dll)")
 	}
 	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, b.build())
 	if err != nil {
