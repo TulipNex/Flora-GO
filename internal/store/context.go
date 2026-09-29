@@ -21,8 +21,8 @@ type MessageContext struct {
 	// RawArgs adalah teks mentah setelah nama command dengan whitespace ASLI
 	// (termasuk baris baru) yang dipertahankan. Args di atas dipecah pakai
 	// strings.Fields yang menghancurkan baris baru — command yang butuh
-	// format multi-baris (.setwelcome/.setbye) WAJIB pakai field ini, bukan
-	// strings.Join(Args, " ").
+	// format multi-baris (.welcome set/.bye set) WAJIB pakai field ini,
+	// bukan strings.Join(Args, " ").
 	RawArgs string
 }
 

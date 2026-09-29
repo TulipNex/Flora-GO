@@ -21,7 +21,7 @@ func init() {
 }
 
 // Template default sambutan & perpisahan, dipakai kalau admin belum
-// mengeset template kustom via .setwelcome/.setbye. Variabel yang tersedia:
+// mengeset template kustom via .welcome set/.bye set. Variabel yang tersedia:
 // @user (mention member), @group (nama grup), @desc (deskripsi grup),
 // @periode (pagi/siang/sore/malam), @time (jam HH:MM:SS), @count (member ke-N).
 const (
@@ -78,32 +78,21 @@ func renderGreeting(tmpl string, member types.JID, groupName, groupDesc, periode
 }
 
 // RegisterWelcome mendaftarkan command sapaan grup: .welcome on/off,
-// .bye on/off, .setwelcome <format>/reset, .setbye <format>/reset.
+// .welcome set <format>/reset, .welcome simulate (dan pasangan .bye-nya).
+// Command lama .setwelcome/.setbye SUDAH DIHAPUS (keputusan owner).
 // Gate-nya sama dengan moderasi (admin grup ATAU owner).
 func RegisterWelcome(r *Registry) {
 	r.Register(Command{
 		Name:        "welcome",
-		Description: "Atur sambutan anggota baru (.welcome on/off)",
+		Description: "Sambutan anggota baru (on/off/set/simulate)",
 		Category:    CategoryGrup,
 		Handler:     handleWelcomeCmd,
 	})
 	r.Register(Command{
 		Name:        "bye",
-		Description: "Atur perpisahan anggota keluar (.bye on/off)",
+		Description: "Perpisahan anggota keluar (on/off/set/simulate)",
 		Category:    CategoryGrup,
 		Handler:     handleByeCmd,
-	})
-	r.Register(Command{
-		Name:        "setwelcome",
-		Description: "Atur teks sambutan, variabel: @user @group @desc",
-		Category:    CategoryGrup,
-		Handler:     handleSetWelcome,
-	})
-	r.Register(Command{
-		Name:        "setbye",
-		Description: "Atur teks perpisahan, variabel: @user @group @desc",
-		Category:    CategoryGrup,
-		Handler:     handleSetBye,
 	})
 }
 
@@ -111,8 +100,8 @@ func handleWelcomeCmd(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireModGate(ctx, mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
 	}
-	arg := strings.ToLower(strings.TrimSpace(strings.Join(mctx.Args, " ")))
-	switch arg {
+	sub, rest := greetingSubcommand(mctx)
+	switch sub {
 	case "on", "aktif", "enable":
 		if err := store.Groups().SetWelcome(ctx, mctx.Chat.String(), true); err != nil {
 			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal menyalakan welcome: %v", err))
@@ -123,6 +112,10 @@ func handleWelcomeCmd(ctx context.Context, mctx *store.MessageContext) error {
 			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal mematikan welcome: %v", err))
 		}
 		return store.ReplyText(ctx, mctx, "Sambutan anggota baru *mati* di grup ini.")
+	case "set":
+		return handleSetGreeting(ctx, mctx, rest, true)
+	case "simulate", "simulasi", "test", "tes":
+		return handleSimulateGreeting(ctx, mctx, true)
 	default:
 		gr, err := store.Groups().GetGreeting(ctx, mctx.Chat.String())
 		if err != nil {
@@ -132,7 +125,7 @@ func handleWelcomeCmd(ctx context.Context, mctx *store.MessageContext) error {
 		if gr.WelcomeOn {
 			status = "aktif"
 		}
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Sambutan anggota baru: *%s*\n\nPakai `.welcome on` / `.welcome off` untuk mengubah.\nPakai `.setwelcome <format>` untuk ganti teks.", status))
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Sambutan anggota baru: *%s*\n\n`.welcome on` / `.welcome off` — ubah status.\n`.welcome set <format>` — ganti teks (multi-baris, `reset` = default).\n`.welcome simulate` — kirim contoh dengan kamu sebagai @user.", status))
 	}
 }
 
@@ -140,8 +133,8 @@ func handleByeCmd(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireModGate(ctx, mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
 	}
-	arg := strings.ToLower(strings.TrimSpace(strings.Join(mctx.Args, " ")))
-	switch arg {
+	sub, rest := greetingSubcommand(mctx)
+	switch sub {
 	case "on", "aktif", "enable":
 		if err := store.Groups().SetBye(ctx, mctx.Chat.String(), true); err != nil {
 			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal menyalakan bye: %v", err))
@@ -152,6 +145,10 @@ func handleByeCmd(ctx context.Context, mctx *store.MessageContext) error {
 			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal mematikan bye: %v", err))
 		}
 		return store.ReplyText(ctx, mctx, "Perpisahan anggota keluar *mati* di grup ini.")
+	case "set":
+		return handleSetGreeting(ctx, mctx, rest, false)
+	case "simulate", "simulasi", "test", "tes":
+		return handleSimulateGreeting(ctx, mctx, false)
 	default:
 		gr, err := store.Groups().GetGreeting(ctx, mctx.Chat.String())
 		if err != nil {
@@ -161,13 +158,130 @@ func handleByeCmd(ctx context.Context, mctx *store.MessageContext) error {
 		if gr.ByeOn {
 			status = "aktif"
 		}
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Perpisahan anggota keluar: *%s*\n\nPakai `.bye on` / `.bye off` untuk mengubah.\nPakai `.setbye <format>` untuk ganti teks.", status))
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Perpisahan anggota keluar: *%s*\n\n`.bye on` / `.bye off` — ubah status.\n`.bye set <format>` — ganti teks (multi-baris, `reset` = default).\n`.bye simulate` — kirim contoh dengan kamu sebagai @user.", status))
 	}
 }
 
-// setTemplateHelp adalah teks bantuan variabel yang dipakai .setwelcome
-// dan .setbye saat dipanggil tanpa argumen. Baris baru di sini adalah bagian
-// dari format — jangan digabung jadi satu paragraf.
+// greetingSubcommand memecah argumen jadi (subcommand, sisa-teks). Subcommand
+// = kata pertama (case-insensitive); sisa = teks mentah setelahnya dengan
+// baris baru utuh (untuk template multi-baris .welcome set).
+func greetingSubcommand(mctx *store.MessageContext) (string, string) {
+	if len(mctx.Args) == 0 {
+		return "", ""
+	}
+	sub := strings.ToLower(strings.TrimSpace(mctx.Args[0]))
+	// RawArgs diawali tepat setelah nama command; potong sepanjang token
+	// pertama yang diketik user (Args[0]) supaya sisa multi-baris utuh.
+	// Fallback ke gabungan Args bila bentuknya tak terduga.
+	raw := strings.TrimSpace(mctx.RawArgs)
+	rest := ""
+	if len(raw) >= len(mctx.Args[0]) && strings.EqualFold(raw[:len(mctx.Args[0])], mctx.Args[0]) {
+		rest = strings.TrimSpace(raw[len(mctx.Args[0]):])
+	} else {
+		rest = strings.TrimSpace(strings.Join(mctx.Args[1:], " "))
+	}
+	return sub, rest
+}
+
+// handleSetGreeting menangani ".welcome set <format>" / ".bye set <format>"
+// (isWelcome memilih tabelnya). Tanpa format = tampilkan template saat ini
+// + bantuan; "reset" = kembali ke default.
+func handleSetGreeting(ctx context.Context, mctx *store.MessageContext, rest string, isWelcome bool) error {
+	name := "bye"
+	if isWelcome {
+		name = "welcome"
+	}
+	if rest == "" {
+		gr, err := store.Groups().GetGreeting(ctx, mctx.Chat.String())
+		if err != nil {
+			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca template: %v", err))
+		}
+		current := gr.ByeMsg
+		if isWelcome {
+			current = gr.WelcomeMsg
+		}
+		if current == "" {
+			if isWelcome {
+				current = DefaultWelcomeTemplate + "\n(default)"
+			} else {
+				current = DefaultByeTemplate + "\n(default)"
+			}
+		}
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Template %s saat ini:\n\n%s\n\n%s", name, current, setTemplateHelp))
+	}
+	if strings.EqualFold(rest, "reset") {
+		var err error
+		if isWelcome {
+			err = store.Groups().SetWelcomeMsg(ctx, mctx.Chat.String(), "")
+		} else {
+			err = store.Groups().SetByeMsg(ctx, mctx.Chat.String(), "")
+		}
+		if err != nil {
+			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal reset template: %v", err))
+		}
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Template %s dikembalikan ke default.", name))
+	}
+	var err error
+	if isWelcome {
+		err = store.Groups().SetWelcomeMsg(ctx, mctx.Chat.String(), rest)
+	} else {
+		err = store.Groups().SetByeMsg(ctx, mctx.Chat.String(), rest)
+	}
+	if err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal simpan template: %v", err))
+	}
+	verb := "join"
+	if !isWelcome {
+		verb = "keluar"
+	}
+	return store.ReplyText(ctx, mctx, fmt.Sprintf("Template %s disimpan.\n\nBerlaku untuk anggota yang %s berikutnya.", name, verb))
+}
+
+// handleSimulateGreeting menangani ".welcome simulate" / ".bye simulate":
+// merender template AKTUAL (kustom/default) dengan pengetik command sebagai
+// @user + data grup nyata, lalu mengirimnya lewat jalur yang SAMA PERSIS
+// dengan sapaan sungguhan (sendGreeting). Status on/off diabaikan —
+// namanya juga tes. Hanya di grup (di private chat tidak ada @group/@count
+// yang bermakna).
+func handleSimulateGreeting(ctx context.Context, mctx *store.MessageContext, isWelcome bool) error {
+	if !mctx.IsGroup() {
+		return store.ReplyText(ctx, mctx, "Simulasi hanya bisa di dalam grup.")
+	}
+	kind := "bye"
+	if isWelcome {
+		kind = "welcome"
+	}
+	gr, err := store.Groups().GetGreeting(ctx, mctx.Chat.String())
+	if err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca template: %v", err))
+	}
+	tmpl := gr.ByeMsg
+	if isWelcome {
+		tmpl = gr.WelcomeMsg
+	}
+	if tmpl == "" {
+		if isWelcome {
+			tmpl = DefaultWelcomeTemplate
+		} else {
+			tmpl = DefaultByeTemplate
+		}
+	}
+	groupName, groupDesc, memberCount := "grup ini", "", 0
+	if info, err := mctx.Client.GetGroupInfo(ctx, mctx.Chat); err == nil {
+		if info.Name != "" {
+			groupName = info.Name
+		}
+		groupDesc = info.Topic
+		memberCount = info.ParticipantCount
+	}
+	now := time.Now().In(witaLocation)
+	sendGreeting(mctx.Client, mctx.Chat, mctx.Sender.ToNonAD(), tmpl, groupName, groupDesc, dayPeriod(now), now.Format("15:04:05"), memberCount)
+	return store.ReplyText(ctx, mctx, fmt.Sprintf("Terkirim contoh %s di atas (kamu sebagai @user).", kind))
+}
+
+// setTemplateHelp adalah teks bantuan variabel yang dipakai ".welcome set"
+// dan ".bye set" tanpa argumen. Baris baru di sini adalah bagian dari
+// format — jangan digabung jadi satu paragraf.
 const setTemplateHelp = "Variabel yang bisa dipakai:\n" +
 	"@user - tag member yang join/keluar\n" +
 	"@group - nama grup ini\n" +
@@ -177,78 +291,11 @@ const setTemplateHelp = "Variabel yang bisa dipakai:\n" +
 	"@count - member ke-N saat ini\n" +
 	"\n" +
 	"Contoh:\n" +
-	".setwelcome halo kak @user\n" +
+	".welcome set halo kak @user\n" +
 	"selamat datang di grup @group\n" +
 	"silakan baca aturan grup ini: @desc\n" +
 	"\n" +
-	"Ketik `.setwelcome reset` untuk kembali ke teks default."
-
-// templateRawArgs mengambil teks template dari pesan command dengan baris
-// baru yang utuh (mctx.RawArgs). Fallback ke gabungan Args untuk konteks
-// yang tidak lewat handler normal (tidak terjadi di production, tapi aman
-// untuk diuji).
-func templateRawArgs(mctx *store.MessageContext) string {
-	if mctx.RawArgs != "" {
-		return mctx.RawArgs
-	}
-	return strings.TrimSpace(strings.Join(mctx.Args, " "))
-}
-
-func handleSetWelcome(ctx context.Context, mctx *store.MessageContext) error {
-	if msg := requireModGate(ctx, mctx); msg != "" {
-		return store.ReplyText(ctx, mctx, msg)
-	}
-	raw := templateRawArgs(mctx)
-	if raw == "" {
-		gr, err := store.Groups().GetGreeting(ctx, mctx.Chat.String())
-		if err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca template: %v", err))
-		}
-		current := gr.WelcomeMsg
-		if current == "" {
-			current = DefaultWelcomeTemplate + "\n(default)"
-		}
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Template welcome saat ini:\n\n%s\n\n%s", current, setTemplateHelp))
-	}
-	if strings.EqualFold(raw, "reset") {
-		if err := store.Groups().SetWelcomeMsg(ctx, mctx.Chat.String(), ""); err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal reset template: %v", err))
-		}
-		return store.ReplyText(ctx, mctx, "Template welcome dikembalikan ke default.")
-	}
-	if err := store.Groups().SetWelcomeMsg(ctx, mctx.Chat.String(), raw); err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal simpan template: %v", err))
-	}
-	return store.ReplyText(ctx, mctx, "Template welcome disimpan.\n\nBerlaku untuk anggota yang join berikutnya.")
-}
-
-func handleSetBye(ctx context.Context, mctx *store.MessageContext) error {
-	if msg := requireModGate(ctx, mctx); msg != "" {
-		return store.ReplyText(ctx, mctx, msg)
-	}
-	raw := templateRawArgs(mctx)
-	if raw == "" {
-		gr, err := store.Groups().GetGreeting(ctx, mctx.Chat.String())
-		if err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca template: %v", err))
-		}
-		current := gr.ByeMsg
-		if current == "" {
-			current = DefaultByeTemplate + "\n(default)"
-		}
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Template bye saat ini:\n\n%s\n\n%s", current, setTemplateHelp))
-	}
-	if strings.EqualFold(raw, "reset") {
-		if err := store.Groups().SetByeMsg(ctx, mctx.Chat.String(), ""); err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal reset template: %v", err))
-		}
-		return store.ReplyText(ctx, mctx, "Template bye dikembalikan ke default.")
-	}
-	if err := store.Groups().SetByeMsg(ctx, mctx.Chat.String(), raw); err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal simpan template: %v", err))
-	}
-	return store.ReplyText(ctx, mctx, "Template bye disimpan.\n\nBerlaku untuk anggota yang keluar berikutnya.")
-}
+	"Ketik `.welcome set reset` untuk kembali ke teks default."
 
 // HandleGroupJoin dipanggil handler untuk tiap event perubahan info grup.
 // Bereaksi hanya untuk JOIN (sambutan) dan LEAVE (perpisahan) — event lain

@@ -70,7 +70,7 @@ func InitCallClient(wa *whatsmeow.Client) {
 func RegisterCall(r *Registry) {
 	r.Register(Command{
 		Name:        "call",
-		Description: "Panggil WhatsApp (owner). .call @user / 628xxx / +62 822-... (+|jam untuk jadwal)",
+		Description: "Panggil WhatsApp (owner). .call @user / 628xxx (+|jam jadwal, +list, +cancel <id>)",
 		Category:    CategoryOwner,
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			if msg := requireOwner(mctx); msg != "" {
@@ -78,6 +78,18 @@ func RegisterCall(r *Registry) {
 			}
 			if callClient == nil {
 				return store.ReplyText(ctx, mctx, "Fitur call belum aktif.")
+			}
+
+			// Subcommand manajemen jadwal: ".call list" dan ".call cancel
+			// <id>" dicek SEBELUM resolve target supaya kata-katanya tidak
+			// dianggap nomor telepon.
+			if len(mctx.Args) > 0 {
+				switch strings.ToLower(strings.TrimSpace(mctx.Args[0])) {
+				case "list":
+					return handleCallList(ctx, mctx)
+				case "cancel":
+					return handleCallCancel(ctx, mctx)
+				}
 			}
 
 			// Pisahkan "|<jam>" dulu dari teks MENTAH (RawArgs) supaya nomor
@@ -338,6 +350,56 @@ func doCall(ctx context.Context, mctx *store.MessageContext, target string) erro
 	return CallWithProgress(ctx, mctx.Client, mctx.Chat, target)
 }
 
+// handleCallList menangani ".call list": semua jadwal pending di semua chat,
+// terurut waktu terdekat, masing-masing dengan ID untuk .call cancel.
+func handleCallList(ctx context.Context, mctx *store.MessageContext) error {
+	pending, err := store.Groups().ListPendingCalls(ctx)
+	if err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca jadwal: %v", err))
+	}
+	if len(pending) == 0 {
+		return store.ReplyText(ctx, mctx, "Tidak ada jadwal panggilan. Buat via `.call <target>|<jam>` (WITA).")
+	}
+	var sb strings.Builder
+	sb.WriteString("Jadwal panggilan:\n")
+	for _, c := range pending {
+		at := time.Unix(c.ScheduledAt, 0).In(witaLocation)
+		left := time.Until(time.Unix(c.ScheduledAt, 0)).Round(time.Minute)
+		if left < 0 {
+			left = 0
+		}
+		chat := c.ChatJID
+		if i := strings.Index(chat, "@"); i >= 0 {
+			chat = chat[:i]
+		}
+		fmt.Fprintf(&sb, "#%d: %s @ %s (%s lagi) [%s]\n",
+			c.ID, c.TargetPhone, at.Format("02 Jan 15:04"), left, chat)
+	}
+	sb.WriteString("Batalkan via `.call cancel <id>`.")
+	return store.ReplyText(ctx, mctx, sb.String())
+}
+
+// handleCallCancel menangani ".call cancel <id>": jadwal pending jadi
+// cancelled — timer yang sudah terpasang tidak akan menelpon karena
+// armScheduledCall mengecek status saat menyala.
+func handleCallCancel(ctx context.Context, mctx *store.MessageContext) error {
+	if len(mctx.Args) < 2 {
+		return store.ReplyText(ctx, mctx, "Sertakan ID jadwal. Contoh: .call cancel 3 (lihat ID via `.call list`).")
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(mctx.Args[1]), 10, 64)
+	if err != nil || id <= 0 {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("ID tidak valid: %q. Lihat ID via `.call list`.", mctx.Args[1]))
+	}
+	removed, err := store.Groups().CancelScheduledCall(ctx, id)
+	if err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal membatalkan: %v", err))
+	}
+	if !removed {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Jadwal #%d tidak ditemukan (mungkin sudah jalan/lewat/batal).", id))
+	}
+	return store.ReplyText(ctx, mctx, fmt.Sprintf("Jadwal #%d dibatalkan.", id))
+}
+
 // ScheduleCall menyimpan jadwal panggilan ke SQLite (TAHAN RESTART) lalu
 // memasang timer-nya. Mengembalikan ID jadwal. Saat waktunya tiba,
 // panggilan dijalankan dengan CallWithProgress di chat yang sama.
@@ -351,9 +413,11 @@ func ScheduleCall(chat types.JID, phone string, at time.Time) (int64, error) {
 	return id, nil
 }
 
-// armScheduledCall memasang timer in-memory untuk satu jadwal. Status
-// ditulis "done" SEBELUM eksekusi (lihat MarkCallStatus) supaya jadwal yang
-// sama tidak pernah jalan dobel.
+// armScheduledCall memasang timer in-memory untuk satu jadwal. Saat timer
+// menyala, status dibaca ULANG dari DB — jadwal yang keburu di-cancel
+// (.call cancel) dilewati diam-diam (timer tak bisa ditarik mundur, tapi
+// panggilan tidak jalan). Status ditulis "done" SEBELUM eksekusi (lihat
+// MarkCallStatus) supaya jadwal yang sama tidak pernah jalan dobel.
 func armScheduledCall(id int64, chat types.JID, phone string, delay time.Duration) {
 	if delay < 0 {
 		delay = 0
@@ -363,6 +427,9 @@ func armScheduledCall(id int64, chat types.JID, phone string, delay time.Duratio
 		defer timer.Stop()
 		<-timer.C
 		ctx := context.Background()
+		if status, err := store.Groups().CallStatus(ctx, id); err != nil || status != store.ScheduledCallPending {
+			return
+		}
 		_ = store.Groups().MarkCallStatus(ctx, id, store.ScheduledCallDone)
 		if waClientForCalls == nil || callClient == nil {
 			fmt.Printf("⚠️ Jadwal call #%d ke %s dilewati: fitur call belum aktif.\n", id, phone)

@@ -11,9 +11,10 @@ import (
 
 // Status jadwal panggilan yang dikenal.
 const (
-	ScheduledCallPending = "pending"
-	ScheduledCallDone    = "done"
-	ScheduledCallMissed  = "missed"
+	ScheduledCallPending   = "pending"
+	ScheduledCallDone      = "done"
+	ScheduledCallMissed    = "missed"
+	ScheduledCallCancelled = "cancelled"
 )
 
 // ScheduledCall adalah satu baris jadwal panggilan.
@@ -65,4 +66,27 @@ func (g *GroupDB) ListPendingCalls(ctx context.Context) ([]ScheduledCall, error)
 func (g *GroupDB) MarkCallStatus(ctx context.Context, id int64, status string) error {
 	_, err := g.db.ExecContext(ctx, `UPDATE scheduled_calls SET status = ? WHERE id = ?`, status, id)
 	return err
+}
+
+// CancelScheduledCall membatalkan jadwal yang masih pending (jadi cancelled).
+// Mengembalikan true kalau memang ada baris pending yang dibatalkan — false
+// berarti ID tidak dikenal ATAU sudah bukan pending (done/missed/cancelled).
+func (g *GroupDB) CancelScheduledCall(ctx context.Context, id int64) (bool, error) {
+	res, err := g.db.ExecContext(ctx, `UPDATE scheduled_calls SET status = 'cancelled' WHERE id = ? AND status = 'pending'`, id)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// CallStatus membaca status jadwal terkini (dipakai timer sebelum menelpon
+// supaya jadwal yang keburu di-cancel tidak jalan — lihat armScheduledCall).
+func (g *GroupDB) CallStatus(ctx context.Context, id int64) (string, error) {
+	var status string
+	err := g.db.QueryRowContext(ctx, `SELECT status FROM scheduled_calls WHERE id = ?`, id).Scan(&status)
+	if err != nil {
+		return "", err
+	}
+	return status, nil
 }
