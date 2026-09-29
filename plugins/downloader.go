@@ -234,11 +234,9 @@ func dlURLHost(rawURL string) string {
 // terakhir adalah penanda selesainya.
 func downloadAndSend(ctx context.Context, mctx *store.MessageContext, rawURL string, p *dlPlatform, audioOnly bool, status types.MessageID) error {
 	if p.command == "youtube" || p.command == "youtubemp3" {
-		if err := downloadViaYtdlp(ctx, mctx, rawURL, audioOnly, status); err == nil {
-			return nil
-		} else {
-			fmt.Printf("⚠️ downloader: yt-dlp gagal (%v), fallback scraper.\n", err)
-		}
+		// YouTube HANYA via yt-dlp (keputusan owner — tanpa fallback
+		// scraper). Gagal = error langsung dibalas ke user oleh pemanggil.
+		return downloadViaYtdlp(ctx, mctx, rawURL, audioOnly, status)
 	}
 	res, err := fetchScraper(ctx, p, rawURL, audioOnly)
 	if err != nil {
@@ -278,22 +276,6 @@ func fetchScraper(ctx context.Context, p *dlPlatform, rawURL string, audioOnly b
 		return withUniversal("facebook", scraper.FetchFacebook)
 	case "pinterest":
 		return withUniversal("pinterest", scraper.FetchPinterest)
-	case "youtube", "youtubemp3":
-		// YouTube lewat scraper (savetube-direct → omnify), flag audio
-		// diteruskan untuk mode --mp3/.youtubemp3. Kegagalan primary DICATAT
-		// ke console (bukan ditelan) supaya diagnosa panel tidak buta bila
-		// rantai jatuh ke universal.
-		if res, err := scraper.FetchYouTube(ctx, rawURL, audioOnly); err == nil {
-			return res, nil
-		} else {
-			firstErr := err
-			fmt.Printf("⚠️ downloader: savetube gagal (%v), fallback omnify.\n", firstErr)
-			if res, err := scraper.FetchUniversal(ctx, rawURL); err == nil {
-				return res, nil
-			} else {
-				return nil, fmt.Errorf("youtube: %v | universal: %v", firstErr, err)
-			}
-		}
 	default:
 		return scraper.FetchUniversal(ctx, rawURL)
 	}

@@ -13,13 +13,7 @@ import (
 // Envelope respons: {status, platform, data:{type, title|description,
 // cover, formats:[{id, type, label, ext, url}]}} dengan URL stream langsung.
 func FetchOmnify(ctx context.Context, pageURL string) (*ScrapeResult, error) {
-	return fetchOmnifyMedia(ctx, pageURL, false)
-}
-
-// FetchOmnifyAudio varian audio (dipakai mode --mp3 / .youtubemp3): memilih
-// format bertipe audio, bukan video.
-func FetchOmnifyAudio(ctx context.Context, pageURL string) (*ScrapeResult, error) {
-	return fetchOmnifyMedia(ctx, pageURL, true)
+	return fetchOmnifyMedia(ctx, pageURL)
 }
 
 type omnifyFormat struct {
@@ -43,7 +37,7 @@ type omnifyResp struct {
 	} `json:"data"`
 }
 
-func fetchOmnifyMedia(ctx context.Context, pageURL string, audioOnly bool) (*ScrapeResult, error) {
+func fetchOmnifyMedia(ctx context.Context, pageURL string) (*ScrapeResult, error) {
 	const engine = "omnify"
 	body := `{"url":` + jsonString(pageURL) + `}`
 	headers := map[string]string{"Content-Type": "application/json"}
@@ -57,18 +51,6 @@ func fetchOmnifyMedia(ctx context.Context, pageURL string, audioOnly bool) (*Scr
 	}
 	d := r.Data
 	title := truncateRunes(firstNonEmpty(d.Title, d.Description), 900)
-	if audioOnly {
-		for _, f := range d.Formats {
-			if strings.EqualFold(f.Type, "audio") && strings.TrimSpace(f.URL) != "" {
-				return &ScrapeResult{
-					Title:  title,
-					Items:  []ScrapeItem{{URL: f.URL, Thumb: d.Cover, Kind: KindAudio}},
-					Source: "omnify",
-				}, nil
-			}
-		}
-		return nil, fmt.Errorf("%s: tidak ada format audio", engine)
-	}
 	if strings.EqualFold(d.Type, "photo") {
 		items := make([]ScrapeItem, 0, len(d.Formats))
 		for _, f := range d.Formats {
