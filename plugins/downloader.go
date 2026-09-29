@@ -591,10 +591,24 @@ func downloadViaYtdlp(ctx context.Context, mctx *store.MessageContext, rawURL st
 	return nil
 }
 
-// firstDlErrorLine mengambil baris ERROR yt-dlp (paling informatif untuk
-// user: privat, login-wall, region-block, dsb), fallback ke 300 char awal.
+// firstDlErrorLine mengambil baris paling informatif dari output yt-dlp
+// yang gagal, urutan prioritas:
+//  1. Baris exception TERAKHIR traceback Python ("ModuleNotFoundError: ...",
+//     "ImportError: ...") — penyebab asli selalu di ekor, bukan kepala.
+//  2. Baris "ERROR" yt-dlp (privat, login-wall, region-block, dsb).
+//  3. 300 char awal.
+//
+// Pelajaran Sep 2026: traceback terpotong di kepala menyembunyikan akar
+// (mis. yt-dlp vs Python 3.14) sehingga tak bisa didiagnosa.
 func firstDlErrorLine(out []byte) string {
-	for _, line := range strings.Split(string(out), "\n") {
+	lines := strings.Split(string(out), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" &&
+			(strings.Contains(line, "Error") || strings.Contains(line, "Exception")) {
+			return line
+		}
+	}
+	for _, line := range lines {
 		if strings.Contains(line, "ERROR") {
 			return strings.TrimSpace(line)
 		}
