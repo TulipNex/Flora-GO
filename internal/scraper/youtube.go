@@ -34,7 +34,10 @@ func FetchYouTube(ctx context.Context, pageURL string, audioOnly bool) (*ScrapeR
 	defer cancel()
 
 	jar, _ := cookiejar.New(nil)
-	cli := &http.Client{Timeout: 20 * time.Second, Jar: jar}
+	// 45 detik per request (bukan 20): analyze dari jaringan panel terbukti
+	// butuh >20 detik (timeout menunggu headers, Sep 2026). Total masih di
+	// bawah deadline 100 detik karena retry dibatasi sekali.
+	cli := &http.Client{Timeout: 45 * time.Second, Jar: jar}
 	ua := "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36"
 	get := func(url string) error {
 		req, err := http.NewRequestWithContext(tctx, http.MethodGet, url, nil)
@@ -85,14 +88,27 @@ func FetchYouTube(ctx context.Context, pageURL string, audioOnly bool) (*ScrapeR
 		return nil, fmt.Errorf("%s: home: %w", engine, err)
 	}
 
-	// 2. Analyze.
+	// 2. Analyze — coba 2x (sekali retry) karena request pertama dari
+	// panel kadang timeout di tengah jalan; kegagalan kedua baru fatal.
 	form := url.Values{"k_query": {pageURL}, "k_page": {"home"}, "hl": {"en"}, "q_auto": {"0"}}
 	var an y2analyze
-	if err := post("/mates/analyzeV2/ajax", form, &an); err != nil {
-		return nil, fmt.Errorf("%s: analyze: %w", engine, err)
+	var anErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		an = y2analyze{}
+		if anErr = post("/mates/analyzeV2/ajax", form, &an); anErr == nil && an.Status == "ok" {
+			break
+		}
+		if anErr == nil {
+			anErr = fmt.Errorf("status %q", an.Status)
+		}
+		select {
+		case <-tctx.Done():
+			return nil, fmt.Errorf("%s: analyze: %w", engine, anErr)
+		case <-time.After(2 * time.Second):
+		}
 	}
 	if an.Status != "ok" {
-		return nil, fmt.Errorf("%s: analyze gagal", engine)
+		return nil, fmt.Errorf("%s: analyze: %v", engine, anErr)
 	}
 
 	// 3. Pilih format: mp4 (preferensi 720p→480p→360p→auto) atau mp3 128kbps.

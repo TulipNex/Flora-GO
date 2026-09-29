@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -72,15 +73,38 @@ func InlineThumbForVideo(ctx context.Context, data []byte) []byte {
 	out := filepath.Join(dir, "thumb.jpg")
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	// Frame detik ke-1 (lewati frame hitam pembuka), 1 frame JPEG kualitas sedang.
-	cmd := exec.CommandContext(timeoutCtx, "ffmpeg", "-y", "-ss", "1", "-i", in, "-vframes", "1", "-q:v", "5", out)
-	if err := cmd.Run(); err != nil {
-		fmt.Printf("⚠️ mediathumb: ffmpeg frame gagal: %v\n", err)
-		return nil
+	// Strategi 1: frame detik ke-1 (lewati frame hitam pembuka).
+	// Strategi 2 (fallback): tanpa seek — untuk file pendek (<1 detik,
+	// moov tak lazim) di mana -ss 1 melompat melewati EOF.
+	// Stderr DITAMPILKAN (dulu dibuang — penyebab "exit status 1" buta).
+	strategies := [][]string{
+		{"-y", "-ss", "1", "-i", in, "-vframes", "1", "-q:v", "5", out},
+		{"-y", "-i", in, "-vframes", "1", "-q:v", "5", out},
 	}
-	thumb, err := os.ReadFile(out)
-	if err != nil || len(thumb) == 0 {
-		return nil
+	for i, args := range strategies {
+		cmd := exec.CommandContext(timeoutCtx, "ffmpeg", args...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Printf("⚠️ mediathumb: ffmpeg frame gagal (strategi %d): %v (%s)\n", i+1, err, firstLine(stderr.String()))
+			continue
+		}
+		thumb, err := os.ReadFile(out)
+		if err != nil || len(thumb) == 0 {
+			continue
+		}
+		return InlineThumbForImage(thumb)
 	}
-	return InlineThumbForImage(thumb)
+	return nil
+}
+
+// firstLine mengambil baris pertama non-kosong (untuk log stderr ffmpeg
+// yang berbaris-baris).
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			return line
+		}
+	}
+	return "-"
 }
