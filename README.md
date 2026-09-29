@@ -1,6 +1,6 @@
-# Flora GO 
+# Flora GO
 
-Bot WhatsApp modular berbasis Go, memakai library [whatsmeow](https://github.com/tulir/whatsmeow). Dilengkapi command bawaan, fitur panggilan WhatsApp, manajemen grup, dan **AI agent multi-provider** (Gemini / OpenRouter / NexaRouter / Ciora) dengan tool-calling, sesi percakapan, dan ingatan jangka panjang per user.
+Bot WhatsApp modular berbasis Go, memakai library [whatsmeow](https://github.com/tulir/whatsmeow). Dilengkapi downloader 7 platform (scraper-first + album media), command grup & owner lengkap, dan **AI agent Flora multi-provider** (Gemini / OpenRouter / NexaRouter / Ciora) yang owner-only dengan sistem trust, tool-calling, sesi percakapan, dan ingatan jangka panjang per user.
 
 ## Struktur Folder
 
@@ -9,9 +9,9 @@ wabot-go/
 ├── main.go                       # entry point: printBanner, InitCallClient, init DB (group/ai/facts/settings), login QR/pairing/session lama
 ├── internal/
 │   ├── config/
-│   │   └── config.go              # OwnerName, OwnerNumber, BotName, BotVersion, API key AI (dari .env), system prompt
+│   │   └── config.go              # OwnerName, OwnerNumber, BotName, BotVersion, API key AI + kartu menu (dari .env), system prompt
 │   ├── handler/
-│   │   └── handler.go             # router pesan masuk -> command atau trigger AI, LogIncoming dipanggil di sini
+│   │   └── handler.go             # router pesan masuk -> command / prefix spesial ($, \) / trigger AI, LogIncoming di sini
 │   ├── ai/                        # engine AI (multi-provider, agent loop, sesi, fakta, mood, bubble)
 │   │   ├── types.go               # Content/Part/FunctionCall (format universal internal)
 │   │   ├── provider_types.go      # interface ProviderAdapter, GenerateParams, ToolCall
@@ -24,7 +24,8 @@ wabot-go/
 │   │   ├── registry.go            # registry tool AI + AgentContext
 │   │   ├── reliability.go         # retry error transient + notifikasi owner saat gagal
 │   │   ├── session.go             # sesi percakapan per private/grup, idle timeout 30 mnt, hydrate dari SQLite
-│   │   ├── trigger.go             # deteksi trigger: kata kunci "flora/flo", reply, sticker, media
+│   │   ├── trigger.go             # deteksi trigger: kata kunci "flora/flo", reply, sticker, media + lock/unlock
+│   │   ├── lock.go                # perintah lock/unlock trigger natural (global, khusus owner)
 │   │   ├── spam_gate.go           # anti-spam per sender + lock per sesi
 │   │   ├── bubble.go              # split balasan jadi multi-bubble + delay ketik simulasi
 │   │   ├── mood.go                # deteksi mood user dari teks -> modifier system prompt
@@ -33,38 +34,72 @@ wabot-go/
 │   │   ├── reply_context.go       # sertakan teks bubble bot yang di-reply sebagai konteks
 │   │   └── tools/
 │   │       ├── native/system.go   # tool system_info (uptime, versi, OS/arch)
-│   │       └── bridge/group.go    # tool kick_member, promote_member (reuse validasi admin command)
+│   │       └── bridge/group.go    # tool kick/promote/demote, tag, link, buka/tutup grup, stiker, call (reuse validasi command)
+│   ├── messaging/                 # merakit + mengirim pesan kaya (dipakai plugins & tool bridge)
+│   │   ├── linkcard.go            # kartu link preview + thumbnail mini inline + dukungan mention
+│   │   ├── mediathumb.go          # thumbnail inline mini (~1-3KB, agar preview tampil, bukan abu-abu)
+│   │   ├── videonorm.go           # validasi + normalisasi video (MP4/H.264/AAC, transcode bila perlu)
+│   │   └── album.go               # pengiriman album media (association + induk counts)
+│   ├── scraper/                   # adapter unduhan per platform (rantai fallback, tanpa yt-dlp kecuali YouTube)
+│   │   ├── scraper.go             # tipe ScrapeItem/ScrapeResult, HTTP client API (20 dtk) + unduhan (10 mnt, cap 100MB)
+│   │   ├── tiktok.go              # tikwm → tiktokdl → musically
+│   │   ├── instagram.go           # igexport → savereels (pilih resolusi terbesar)
+│   │   ├── twitter.go             # xhancer
+│   │   ├── facebook.go            # faa (foto difilter via omnify)
+│   │   ├── pinterest.go           # klickpin (resolve shortlink + CSRF + parse tombol)
+│   │   ├── youtube.go             # savetube-direct (AES, tanpa cookie/polling)
+│   │   ├── spotify.go             # nexray → musicfab
+│   │   ├── omnify.go              # Omnify AIO: fallback universal 45+ platform
+│   │   ├── universal.go           # FetchUniversal (kontrak tetap, isi = omnify)
+│   │   └── htmlhelp.go            # parse HTML + helper URL
 │   └── store/
-│       ├── context.go             # helper reply (ReplyText, SendText) & MessageContext
-│       ├── group_helpers.go       # IsSenderAdmin, IsBotAdmin, participantMatchesJID (LID vs PN)
-│       ├── groupdb.go             # lapisan SQLite untuk data grup (modernc.org/sqlite)
-│       ├── aidb.go                # SQLite histori percakapan AI (ai_history)
-│       ├── factsdb.go             # tabel user_facts (fakta jangka panjang per sender)
+│       ├── context.go             # helper reply (ReplyText, ReplyTextWithMentions, SendText) & MessageContext
+│       ├── group_helpers.go       # IsSenderAdmin, IsBotAdmin, ParticipantMatchesJID (LID vs PN)
+│       ├── groupdb.go             # SQLite group.db: setting grup, ban, warn, autodownload, trusted_users, dst
+│       ├── ownerdb.go             # ban/unban, mode self/public, lock AI, trust/untrust Flora
+│       ├── aidb.go                # SQLite ai.db: histori percakapan AI (ai_history)
+│       ├── factsdb.go             # tabel user_facts (fakta jangka panjang per sender + hapus)
 │       ├── aisettingsdb.go        # tabel ai_settings (provider/model aktif)
+│       ├── tempdir.go             # BotTempDir (<workdir>/wabot-tmp, bukan /tmp yang 100MB di panel)
+│       ├── autodownload.go        # saklar autodownload per chat
+│       ├── moderationdb.go        # antilink + warnlist per grup
+│       ├── scheduledcalls.go      # jadwal panggilan (tahan restart)
 │       ├── bot_message_tracker.go # cache ID+teks pesan bot (untuk deteksi reply & konteks)
 │       ├── quoted_context.go      # ambil teks bubble bot yang di-reply user
 │       ├── message_unwrap.go      # buka bungkus Ephemeral/ViewOnce message
-│       ├── trigger_extract.go     # ExtractStanzaID, IsReplyToBot, IsSticker/IsMedia
+│       ├── trigger_extract.go     # ExtractStanzaID, IsReplyToBot, IsSticker/IsMedia, mentions
 │       ├── sticker_exif.go        # tulis/baca EXIF webp (packname & author stiker)
 │       └── log.go                 # LogIncoming & LogOutgoing (log semua pesan ke console)
 ├── plugins/
 │   ├── registry.go                # Registry generik + slice registrars, RegisterAll jalankan semua otomatis
 │   ├── ping.go                    # .ping (dengan hitung latensi ms)
-│   ├── menu.go                    # .menu (daftar command otomatis + kata sambutan bot)
+│   ├── menu.go                    # .menu berkartu (kategori/all/spesifik + sapaan mention + bold)
 │   ├── info.go                    # .info (uptime, versi Go, OS/arch, jumlah command, dsb)
-│   ├── owner.go                   # .owner (kirim vCard owner)
+│   ├── downloader.go              # .tiktok/.youtube/.instagram/.twitter/.facebook/.pinterest/.spotify + album + WebP + batas ukuran/durasi
+│   ├── ai.go                      # .agent (admin Flora: model/provider/status/trust/reset) + HandleAIMessage
 │   ├── sticker.go                 # .sticker / .s (gambar/video -> stiker webp via ffmpeg)
-│   ├── stickerwatermark.go        # .stickerwatermark / .swm (ganti packname & author stiker)
+│   ├── stickerwatermark.go        # .swm (ganti packname & author stiker)
 │   ├── call.go                    # .call <nomor> dan .call <nomor>|<jam> (panggilan + penjadwalan WITA)
 │   ├── groupmanage.go             # kick, promote, demote, tagall, .add <nomor...>
 │   ├── groupsetting.go            # setname, setdesc, open/close, linkgc
-│   └── ai.go                      # .ai (chat, reset, provider, model) + HandleAIMessage
+│   ├── moderation.go              # antilink, warn/unwarn/warnlist + welcome/bye grup
+│   ├── welcome.go                 # sapaan + perpisahan member grup (template)
+│   ├── owneradmin.go              # ban/unban user & grup, mode self/public, gate owner + trust Flora
+│   ├── ownerexec.go               # $ shell server dan \ eval JS (khusus owner, async + timeout)
+│   ├── ownerget.go                # .get fetch URL (sidik TLS browser, anti-SSRF, >10MB jadi dokumen)
+│   ├── ownerjoin.go               # .join/.leave grup via link undangan
+│   ├── ownerrvo.go                # .rvo buka pesan sekali-lihat yang di-reply
+│   ├── owner.go                   # .owner (kirim vCard owner)
+│   ├── delete.go                  # .delete/.del hapus pesan yang di-reply
+│   ├── docread.go                 # baca dokumen untuk AI (PDF/DOCX/XLSX/teks, map-reduce)
+│   └── testthumb.go               # .testthumb (DEMO dev untuk kartu link preview, bukan fitur user)
 ├── data/                          # session WhatsApp & database SQLite (dibuat otomatis, JANGAN dihapus)
+├── wabot-tmp/                     # temp kerja bot (dibuat otomatis, JANGAN dihapus, gitignored)
 ├── greeting.mp3                   # audio yang diputar saat panggilan (aset runtime, upload manual ke panel)
 ├── run.sh                         # startup script untuk Pterodactyl (source .env di awal)
 ├── deploy.ps1                     # script build + rclone copyto ke panel (dijalankan dari laptop)
 ├── push.ps1                       # script git add/commit/push cepat
-├── go.mod / go.sum
+├── go.mod / go.sum               # Go 1.26+, whatsmeow terbaru
 ├── .env / .env.example
 └── .gitignore
 ```
@@ -73,7 +108,7 @@ wabot-go/
 
 ## 1. Setup di Laptop
 
-Pastikan sudah install [Go 1.22+](https://go.dev/dl/). Untuk fitur `.sticker`, server tempat bot jalan juga butuh **ffmpeg** terinstall.
+Pastikan sudah install [Go 1.26+](https://go.dev/dl/). Bot butuh **ffmpeg** di PATH server tempat ia jalan — bukan cuma untuk `.sticker`, tapi juga thumbnail video, konversi WebP, dan transcode video asing.
 
 ```bash
 cd wabot-go
@@ -118,6 +153,7 @@ func RegisterHello(r *Registry) {
 	r.Register(Command{
 		Name:        "hello",
 		Description: "Menyapa pengirim",
+		Category:    CategoryUmum, // wajib salah satu konstanta CategoryXxx di registry.go
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			return store.ReplyText(ctx, mctx, "Halo! 👋")
 		},
@@ -185,45 +221,76 @@ Diset lewat file `.env` di root panel (`run.sh` sudah otomatis `source .env` di 
 | `OPENROUTER_API_KEY`   | API key OpenRouter (provider `openrouter`)                                 |
 | `NEXAROUTER_API_KEY`   | API key NexaRouter (provider `nexarouter`, https://router.nexaworks.web.id) |
 | `CIORA_API_KEY`        | API key Ciora AI (provider `ciora`, https://ciora.id) |
+| `MENU_LINK`            | Link kartu `.menu` (default: wa.me nomor bot)                              |
+| `MENU_TITLE`           | Judul kartu `.menu` (default: nama + versi bot)                            |
+| `MENU_DESC`            | Deskripsi kartu `.menu` (default: jumlah command)                          |
+| `MENU_THUMB_URL`       | Gambar thumbnail kartu `.menu`                                             |
+| `MENU_FAVICON_URL`     | Favicon kartu `.menu`                                                      |
 
 Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan di `.env`, melainkan dikompilasi langsung ke binary lewat `internal/config/config.go` — ubah di sana lalu deploy ulang jika perlu mengganti nilainya.
 
-> API key AI cukup diisi untuk provider yang mau dipakai. Pilihan provider/model aktif disimpan di SQLite (`data/ai_settings`), bisa diganti lewat command `.ai provider` / `.ai model` tanpa deploy ulang.
+> API key AI cukup diisi untuk provider yang mau dipakai. Pilihan provider/model aktif disimpan di SQLite (`data/ai.db` tabel `ai_settings`), bisa diganti lewat command `.agent provider` / `.agent model` tanpa deploy ulang.
 
 ## Fitur Utama
 
+### Umum
 | Command | Keterangan |
 |---|---|
 | `.ping` | Cek bot hidup + latensi (ms) |
-| `.menu` | Daftar semua command otomatis |
-| `.info` | Uptime, versi Go, OS/arch, jumlah command, info bot |
-| `.owner` | Kirim vCard kontak owner |
-| `.sticker` / `.s` | Konversi gambar/video (langsung atau reply) jadi stiker webp, termasuk animasi |
-| `.stickerwatermark` / `.swm` | Ganti metadata packname & author stiker (reply gambar/stiker + `.swm <pack>\|<author>`) |
-| `.call <target>` | Melakukan panggilan WhatsApp keluar, khusus owner (target: mention, reply, atau nomor `628xxx`/`08xx`/`+62 8xx-xxxx`). Progres (memanggil/berdering/terhubung/berakhir+durasi/ditolak/tidak dijawab) tampil dalam 1 bubble yang diedit |
-| `.call <target>\|<jam>` | Menjadwalkan panggilan pada jam tertentu (format `HH.MM`, zona WITA); tersimpan di SQLite, tahan restart. Bisa juga via Flora: `telpon X jam 17.00` |
-| `.add <nomor...>` | Menambahkan member ke grup langsung lewat nomor telepon (bisa banyak sekaligus) |
-| `.kick` / `.promote` / `.demote` / `.tagall` | Manajemen dasar grup |
+| `.menu` / `.menu all` / `.menu <kategori>` | Daftar command berkartu link + sapaan mention pengirim (bold) |
+| `.testthumb` | Demo developer untuk kartu link preview (bukan fitur user) |
+| `.info` / `.owner` | Info bot / vCard kontak owner |
+| `.autodownload on/off` | Download otomatis link medsos di chat ini, per chat |
+
+### Media (downloader)
+| Command | Keterangan |
+|---|---|
+| `.tiktok` / `.tt`, `.youtube` / `.yt`, `.instagram` / `.ig`, `.twitter` / `.x`, `.facebook` / `.fb`, `.pinterest` / `.pin`, `.spotify` / `.sp` + `<url>` | Download via scraper API per platform (YouTube primer yt-dlp; lainnya scraper-first + fallback) |
+| `.youtubemp3` / `.ytmp3`, `.youtube --mp3` | Audio saja |
+| Perilaku umum | Carousel/foto multi-item digabung **1 bubble album** (tanpa batas jumlah); WebP statis→JPEG / animasi→MP4 otomatis; video asing di-transcode ke MP4/H.264/AAC agar bisa diputar; thumbnail mini agar preview tampil |
+| Batas (keputusan owner) | Media ≤100MB kirim normal; video YouTube 100–200MB jadi **dokumen** (>200MB ditolak); durasi YouTube maks **35 menit**; antrean maks 2 bersamaan |
+
+### AI Agent (Flora — owner + user terpercaya saja)
+| Command | Keterangan |
+|---|---|
+| trigger natural | Sebut "flora/flo", reply bubble bot, stiker, atau media (tanya-jawab HANYA lewat sini, tidak via command) |
+| `.agent model/provider/status` | Lihat/ganti model & provider, cek status (khusus owner) |
+| `.agent trust/untrust @user` | Beri/cabut kepercayaan akses Flora (khusus owner; target via mention/reply/nomor) |
+| `.agent trustlist` | Daftar user terpercaya sebagai mention (khusus owner) |
+| `.agent reset` | Reset sesi percakapan sendiri (boleh trusted) |
+| `.agent reset -memory [@user]` | Hapus ingatan jangka panjang + sesi, milik sendiri atau target (khusus owner) |
+| `lock flo` / `unlock flora` | Kunci/buka trigger natural global (khusus owner) |
+
+### Grup
+| Command | Keterangan |
+|---|---|
+| `.kick` / `.promote` / `.demote` / `.add` / `.tagall` | Manajemen member (deteksi mention/reply/nomor, paham LID) |
 | `.setname` / `.setdesc` / `.open` / `.close` / `.linkgc` | Pengaturan grup |
-| `.ai <pesan>` | Ngobrol dengan AI (lihat bagian [AI Agent](#fitur-ai-agent)) |
-| `.ai reset` | Reset sesi percakapan AI (per private/grup) |
-| `.ai provider [nama/nomor]` | Lihat/ganti provider AI aktif (google/openrouter/nexarouter/ciora) |
-| `.ai model [nama/nomor]` | Lihat/ganti model AI untuk provider aktif |
-| `.ai status` | Lihat status lock, provider/model, dan sesi chat ini |
-| `lock flo` / `unlock flora` / `lock @flora` | Kunci/buka trigger natural Flora (global, khusus owner) |
-| `$ <perintah>` | Eksekusi shell di server, khusus owner (async, timeout 120 dtk, output dipotong) |
-| `\ <kode js>` | Eval JavaScript di dalam bot, khusus owner (async, timeout 30 dtk, tanpa akses Conn) |
-| `.delete` / `.del` | Hapus pesan yang di-reply (pesan bot: siapa saja; pesan orang: admin + bot admin) |
-| `.tiktok` / `.youtube` / `.instagram` / `.twitter` / `.facebook` / `.spotify` + `<url>` | Download medsos via scraper API (cepat; foto sebagai foto, album multi-kirim tanpa batas; `.youtube --mp3`/`.youtubemp3` untuk audio), fallback yt-dlp bila gagal. Semua user, 720p, antrean 2, timeout 10 mnt |
-| `.autodownload on/off` | Download otomatis link medsos di chat ini, per chat (admin/owner di grup) |
-| `.get <url> [browser]` | Fetch URL dengan sidik TLS browser + kirim isinya (host internal diblokir anti-SSRF) |
-| `.rvo` | Buka pesan sekali-lihat yang di-reply |
+| `.antilink` / `.warn` / `.unwarn` / `.warnlist` | Moderasi link + peringatan (maks 3 = kick) |
+| Welcome/bye | Sapaan + perpisahan member (template @user/@group) |
+
+### Alat
+| Command | Keterangan |
+|---|---|
+| `.sticker` / `.s` | Gambar/video (langsung atau reply) jadi stiker webp via ffmpeg |
+| `.swm` | Ganti packname & author stiker |
+| `.rvo` | Buka pesan sekali-lihat yang di-reply (foto/video/voice note) |
+| `.get <url>` | Fetch URL (sidik TLS browser, anti-SSRF); >10MB jadi dokumen |
+| `.delete` / `.del` | Hapus pesan yang di-reply |
+
+### Owner
+| Command | Keterangan |
+|---|---|
+| `.call <target>[\|<jam>]` | Panggilan WhatsApp keluar / terjadwal WITA (tersimpan di SQLite, tahan restart) |
+| `.ban` / `.unban` / `.mode` / `.join` / `.leave` | Ban user & grup, mode self/public, keluar-masuk grup via link |
+| `$ <perintah>` | Eksekusi shell di server (async, timeout 120 dtk, output dipotong) |
+| `\ <kode js>` | Eval JavaScript di dalam bot (async, timeout 30 dtk) |
 
 Panggilan WhatsApp memakai library [meowcaller](https://github.com/purpshell/meowcaller). Data grup (setting, dsb) disimpan di SQLite lewat driver `modernc.org/sqlite` (pure Go, tanpa cgo).
 
 ## Fitur AI Agent
 
-Selain command `.ai`, bot juga merespons pesan **natural** (tanpa prefix) lewat trigger berikut:
+Bot merespons pesan **natural** (tanpa prefix) lewat trigger berikut — **hanya untuk owner dan user terpercaya** (yang lain diabaikan diam-diam):
 
 | Trigger | Keterangan |
 |---|---|
@@ -234,7 +301,7 @@ Selain command `.ai`, bot juga merespons pesan **natural** (tanpa prefix) lewat 
 
 ### Multi-Provider
 
-Empat provider tersedia, bisa diganti kapan saja lewat `.ai provider`:
+Empat provider tersedia, bisa diganti kapan saja lewat `.agent provider` (khusus owner):
 
 | Provider | Endpoint | Tool-calling | Default Model |
 |---|---|---|---|
@@ -245,13 +312,13 @@ Empat provider tersedia, bisa diganti kapan saja lewat `.ai provider`:
 
 > **Catatan NexaRouter/Ciora:** adapter mencoba mengirim field `tools`; kalau server menolak (400 soal tools), otomatis fallback sekali tanpa tools (mode chat teks). Kalau tool (kick/promote) tidak pernah jalan di provider ini, berarti server memang menolak tools.
 
-Model bisa diganti per provider lewat `.ai model <nama>` (daftar model hardcode di `internal/ai/providers.go`). Pengaturan provider/model **global** (berlaku untuk semua user) dan persist di SQLite.
+Model bisa diganti per provider lewat `.agent model <nama>` (daftar model hardcode di `internal/ai/providers.go`). Pengaturan provider/model **global** (berlaku untuk semua user) dan persist di SQLite.
 
 ### Kemampuan AI
 
 - **Tool-calling**: AI bisa mengeksekusi `system_info`, `kick_member`, `promote_member`, `demote_member`, `set_group_name`, `tag_all`, `group_link`, `group_close`, `group_open`, `make_sticker` (butuh hak admin grup yang cukup), serta `make_call` & `bot_mode` (khusus owner) — hanya jika user eksplisit minta aksi.
 - **Sesi percakapan**: histori per user, terpisah antara chat private dan tiap grup. Idle timeout 30 menit, persist ke SQLite (survive restart).
-- **Ingatan jangka panjang**: fakta tentang user (nama, hobi, dll) diekstrak otomatis tiap 8 giliran dan disuntik ke system prompt lintas chat/grup.
+- **Ingatan jangka panjang**: fakta tentang user (nama, hobi, dll) diekstrak otomatis tiap 8 giliran dan disuntik ke system prompt lintas chat/grup. Dihapus total via `.agent reset -memory`.
 - **Multi-bubble**: balasan panjang dipecah jadi beberapa bubble dengan delay ketik simulasi + status "mengetik...".
 - **Mood detection**: deteksi mood user dari teks (sedih/stres/senang) menyesuaikan nada balasan.
 - **Konteks reply**: jika user reply bubble bot, teks bubble tersebut disertakan sebagai konteks.
@@ -263,9 +330,9 @@ Model bisa diganti per provider lewat `.ai model <nama>` (daftar model hardcode 
 
 ## Catatan Penting
 
-- **Jangan hapus folder `data/`** di panel — di situ session login WhatsApp (`session.db`), database grup (`group.db`), dan database AI (`ai.db` berisi histori percakapan, fakta user, pengaturan provider) disimpan. Kalau dihapus, bot harus login ulang dari nol dan seluruh data di atas hilang.
+- **Jangan hapus folder `data/` maupun `wabot-tmp/`** di panel — di `data/` ada session login WhatsApp (`session.db`), database grup (`group.db`: setting, ban, trust Flora, warn, autodownload), dan database AI (`ai.db` berisi histori percakapan, fakta user, pengaturan provider); di `wabot-tmp/` ada file kerja sementara. Kalau `data/` dihapus, bot harus login ulang dari nol dan seluruh data di atas hilang.
 - Nomor yang dipakai bot sebaiknya bukan nomor utama sehari-hari, untuk menghindari risiko banned mengganggu akun pribadi.
 - whatsmeow adalah library tidak resmi (reverse-engineered protokol WhatsApp Web) — pemakaian berlebihan/spam berisiko nomor terkena banned oleh WhatsApp.
 - Pengecekan admin grup (`IsSenderAdmin`/`IsBotAdmin`) membandingkan JID lewat `.User`, nomor telepon, **dan** LID sekaligus untuk menghindari kegagalan akibat dual-format identitas WhatsApp (LID vs nomor telepon).
 - Fitur AI bergantung pada API key di `.env` — jika provider aktif tapi key-nya kosong, chat AI akan gagal (bot tetap jalan untuk command lain). Error AI yang gagal total dilaporkan ke nomor owner via WhatsApp.
-- Fitur `.sticker` butuh **ffmpeg** di PATH server. Tanpa ffmpeg, command akan membalas error "Gagal convert ke stiker".
+- Bot butuh **ffmpeg** di PATH server — untuk `.sticker`, thumbnail video, konversi WebP, dan transcode video asing. Tanpa ffmpeg, fitur-fitur itu membalas error.
