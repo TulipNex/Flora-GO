@@ -9,7 +9,6 @@ import (
 
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow"
 	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/proto/waAICommon"
 	"go.mau.fi/whatsmeow/proto/waAICommonDeprecated"
@@ -18,34 +17,102 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// EKSPERIMEN SEMENTARA (lihat .richtest): builder AI Rich minimal untuk
-// mencari kombinasi yang tampil sebagai rich di klien. Referensi struktur:
+// Builder AI Rich (pesan kaya ala bot Meta AI). Referensi struktur:
 // YuukiBot (Riflxz) messagebuilder.go (NIXCODE port) — lisensinya mewajibkan
 // credit, maka dicatat di sini; implementasi ditulis ulang clean-room dari
 // definisi proto, bukan salinan kode.
 //
-// FAKTA YANG SUDAH DIKETAHUI: port AIRich mentah (RichResponseMessage saja)
-// tampil sebagai TEKS BIASA di klien (percobaan lama, dihapus). Referensi
-// YuukiBot mengirim AIRich mentah juga — jadi referensi TIDAK membuktikan
-// render. Matriks varian .richtest (mentah/wrapper-viewonce/biz-node/keduanya)
-// yang akan memutuskan secara empiris.
+// VONIS EKSPERIMEN (.richtest, Sep 2026): varian MENTAH (V1) tampil rich,
+// +biz nodes (V3) tampil juga, bungkus ViewOnceMessage (V2/V4) HILANG TOTAL.
+// Jadi: kirim mentah SELALU, tanpa wrapper. Kode varian + command uji sudah
+// dihapus.
 
-// RichTextBuilder merakit SATU blok teks markdown GenAI (cukup untuk
-// eksperimen render; table/code/dll ditambah HANYA bila ada varian menang).
-type RichTextBuilder struct {
-	text  string
-	title string
+// AIRichBuilder merakit blok teks dan tabel GenAI.
+type AIRichBuilder struct {
+	title       string
+	submessages []*waAICommonDeprecated.AIRichResponseSubMessage
+	sections    []any
 }
 
-// NewRichTextBuilder membuat builder teks rich.
-func NewRichTextBuilder(text string) *RichTextBuilder {
-	return &RichTextBuilder{text: text}
+// NewAIRichBuilder membuat builder rich kosong.
+func NewAIRichBuilder() *AIRichBuilder {
+	return &AIRichBuilder{}
 }
 
 // SetTitle mengisi disclaimer title BotMetadata.
-func (b *RichTextBuilder) SetTitle(t string) *RichTextBuilder {
+func (b *AIRichBuilder) SetTitle(t string) *AIRichBuilder {
 	b.title = t
 	return b
+}
+
+// AddText menambah blok teks markdown (GenAIMarkdownTextUXPrimitive).
+func (b *AIRichBuilder) AddText(text string) *AIRichBuilder {
+	b.submessages = append(b.submessages, &waAICommonDeprecated.AIRichResponseSubMessage{
+		MessageType: waAICommonDeprecated.AIRichResponseSubMessageType_AI_RICH_RESPONSE_TEXT.Enum(),
+		MessageText: proto.String(text),
+	})
+	b.sections = append(b.sections, newRichLayout("Single", map[string]any{
+		"text":       text,
+		"__typename": "GenAIMarkdownTextUXPrimitive",
+	}))
+	return b
+}
+
+// AddTable menambah tabel asli WhatsApp (GenATableUXPrimitive).
+// Input: [][]string, baris pertama = header; baris pendek di-pad kosong.
+func (b *AIRichBuilder) AddTable(table [][]string) *AIRichBuilder {
+	if len(table) == 0 {
+		return b
+	}
+	maxLen := 0
+	for _, r := range table {
+		if len(r) > maxLen {
+			maxLen = len(r)
+		}
+	}
+	normalize := func(r []string) []string {
+		out := make([]string, maxLen)
+		copy(out, r)
+		return out
+	}
+
+	var metaRows []*waAICommonDeprecated.AIRichResponseTableMetadata_AIRichResponseTableRow
+	var unifiedRows []any
+	for i, r := range table {
+		nr := normalize(r)
+		metaRows = append(metaRows, &waAICommonDeprecated.AIRichResponseTableMetadata_AIRichResponseTableRow{
+			Items:     nr,
+			IsHeading: proto.Bool(i == 0),
+		})
+		unifiedRows = append(unifiedRows, map[string]any{
+			"is_header": i == 0,
+			"cells":     nr,
+		})
+	}
+	b.submessages = append(b.submessages, &waAICommonDeprecated.AIRichResponseSubMessage{
+		MessageType: waAICommonDeprecated.AIRichResponseSubMessageType_AI_RICH_RESPONSE_TABLE.Enum(),
+		TableMetadata: &waAICommonDeprecated.AIRichResponseTableMetadata{
+			Title: proto.String(""),
+			Rows:  metaRows,
+		},
+	})
+	b.sections = append(b.sections, newRichLayout("Single", map[string]any{
+		"rows":       unifiedRows,
+		"__typename": "GenATableUXPrimitive",
+	}))
+	return b
+}
+
+// newRichLayout membungkus primitif jadi view_model GenAI (Single =
+// primitive tunggal; HScroll = primitives jamak).
+func newRichLayout(name string, data any) map[string]any {
+	vm := map[string]any{"__typename": "GenAI" + name + "LayoutViewModel"}
+	if arr, ok := data.([]any); ok {
+		vm["primitives"] = arr
+	} else {
+		vm["primitive"] = data
+	}
+	return map[string]any{"view_model": vm}
 }
 
 // richForwardedContext adalah ContextInfo forward META_AI (cermin referensi:
@@ -61,47 +128,15 @@ func richForwardedContext() *waE2E.ContextInfo {
 	}
 }
 
-// richUnifiedResponse adalah payload JSON unified (satu section, satu
-// primitif markdown) yang di-base64 — bentuk yang dibaca klien Meta AI.
-func (b *RichTextBuilder) richUnifiedResponse() *waAICommon.AIRichResponseUnifiedResponse {
+// build merakit pesan rich LENGKAP (submessages + unified base64 +
+// envelope bot). Dipisah dari Send supaya bisa di-unit-test tanpa koneksi.
+func (b *AIRichBuilder) build() *waE2E.Message {
+	sections := b.sections
 	unified := map[string]any{
 		"response_id": fmt.Sprintf("resp-%d", time.Now().UnixNano()),
-		"sections": []any{
-			map[string]any{
-				"view_model": map[string]any{
-					"__typename": "GenAISingleLayoutViewModel",
-					"primitive": map[string]any{
-						"text":       b.text,
-						"__typename": "GenAIMarkdownTextUXPrimitive",
-					},
-				},
-			},
-		},
+		"sections":    sections,
 	}
 	data, _ := json.Marshal(unified)
-	return &waAICommon.AIRichResponseUnifiedResponse{
-		Data: []byte(base64.StdEncoding.EncodeToString(data)),
-	}
-}
-
-// richCore merakit inti RichResponseMessage (submessage teks + unified).
-func (b *RichTextBuilder) richCore() *waE2E.AIRichResponseMessage {
-	return &waE2E.AIRichResponseMessage{
-		MessageType: waAICommonDeprecated.AIRichResponseMessageType_AI_RICH_RESPONSE_TYPE_STANDARD.Enum(),
-		Submessages: []*waAICommonDeprecated.AIRichResponseSubMessage{
-			{
-				MessageType: waAICommonDeprecated.AIRichResponseSubMessageType_AI_RICH_RESPONSE_TEXT.Enum(),
-				MessageText: proto.String(b.text),
-			},
-		},
-		UnifiedResponse: b.richUnifiedResponse(),
-		ContextInfo:     richForwardedContext(),
-	}
-}
-
-// richEnvelope membungkus inti seperti pesan bot Meta AI: MessageContextInfo
-// (BotMetadata + disclaimer) + BotForwardedMessage.
-func (b *RichTextBuilder) richEnvelope() *waE2E.Message {
 	return &waE2E.Message{
 		MessageContextInfo: &waE2E.MessageContextInfo{
 			DeviceListMetadata:        &waE2E.DeviceListMetadata{},
@@ -112,15 +147,37 @@ func (b *RichTextBuilder) richEnvelope() *waE2E.Message {
 		},
 		BotForwardedMessage: &waE2E.FutureProofMessage{
 			Message: &waE2E.Message{
-				RichResponseMessage: b.richCore(),
+				RichResponseMessage: &waE2E.AIRichResponseMessage{
+					MessageType: waAICommonDeprecated.AIRichResponseMessageType_AI_RICH_RESPONSE_TYPE_STANDARD.Enum(),
+					Submessages: b.submessages,
+					UnifiedResponse: &waAICommon.AIRichResponseUnifiedResponse{
+						Data: []byte(base64.StdEncoding.EncodeToString(data)),
+					},
+					ContextInfo: richForwardedContext(),
+				},
 			},
 		},
 	}
 }
 
+// Send mengirim pesan rich MENTAH (varian menang V1 — tanpa wrapper
+// ViewOnceMessage yang terbukti menghilangkan pesan). Error = gagal kirim.
+func (b *AIRichBuilder) Send(ctx context.Context, mctx *store.MessageContext) (types.MessageID, error) {
+	if len(b.submessages) == 0 {
+		return "", fmt.Errorf("AIRich butuh minimal satu blok (AddText/AddTable)")
+	}
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, b.build())
+	if err != nil {
+		return "", err
+	}
+	return resp.ID, nil
+}
+
 // RichBizNodes adalah additional node stanza untuk pesan interaktif
 // (cermin YuukiBot buildBizNodes: biz/native_flow + bot{biz_bot=1} untuk
-// non-grup). Dibutuhkan via SendRequestExtra.AdditionalNodes.
+// non-grup). Disimpan untuk eksperimen tombol interaktif berikutnya —
+// TIDAK dipakai pengiriman AIRich (varian biz terbukti tak menambah nilai
+// di sini, mentah sudah tampil).
 func RichBizNodes(chat types.JID) []waBinary.Node {
 	nodes := []waBinary.Node{
 		{
@@ -153,31 +210,4 @@ func RichBizNodes(chat types.JID) []waBinary.Node {
 		})
 	}
 	return nodes
-}
-
-// SendRichText mengirim teks rich dengan varian eksperimen:
-// 1 = mentah, 2 = bungkus ViewOnceMessage, 3 = +biz nodes, 4 = keduanya.
-// Mengembalikan ID pesan (untuk korelasi laporan) + error.
-func (b *RichTextBuilder) SendRichText(ctx context.Context, mctx *store.MessageContext, variant int) (types.MessageID, error) {
-	msg := b.richEnvelope()
-	if variant == 2 || variant == 4 {
-		msg = &waE2E.Message{
-			ViewOnceMessage: &waE2E.FutureProofMessage{Message: msg},
-		}
-	}
-	if variant == 3 || variant == 4 {
-		nodes := RichBizNodes(mctx.Chat)
-		resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, msg, whatsmeow.SendRequestExtra{
-			AdditionalNodes: &nodes,
-		})
-		if err != nil {
-			return "", err
-		}
-		return resp.ID, nil
-	}
-	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, msg)
-	if err != nil {
-		return "", err
-	}
-	return resp.ID, nil
 }
