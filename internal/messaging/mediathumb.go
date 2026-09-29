@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"wabot-go/internal/store"
 )
 
 // maxInlineThumbBytes adalah batas byte thumbnail inline. Thumbnail inline
@@ -59,7 +61,7 @@ func InlineThumbForImage(data []byte) []byte {
 // jadi thumbnail inline. Butuh ffmpeg di server (sudah wajib untuk .sticker).
 // Gagal di titik mana pun = nil (kirim tanpa thumb, bukan gagal total).
 func InlineThumbForVideo(ctx context.Context, data []byte) []byte {
-	dir, err := os.MkdirTemp("", "wabot-vthumb-*")
+	dir, err := os.MkdirTemp(store.MustBotTempDir(), "wabot-vthumb-*")
 	if err != nil {
 		return nil
 	}

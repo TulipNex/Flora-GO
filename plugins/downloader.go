@@ -521,7 +521,11 @@ func labelFromURL(rawURL string) string {
 // transcode panel. Gagal-cepat timeout dlTimeout lalu pemanggil jatuh ke
 // scraper — error yt-dlp tidak lagi fatal seperti dulu.
 func downloadViaYtdlp(ctx context.Context, mctx *store.MessageContext, rawURL string, audioOnly bool, status types.MessageID) error {
-	dir, err := os.MkdirTemp("", "wabot-dl-*")
+	baseTmp, err := store.BotTempDir()
+	if err != nil {
+		return fmt.Errorf("gagal siapkan temp: %v", err)
+	}
+	dir, err := os.MkdirTemp(baseTmp, "wabot-dl-*")
 	if err != nil {
 		return fmt.Errorf("gagal siapkan temp: %v", err)
 	}
@@ -930,7 +934,7 @@ const webpConvertTimeout = 60 * time.Second
 // membaca hasilnya kembali. Pola temp+stderr sama dengan
 // convertToStickerWebp di sticker.go.
 func runFfmpegConvert(ctx context.Context, data []byte, inExt, outName string, args ...string) ([]byte, error) {
-	tmpDir, err := os.MkdirTemp("", "dl-webp-*")
+	tmpDir, err := os.MkdirTemp(store.MustBotTempDir(), "dl-webp-*")
 	if err != nil {
 		return nil, err
 	}
@@ -1097,9 +1101,15 @@ func CheckAutodownload(client *whatsmeow.Client, evt *events.Message, text strin
 
 // CleanStaleDownloads menyapu folder temp yatim (wabot-dl-*) yang umurnya
 // lebih dari dlStaleDays — pengaman kalau proses mati di tengah download
-// sehingga defer RemoveAll tidak sempat jalan. Dipanggil sekali saat startup.
+// sehingga defer RemoveAll tidak sempat jalan. Menyapu BotTempDir
+// (<workdir>/wabot-tmp), BUKAN os.TempDir() (tmpfs 100MB di panel).
+// Dipanggil sekali saat startup.
 func CleanStaleDownloads() {
-	entries, err := os.ReadDir(os.TempDir())
+	tmpBase, err := store.BotTempDir()
+	if err != nil {
+		return
+	}
+	entries, err := os.ReadDir(tmpBase)
 	if err != nil {
 		return
 	}
@@ -1107,7 +1117,7 @@ func CleanStaleDownloads() {
 		if !strings.HasPrefix(e.Name(), "wabot-dl-") {
 			continue
 		}
-		p := filepath.Join(os.TempDir(), e.Name())
+		p := filepath.Join(tmpBase, e.Name())
 		info, err := e.Info()
 		if err != nil {
 			continue

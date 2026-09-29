@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"wabot-go/internal/store"
 )
 
 // normTimeout membatasi sekali probe/transcode ffmpeg (file panel kecil;
@@ -120,7 +122,7 @@ func PrepareVideoBytes(ctx context.Context, data []byte) ([]byte, error) {
 	if err := CheckMediaBytes(data); err != nil {
 		return nil, err
 	}
-	dir, err := os.MkdirTemp("", "wabot-vnorm-*")
+	dir, err := os.MkdirTemp(store.MustBotTempDir(), "wabot-vnorm-*")
 	if err != nil {
 		return data, nil
 	}

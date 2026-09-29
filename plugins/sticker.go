@@ -195,7 +195,11 @@ func extractStickerMedia(mctx *store.MessageContext) (*waE2E.ImageMessage, *waE2
 // dengan background transparan. Untuk video/gif, animasi dibatasi 6 detik pertama & 10fps
 // supaya ukuran file stiker tetap wajar.
 func convertToStickerWebp(input []byte, isVideo bool) ([]byte, error) {
-	tmpDir, err := os.MkdirTemp("", "sticker-*")
+	baseTmp, err := store.BotTempDir()
+	if err != nil {
+		return nil, err
+	}
+	tmpDir, err := os.MkdirTemp(baseTmp, "sticker-*")
 	if err != nil {
 		return nil, err
 	}
