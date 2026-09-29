@@ -40,6 +40,13 @@ const (
 	dlStaleDays = 24 * time.Hour // umur temp yatim sebelum disapu startup
 	// Album TIDAK dibatasi (keputusan owner): semua item hasil scrape
 	// dikirim satu per satu, berapa pun jumlahnya.
+	// Batas ukuran & durasi YouTube (keputusan owner): media ≤100MB kirim
+	// normal (playable), 100-200MB kirim sebagai dokumen (batas WA 2GB,
+	// tapi RAM panel 1,46GB tidak muat lebih), >200MB ditolak. Durasi
+	// maks 35 menit divalidasi SEBELUM unduh via --match-filter.
+	maxDlMediaBytes = 100 << 20
+	maxDlDocBytes   = 200 << 20
+	maxDlSeconds    = 2100 // 35 menit
 )
 
 // dlSem membatasi download bersamaan (unduh + upload boros bandwidth, RAM,
@@ -524,7 +531,8 @@ func downloadViaYtdlp(ctx context.Context, mctx *store.MessageContext, rawURL st
 	defer cancel()
 
 	tmpl := filepath.Join(dir, "%(title).80s.%(ext)s")
-	args := []string{"--no-playlist", "-o", tmpl}
+	args := []string{"--no-playlist", "-o", tmpl,
+		"--match-filter", fmt.Sprintf("duration < %d", maxDlSeconds)}
 	if audioOnly {
 		args = append(args, "-f", "bestaudio/best", "-x", "--audio-format", "mp3")
 	} else {
@@ -551,6 +559,9 @@ func downloadViaYtdlp(ctx context.Context, mctx *store.MessageContext, rawURL st
 		if timeoutCtx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("download melebihi %s, dibatalkan.", dlTimeout)
 		}
+		if isMatchFilterReject(out) {
+			return fmt.Errorf("video melebihi batas %d menit.", maxDlSeconds/60)
+		}
 		return fmt.Errorf("gagal download: %v", firstDlErrorLine(out))
 	}
 
@@ -559,6 +570,16 @@ func downloadViaYtdlp(ctx context.Context, mctx *store.MessageContext, rawURL st
 		return err
 	}
 	caption := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
+
+	// Routing ukuran: ≤100MB normal, 100-200MB jadi dokumen, >200MB tolak
+	// (RAM panel tak muat). Stat di sini murah (file sudah di disk).
+	if info, serr := os.Stat(file); serr == nil && info.Size() > maxDlMediaBytes {
+		if info.Size() > maxDlDocBytes {
+			return fmt.Errorf("file %.0f MB melebihi batas %d MB.", float64(info.Size())/(1<<20), maxDlDocBytes/(1<<20))
+		}
+		caption += "\n(dikirim sebagai dokumen, >100MB)"
+		return sendDlDocument(ctx, mctx, file, caption)
+	}
 
 	if audioOnly {
 		err = sendDlAudio(ctx, mctx, file)
@@ -603,6 +624,57 @@ func firstDlErrorLine(out []byte) string {
 		return "error tidak diketahui"
 	}
 	return string(runes)
+}
+
+// isMatchFilterReject true kalau output yt-dlp menunjukkan penolakan
+// --match-filter (durasi melebihi batas) — pesannya tidak selalu mengandung
+// "ERROR", jadi dideteksi khusus supaya user dapat pesan ramah.
+func isMatchFilterReject(out []byte) bool {
+	return strings.Contains(strings.ToLower(string(out)), "match_filter")
+}
+
+// sendDlDocument mengupload + mengirim file sebagai dokumen (untuk hasil
+// >100MB yang tak bisa jadi media playable). Mime dari ekstensi.
+func sendDlDocument(ctx context.Context, mctx *store.MessageContext, file, caption string) error {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	mime := "application/octet-stream"
+	switch strings.ToLower(filepath.Ext(file)) {
+	case ".mp4", ".mov":
+		mime = "video/mp4"
+	case ".mp3":
+		mime = "audio/mpeg"
+	case ".m4a":
+		mime = "audio/mp4"
+	case ".webm":
+		mime = "video/webm"
+	}
+	uploaded, err := mctx.Client.Upload(ctx, data, whatsmeow.MediaDocument)
+	if err != nil {
+		return err
+	}
+	filename := filepath.Base(file)
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{
+		DocumentMessage: &waE2E.DocumentMessage{
+			URL:           proto.String(uploaded.URL),
+			DirectPath:    proto.String(uploaded.DirectPath),
+			MediaKey:      uploaded.MediaKey,
+			Mimetype:      proto.String(mime),
+			FileEncSHA256: uploaded.FileEncSHA256,
+			FileSHA256:    uploaded.FileSHA256,
+			FileLength:    proto.Uint64(uploaded.FileLength),
+			FileName:      proto.String(filename),
+			Caption:       proto.String(caption),
+		},
+	})
+	if err != nil {
+		return err
+	}
+	store.LogOutgoing(mctx, "dl-document", filename)
+	store.TrackBotMessageID(resp.ID, filename)
+	return nil
 }
 
 // pickDlFile memilih file hasil unduhan (terbesar, abaikan sisa .part).
