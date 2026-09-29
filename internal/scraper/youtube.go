@@ -1,336 +1,232 @@
 package scraper
 
 import (
+	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
-	"net/url"
 	"regexp"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
 
-// FetchYouTube mengambil video/audio YouTube via id-y2mate.com (port dari
-// y2mate.js koleksi): cookie session → analyze → pilih format → convert →
-// poll sampai URL unduhan keluar. audioOnly=true memilih mp3 128kbps
-// (dipakai .youtubemp3 / .yt --mp3), selain itu mp4 720p.
+// FetchYouTube mengambil video/audio YouTube via savetube-direct (port dari
+// script Vamz Spectre untuk yttmp3.com.co — credit dipertahankan di bawah).
+// Alur: random-cdn → /v2/info (payload terenkripsi) → pilih format → URL
+// googlevideo langsung bila ada, else /download dengan key. audioOnly=true
+// memilih MP3 (dipakai .youtubemp3 / .yt --mp3), selain itu MP4 720p.
+//
+// Credit: Author Vamz Spectre, WhatsApp
+// https://whatsapp.com/channel/0029Vb8n36OGE56uvRAq4y3y, base yttmp3.com.co.
+// uploadToVamxCdn dari script asli SENGAJA tidak di-port (mirror pihak
+// ketiga tak diperlukan — kita unduh langsung).
+//
+// y2mate SUDAH DIHAPUS (keputusan owner): lebih lambat (polling), dan
+// savetube-direct terverifikasi 4/4 live (cdn, info, dekripsi, download).
 func FetchYouTube(ctx context.Context, pageURL string, audioOnly bool) (*ScrapeResult, error) {
-	const engine = "y2mate"
-	const base = "https://id-y2mate.com"
-
-	vid := extractYouTubeID(pageURL)
-	if vid == "" {
+	const engine = "savetube"
+	if extractYouTubeID(pageURL) == "" {
 		return nil, fmt.Errorf("%s: ID video tidak dikenali", engine)
 	}
 
-	// Deadline total ~100 detik (analyze + convert + poll); panel menunggu
-	// dengan pesan status, jadi jangan gantung selamanya.
-	tctx, cancel := context.WithTimeout(ctx, 100*time.Second)
+	tctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
-	jar, _ := cookiejar.New(nil)
-	// 45 detik per request (bukan 20): analyze dari jaringan panel terbukti
-	// butuh >20 detik (timeout menunggu headers, Sep 2026). Total masih di
-	// bawah deadline 100 detik karena retry dibatasi sekali.
-	cli := &http.Client{Timeout: 45 * time.Second, Jar: jar}
-	ua := "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36"
-	get := func(url string) error {
-		req, err := http.NewRequestWithContext(tctx, http.MethodGet, url, nil)
+	ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	call := func(method, url, body string) ([]byte, error) {
+		var reader io.Reader
+		if body != "" {
+			reader = strings.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(tctx, method, url, reader)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		req.Header.Set("User-Agent", ua)
-		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-		resp, err := cli.Do(req)
+		req.Header.Set("Origin", "https://yttmp3.com.co")
+		req.Header.Set("Referer", "https://yttmp3.com.co/")
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := httpClient.Do(req)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		defer resp.Body.Close()
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-		return nil
-	}
-	post := func(path string, form url.Values, v any) error {
-		req, err := http.NewRequestWithContext(tctx, http.MethodPost, base+path, strings.NewReader(form.Encode()))
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		if err != nil {
-			return err
-		}
-		req.Header.Set("User-Agent", ua)
-		req.Header.Set("Accept", "*/*")
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-		req.Header.Set("Origin", base)
-		req.Header.Set("Referer", base+"/")
-		req.Header.Set("X-Requested-With", "XMLHttpRequest")
-		resp, err := cli.Do(req)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-		if err != nil {
-			return err
+			return nil, err
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return fmt.Errorf("HTTP %d", resp.StatusCode)
+			return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 		}
-		if err := json.Unmarshal(body, v); err != nil {
-			return fmt.Errorf("JSON invalid: %w", err)
-		}
-		return nil
+		return raw, nil
 	}
 
-	// 1. Session cookies.
-	if err := get(base + "/"); err != nil {
-		return nil, fmt.Errorf("%s: home: %w", engine, err)
+	// 1. CDN acak (fallback hardcode bila gagal).
+	cdn := "cdn401.savetube.vip"
+	if raw, err := call(http.MethodGet, "https://media.savetube.vip/api/random-cdn", ""); err == nil {
+		var rc struct {
+			CDN string `json:"cdn"`
+		}
+		if json.Unmarshal(raw, &rc) == nil && strings.TrimSpace(rc.CDN) != "" {
+			cdn = strings.TrimSpace(rc.CDN)
+		}
 	}
 
-	// 2. Analyze — coba 2x (sekali retry) karena request pertama dari
-	// panel kadang timeout di tengah jalan; kegagalan kedua baru fatal.
-	form := url.Values{"k_query": {pageURL}, "k_page": {"home"}, "hl": {"en"}, "q_auto": {"0"}}
-	var an y2analyze
-	var anErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		an = y2analyze{}
-		if anErr = post("/mates/analyzeV2/ajax", form, &an); anErr == nil && an.Status == "ok" {
-			break
-		}
-		if anErr == nil {
-			anErr = fmt.Errorf("status %q", an.Status)
-		}
-		select {
-		case <-tctx.Done():
-			return nil, fmt.Errorf("%s: analyze: %w", engine, anErr)
-		case <-time.After(2 * time.Second):
-		}
+	// 2. Info + dekripsi payload.
+	rawInfo, err := call(http.MethodPost, "https://"+cdn+"/v2/info", `{"url":`+jsonString(pageURL)+`}`)
+	if err != nil {
+		return nil, fmt.Errorf("%s: info: %w", engine, err)
 	}
-	if an.Status != "ok" {
-		return nil, fmt.Errorf("%s: analyze: %v", engine, anErr)
+	var infoResp struct {
+		Status  bool   `json:"status"`
+		Message string `json:"message"`
+		Data    string `json:"data"`
+	}
+	if err := json.Unmarshal(rawInfo, &infoResp); err != nil {
+		return nil, fmt.Errorf("%s: info invalid: %w", engine, err)
+	}
+	if !infoResp.Status || infoResp.Data == "" {
+		return nil, fmt.Errorf("%s: %s", engine, firstNonEmpty(infoResp.Message, "info gagal"))
+	}
+	meta, err := decryptSavetube(infoResp.Data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", engine, err)
 	}
 
-	// 3. Pilih format: mp4 (preferensi 720p→480p→360p→auto) atau mp3 128kbps.
-	// Entri video berukuran >95MB dilewati kalau ada alternatif — video
-	// panjang 720p bisa >150MB dan pasti mentok cap unduhan 100MB
-	// (pelajaran Sep 2026). Ukuran tak ter-parse dianggap layak coba.
-	// Fallback terakhir: entri terkecil supaya tetap ada usaha terbaik.
-	wantType := "mp4"
+	// 3. Pilih format + dapatkan URL unduhan.
 	if audioOnly {
-		wantType = "mp3"
-	}
-	group := an.Links[wantType]
-	var ids []string
-	for id := range group {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	prefQ := []string{"720p", "480p", "360p"}
-	if audioOnly {
-		prefQ = []string{"128kbps"}
-	}
-	const maxMB = 95.0
-	var token string
-	smallestID, smallestMB := "", 0.0
-	byQ := func(q string) (string, bool) {
-		for _, id := range ids {
-			if group[id].Q == q || id == q {
-				return id, true
-			}
+		dl, err := savetubeDownload(call, cdn, meta.Key, "audio", "128", "", meta.TitleSlug)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", engine, err)
 		}
-		return "", false
+		return &ScrapeResult{
+			Title:  meta.Title,
+			Items:  []ScrapeItem{{URL: dl, Thumb: meta.Thumbnail, Kind: KindAudio}},
+			Source: "savetube",
+		}, nil
 	}
-	fits := func(id string) bool {
-		mb, ok := parseY2Size(group[id].Size)
-		return !ok || mb <= maxMB
-	}
-	pick := ""
-	if !audioOnly {
-		for _, q := range prefQ {
-			if id, ok := byQ(q); ok && fits(id) {
-				pick = id
+	// Video: preferensi 720p; URL googlevideo langsung bila cocok.
+	quality := "720"
+	direct := ""
+	for _, f := range meta.VideoFormats {
+		if fmt.Sprint(f.Height) == quality || fmt.Sprint(f.Quality) == quality {
+			if strings.TrimSpace(f.URL) != "" {
+				direct = f.URL
 				break
 			}
 		}
-		if pick == "" {
-			if id, ok := byQ("auto"); ok && fits(id) {
-				pick = id
-			}
-		}
-	} else {
-		if id, ok := byQ("128kbps"); ok {
-			pick = id
-		}
 	}
-	if pick == "" {
-		for _, id := range ids {
-			if mb, ok := parseY2Size(group[id].Size); ok {
-				if smallestID == "" || mb < smallestMB {
-					smallestID, smallestMB = id, mb
-				}
-			}
-		}
-		if smallestID != "" {
-			pick = smallestID
-		} else if len(ids) > 0 {
-			pick = ids[0]
-		}
-	}
-	if pick != "" {
-		token = group[pick].K
-	}
-	if token == "" {
-		return nil, fmt.Errorf("%s: format %s tidak tersedia", engine, wantType)
-	}
-
-	// 4. Convert.
-	cform := url.Values{"vid": {firstNonEmpty(an.Vid, vid)}, "k": {token}}
-	var cv map[string]any
-	if err := post("/mates/convertV2/index", cform, &cv); err != nil {
-		return nil, fmt.Errorf("%s: convert: %w", engine, err)
-	}
-	if dl := findY2DownloadURL(cv); dl != "" {
-		return y2Result(an, dl, audioOnly), nil
-	}
-
-	// 5. Poll sampai URL keluar / gagal / deadline.
-	bid, _ := cv["b_id"].(string)
-	if bid == "" {
-		if s, ok := cv["bId"].(string); ok {
-			bid = s
-		}
-	}
-	if bid == "" {
-		return nil, fmt.Errorf("%s: convert tanpa hasil", engine)
-	}
-	deadline := time.Now().Add(80 * time.Second)
-	for time.Now().Before(deadline) {
-		select {
-		case <-tctx.Done():
-			return nil, fmt.Errorf("%s: timeout menunggu convert", engine)
-		case <-time.After(2 * time.Second):
-		}
-		pform := url.Values{"b_id": {bid}}
-		var pv map[string]any
-		if err := post("/mates/convertV2/pool", pform, &pv); err != nil {
-			continue
-		}
-		if dl := findY2DownloadURL(pv); dl != "" {
-			return y2Result(an, dl, audioOnly), nil
-		}
-		if failedY2(pv) {
-			return nil, fmt.Errorf("%s: convert gagal di server", engine)
-		}
-	}
-	return nil, fmt.Errorf("%s: timeout menunggu convert", engine)
-}
-
-type y2link struct {
-	Size  string `json:"size"`
-	F     string `json:"f"`
-	Q     string `json:"q"`
-	QText string `json:"q_text"`
-	K     string `json:"k"`
-}
-
-type y2analyze struct {
-	Status    string                       `json:"status"`
-	Vid       string                       `json:"vid"`
-	Title     string                       `json:"title"`
-	T         any                          `json:"t"`
-	Extractor string                       `json:"extractor"`
-	Links     map[string]map[string]y2link `json:"links"`
-}
-
-// y2Result merakit hasil akhir y2mate (thumb dari i.ytimg.com).
-func y2Result(an y2analyze, dl string, audioOnly bool) *ScrapeResult {
-	thumb := ""
-	if an.Vid != "" {
-		thumb = "https://i.ytimg.com/vi/" + an.Vid + "/hqdefault.jpg"
-	}
-	kind := KindVideo
-	if audioOnly {
-		kind = KindAudio
+	dl, err := savetubeDownload(call, cdn, meta.Key, "video", quality, direct, meta.TitleSlug)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", engine, err)
 	}
 	return &ScrapeResult{
-		Title:  strings.TrimSpace(an.Title),
-		Items:  []ScrapeItem{{URL: dl, Thumb: thumb, Kind: kind}},
-		Source: "y2mate",
-	}
+		Title:  meta.Title,
+		Items:  []ScrapeItem{{URL: dl, Thumb: meta.Thumbnail, Kind: KindVideo}},
+		Source: "savetube",
+	}, nil
 }
 
-// findY2DownloadURL mencari URL unduhan di respons convert/poll: cek kunci
-// umum dulu, lalu regex URL apa pun sebagai jaring terakhir.
-func findY2DownloadURL(data any) string {
-	if data == nil {
-		return ""
-	}
-	if s, ok := data.(string); ok {
-		if m := y2URLRe.FindString(s); m != "" {
-			return strings.ReplaceAll(m, `\/`, `/`)
-		}
-		return ""
-	}
-	if m, ok := data.(map[string]any); ok {
-		for _, k := range []string{"dlink", "download", "download_url", "url", "link", "result", "result_url", "file", "href"} {
-			if s, ok := m[k].(string); ok && strings.HasPrefix(s, "http") {
-				return strings.ReplaceAll(s, `\/`, `/`)
-			}
-		}
-		for _, v := range m {
-			if dl := findY2DownloadURL(v); dl != "" {
-				return dl
-			}
-		}
-	}
-	if arr, ok := data.([]any); ok {
-		for _, v := range arr {
-			if dl := findY2DownloadURL(v); dl != "" {
-				return dl
-			}
-		}
-	}
-	return ""
+// savetubeMeta adalah hasil dekripsi /v2/info.
+type savetubeMeta struct {
+	ID           string `json:"id"`
+	Key          string `json:"key"`
+	Title        string `json:"title"`
+	TitleSlug    string `json:"titleSlug"`
+	Thumbnail    string `json:"thumbnail"`
+	Duration     any    `json:"duration"`
+	AudioFormats []struct {
+		Quality any    `json:"quality"`
+		URL     string `json:"url"`
+	} `json:"audio_formats"`
+	VideoFormats []struct {
+		Height  any    `json:"height"`
+		Width   any    `json:"width"`
+		URL     string `json:"url"`
+		Quality any    `json:"quality"`
+	} `json:"video_formats"`
 }
 
-var y2URLRe = regexp.MustCompile(`https?://[^\s"'<>]+`)
+// savetubeAESKey adalah kunci AES-128-CBC dari bundle Next.js yttmp3.com.co
+// (lihat script asal). Bisa dirotasi pemiliknya sewaktu-waktu — bila
+// dekripsi gagal, engine error dan rantai fallback (omnify) jalan.
+var savetubeAESKey = []byte{0xC5, 0xD5, 0x8E, 0xF6, 0x7A, 0x75, 0x84, 0xE4, 0xA2, 0x9F, 0x6C, 0x35, 0xBB, 0xC4, 0xEB, 0x12}
 
-// failedY2 true kalau respons pool menyatakan gagal eksplisit.
-func failedY2(pv map[string]any) bool {
-	if s, ok := pv["c_status"].(string); ok && s == "FAILED" {
-		return true
+// decryptSavetube mendekripsi payload base64 /v2/info: 16 byte pertama = IV,
+// sisanya ciphertext AES-128-CBC + unpad PKCS#7.
+func decryptSavetube(b64 string) (*savetubeMeta, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(b64, " ", ""))
+	if err != nil {
+		return nil, fmt.Errorf("base64: %w", err)
 	}
-	if s, ok := pv["status"].(string); ok && s == "error" {
-		return true
+	if len(raw) < aes.BlockSize*2 || len(raw)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("payload pendek/rusak")
 	}
-	return false
+	block, err := aes.NewCipher(savetubeAESKey)
+	if err != nil {
+		return nil, err
+	}
+	plain := make([]byte, len(raw)-aes.BlockSize)
+	cipher.NewCBCDecrypter(block, raw[:aes.BlockSize]).CryptBlocks(plain, raw[aes.BlockSize:])
+	n := len(plain)
+	pad := int(plain[n-1])
+	if pad <= 0 || pad > aes.BlockSize || pad > n {
+		return nil, fmt.Errorf("padding PKCS#7 invalid")
+	}
+	for _, v := range plain[n-pad:] {
+		if int(v) != pad {
+			return nil, fmt.Errorf("padding PKCS#7 invalid")
+		}
+	}
+	var meta savetubeMeta
+	if err := json.Unmarshal(bytes.TrimSpace(plain[:n-pad]), &meta); err != nil {
+		return nil, fmt.Errorf("JSON meta invalid: %w", err)
+	}
+	if meta.Key == "" {
+		return nil, fmt.Errorf("meta tanpa key")
+	}
+	return &meta, nil
 }
 
-// parseY2Size mengurai teks ukuran y2mate ("153.5 MB", "61 MB", "3.3 MB")
-// jadi megabyte. Gagal parse (mis. "MB" kosong) = false supaya pemanggil
-// memperlakukannya sebagai layak coba, bukan ditolak.
-func parseY2Size(s string) (float64, bool) {
-	f := strings.Fields(strings.TrimSpace(s))
-	if len(f) != 2 {
-		return 0, false
+// savetubeDownload mengambil URL unduhan final: URL googlevideo langsung
+// bila tersedia (video saja), else POST /download dengan key.
+func savetubeDownload(call func(method, url, body string) ([]byte, error), cdn, key, typ, quality, direct, slug string) (string, error) {
+	if direct != "" && typ != "audio" {
+		title := firstNonEmpty(slug, "video")
+		return direct + "&title=" + title + "-ytshorts.savetube.vip", nil
 	}
-	v, err := strconv.ParseFloat(f[0], 64)
-	if err != nil || v < 0 {
-		return 0, false
+	downloadType := typ
+	if typ == "audio" || quality == "128" {
+		downloadType = "audio"
 	}
-	switch strings.ToUpper(f[1]) {
-	case "B":
-		return v / (1 << 20), true
-	case "KB":
-		return v / 1024, true
-	case "MB":
-		return v, true
-	case "GB":
-		return v * 1024, true
-	default:
-		return 0, false
+	body := `{"downloadType":` + jsonString(downloadType) +
+		`,"quality":` + jsonString(quality) +
+		`,"key":` + jsonString(key) + `}`
+	raw, err := call("POST", "https://"+cdn+"/download", body)
+	if err != nil {
+		return "", err
 	}
+	var r struct {
+		Status  bool   `json:"status"`
+		Message string `json:"message"`
+		Data    *struct {
+			DownloadURL string `json:"downloadUrl"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return "", fmt.Errorf("respons invalid: %w", err)
+	}
+	if !r.Status || r.Data == nil || strings.TrimSpace(r.Data.DownloadURL) == "" {
+		return "", fmt.Errorf("%s", firstNonEmpty(r.Message, "download link gagal"))
+	}
+	return strings.TrimSpace(r.Data.DownloadURL), nil
 }
 
 // ytIDRe mengekstrak ID video 11-char dari youtu.be/ID, v=ID, /shorts/ID,
