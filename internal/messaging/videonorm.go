@@ -134,6 +134,13 @@ func PrepareVideoBytes(ctx context.Context, data []byte) ([]byte, error) {
 		fmt.Printf("⚠️ videonorm: probe gagal (%v), kirim apa adanya.\n", err)
 		return data, nil
 	}
+	// TANPA stream video = bukan video (kasus Sep 2026: TS 37MB berisi
+	// audio saja → transcode jadi MP4 hitam + thumb gagal). Tolak LOUD
+	// supaya tak terkirim bubble hitam: lebih baik pesan gagal jujur /
+	// fallback rantai berikutnya jalan.
+	if vcodec == "" {
+		return nil, fmt.Errorf("tidak ada stream video (%s/%s)", format, acodec)
+	}
 	if waCompliant(format, vcodec, acodec) {
 		return data, nil
 	}
@@ -144,6 +151,12 @@ func PrepareVideoBytes(ctx context.Context, data []byte) ([]byte, error) {
 	}
 	norm, err := os.ReadFile(out)
 	if err != nil || len(norm) == 0 {
+		return data, nil
+	}
+	// Validasi output: stream video wajib tetap ada (input bervideo →
+	// output tak bervideo = kirim yang asli, jangan MP4 hitam).
+	if _, ov, _, err := probeVideo(ctx, out); err != nil || ov == "" {
+		fmt.Printf("⚠️ videonorm: output kehilangan video, kirim apa adanya.\n")
 		return data, nil
 	}
 	fmt.Printf("videonorm: %s/%s/%s -> mp4/h264+aac (%d -> %d byte)\n", format, vcodec, acodec, len(data), len(norm))

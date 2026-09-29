@@ -7,6 +7,7 @@ import (
 	"crypto/cipher"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -34,9 +35,13 @@ func FetchYouTube(ctx context.Context, pageURL string, audioOnly bool) (*ScrapeR
 		return nil, fmt.Errorf("%s: ID video tidak dikenali", engine)
 	}
 
-	tctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	tctx, cancel := context.WithTimeout(ctx, 150*time.Second)
 	defer cancel()
 
+	// Client 60 detik per request (bukan 20 detik API): endpoint /download
+	// menyiapkan file di server sebelum header keluar — terbukti >20 detik
+	// dari panel (timeout menunggu headers, Sep 2026).
+	cli60 := &http.Client{Timeout: 60 * time.Second}
 	ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 	call := func(method, url, body string) ([]byte, error) {
 		var reader io.Reader
@@ -53,7 +58,7 @@ func FetchYouTube(ctx context.Context, pageURL string, audioOnly bool) (*ScrapeR
 		if body != "" {
 			req.Header.Set("Content-Type", "application/json")
 		}
-		resp, err := httpClient.Do(req)
+		resp, err := cli60.Do(req)
 		if err != nil {
 			return nil, err
 		}
@@ -67,16 +72,33 @@ func FetchYouTube(ctx context.Context, pageURL string, audioOnly bool) (*ScrapeR
 		}
 		return raw, nil
 	}
+	refreshCDN := func() string {
+		if raw, err := call(http.MethodGet, "https://media.savetube.vip/api/random-cdn", ""); err == nil {
+			var rc struct {
+				CDN string `json:"cdn"`
+			}
+			if json.Unmarshal(raw, &rc) == nil && strings.TrimSpace(rc.CDN) != "" {
+				return strings.TrimSpace(rc.CDN)
+			}
+		}
+		return "cdn401.savetube.vip"
+	}
 
 	// 1. CDN acak (fallback hardcode bila gagal).
-	cdn := "cdn401.savetube.vip"
-	if raw, err := call(http.MethodGet, "https://media.savetube.vip/api/random-cdn", ""); err == nil {
-		var rc struct {
-			CDN string `json:"cdn"`
+	cdn := refreshCDN()
+	// downloadWithRetry memanggil /download; bila TIMEOUT, CDN di-refresh
+	// (host lambat diganti, bukan diulang) lalu coba sekali lagi.
+	downloadWithRetry := func(typ, quality, direct, slug, key string) (string, error) {
+		dl, err := savetubeDownload(call, cdn, key, typ, quality, direct, slug)
+		if err == nil {
+			return dl, nil
 		}
-		if json.Unmarshal(raw, &rc) == nil && strings.TrimSpace(rc.CDN) != "" {
-			cdn = strings.TrimSpace(rc.CDN)
+		if !isTimeoutErr(err) {
+			return "", err
 		}
+		fmt.Printf("⚠️ savetube: /download timeout di %s, coba CDN lain.\n", cdn)
+		cdn = refreshCDN()
+		return savetubeDownload(call, cdn, key, typ, quality, direct, slug)
 	}
 
 	// 2. Info + dekripsi payload.
@@ -102,7 +124,7 @@ func FetchYouTube(ctx context.Context, pageURL string, audioOnly bool) (*ScrapeR
 
 	// 3. Pilih format + dapatkan URL unduhan.
 	if audioOnly {
-		dl, err := savetubeDownload(call, cdn, meta.Key, "audio", "128", "", meta.TitleSlug)
+		dl, err := downloadWithRetry("audio", "128", "", meta.TitleSlug, meta.Key)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", engine, err)
 		}
@@ -123,7 +145,7 @@ func FetchYouTube(ctx context.Context, pageURL string, audioOnly bool) (*ScrapeR
 			}
 		}
 	}
-	dl, err := savetubeDownload(call, cdn, meta.Key, "video", quality, direct, meta.TitleSlug)
+	dl, err := downloadWithRetry("video", quality, direct, meta.TitleSlug, meta.Key)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", engine, err)
 	}
@@ -227,6 +249,21 @@ func savetubeDownload(call func(method, url, body string) ([]byte, error), cdn, 
 		return "", fmt.Errorf("%s", firstNonEmpty(r.Message, "download link gagal"))
 	}
 	return strings.TrimSpace(r.Data.DownloadURL), nil
+}
+
+// isTimeoutErr true untuk error timeout jaringan/konteks (layak retry ke
+// host lain; error lain seperti HTTP/JSON tidak akan sembuh dengan retry).
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var nerr interface{ Timeout() bool }
+	if errors.As(err, &nerr) && nerr.Timeout() {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "Client.Timeout")
 }
 
 // ytIDRe mengekstrak ID video 11-char dari youtu.be/ID, v=ID, /shorts/ID,
