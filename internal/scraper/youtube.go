@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -94,11 +95,14 @@ func FetchYouTube(ctx context.Context, pageURL string, audioOnly bool) (*ScrapeR
 		return nil, fmt.Errorf("%s: analyze gagal", engine)
 	}
 
-	// 3. Pilih format: mp4 720p atau mp3 128kbps (fallback: auto, lalu key
-	// pertama terurut supaya deterministik — map Go acak urutannya).
-	wantType, wantQ := "mp4", "720p"
+	// 3. Pilih format: mp4 (preferensi 720p→480p→360p→auto) atau mp3 128kbps.
+	// Entri video berukuran >95MB dilewati kalau ada alternatif — video
+	// panjang 720p bisa >150MB dan pasti mentok cap unduhan 100MB
+	// (pelajaran Sep 2026). Ukuran tak ter-parse dianggap layak coba.
+	// Fallback terakhir: entri terkecil supaya tetap ada usaha terbaik.
+	wantType := "mp4"
 	if audioOnly {
-		wantType, wantQ = "mp3", "128kbps"
+		wantType = "mp3"
 	}
 	group := an.Links[wantType]
 	var ids []string
@@ -106,27 +110,62 @@ func FetchYouTube(ctx context.Context, pageURL string, audioOnly bool) (*ScrapeR
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	var key, token string
-	for _, id := range ids {
-		if group[id].Q == wantQ || id == wantQ {
-			key, token = id, group[id].K
-			break
-		}
+	prefQ := []string{"720p", "480p", "360p"}
+	if audioOnly {
+		prefQ = []string{"128kbps"}
 	}
-	if token == "" {
+	const maxMB = 95.0
+	var token string
+	smallestID, smallestMB := "", 0.0
+	byQ := func(q string) (string, bool) {
 		for _, id := range ids {
-			if group[id].Q == "auto" {
-				key, token = id, group[id].K
+			if group[id].Q == q || id == q {
+				return id, true
+			}
+		}
+		return "", false
+	}
+	fits := func(id string) bool {
+		mb, ok := parseY2Size(group[id].Size)
+		return !ok || mb <= maxMB
+	}
+	pick := ""
+	if !audioOnly {
+		for _, q := range prefQ {
+			if id, ok := byQ(q); ok && fits(id) {
+				pick = id
 				break
 			}
 		}
+		if pick == "" {
+			if id, ok := byQ("auto"); ok && fits(id) {
+				pick = id
+			}
+		}
+	} else {
+		if id, ok := byQ("128kbps"); ok {
+			pick = id
+		}
 	}
-	if token == "" && len(ids) > 0 {
-		key, token = ids[0], group[ids[0]].K
-		_ = key
+	if pick == "" {
+		for _, id := range ids {
+			if mb, ok := parseY2Size(group[id].Size); ok {
+				if smallestID == "" || mb < smallestMB {
+					smallestID, smallestMB = id, mb
+				}
+			}
+		}
+		if smallestID != "" {
+			pick = smallestID
+		} else if len(ids) > 0 {
+			pick = ids[0]
+		}
+	}
+	if pick != "" {
+		token = group[pick].K
 	}
 	if token == "" {
-		return nil, fmt.Errorf("%s: format %s %s tidak tersedia", engine, wantType, wantQ)
+		return nil, fmt.Errorf("%s: format %s tidak tersedia", engine, wantType)
 	}
 
 	// 4. Convert.
@@ -250,6 +289,32 @@ func failedY2(pv map[string]any) bool {
 		return true
 	}
 	return false
+}
+
+// parseY2Size mengurai teks ukuran y2mate ("153.5 MB", "61 MB", "3.3 MB")
+// jadi megabyte. Gagal parse (mis. "MB" kosong) = false supaya pemanggil
+// memperlakukannya sebagai layak coba, bukan ditolak.
+func parseY2Size(s string) (float64, bool) {
+	f := strings.Fields(strings.TrimSpace(s))
+	if len(f) != 2 {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(f[0], 64)
+	if err != nil || v < 0 {
+		return 0, false
+	}
+	switch strings.ToUpper(f[1]) {
+	case "B":
+		return v / (1 << 20), true
+	case "KB":
+		return v / 1024, true
+	case "MB":
+		return v, true
+	case "GB":
+		return v * 1024, true
+	default:
+		return 0, false
+	}
 }
 
 // ytIDRe mengekstrak ID video 11-char dari youtu.be/ID, v=ID, /shorts/ID,

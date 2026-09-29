@@ -269,11 +269,14 @@ func fetchScraper(ctx context.Context, p *dlPlatform, rawURL string, audioOnly b
 		return withUniversal("pinterest", scraper.FetchPinterest)
 	case "youtube", "youtubemp3":
 		// YouTube lewat scraper (y2mate → omnify), flag audio diteruskan
-		// untuk mode --mp3/.youtubemp3.
+		// untuk mode --mp3/.youtubemp3. Kegagalan primary DICATAT ke console
+		// (bukan ditelan) supaya diagnosa panel tidak buta bila rantai jatuh
+		// ke universal.
 		if res, err := scraper.FetchYouTube(ctx, rawURL, audioOnly); err == nil {
 			return res, nil
 		} else {
 			firstErr := err
+			fmt.Printf("⚠️ downloader: y2mate gagal (%v), fallback omnify.\n", firstErr)
 			if res, err := scraper.FetchUniversal(ctx, rawURL); err == nil {
 				return res, nil
 			} else {

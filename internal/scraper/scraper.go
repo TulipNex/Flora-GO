@@ -53,6 +53,13 @@ const scraperUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 
 // httpClient bersama: timeout 20 detik per request API (bukan download).
 var httpClient = &http.Client{Timeout: 20 * time.Second}
 
+// dlClient KHUSUS mengunduh byte media (bukan API): timeout 10 menit.
+// KASUS NYATA (Sep 2026): audio YouTube 15,9MB butuh ~38 detik bahkan dari
+// jaringan cepat — timeout 20 detik yang dipakai bersama menjamin gagal
+// (context deadline exceeded while reading body) untuk file belasan MB di
+// panel yang lebih lambat. Cap 100MB tetap (lihat downloadBytes).
+var dlClient = &http.Client{Timeout: 10 * time.Minute}
+
 // fetchJSON GET JSON dan decode ke v. Error menyebut nama engine supaya
 // rantai fallback bisa merangkai pesan gabungan yang informatif.
 func fetchJSON(ctx context.Context, engine, rawURL string, headers map[string]string, v any) error {
@@ -118,6 +125,8 @@ func postFormJSON(ctx context.Context, engine, rawURL string, form map[string]st
 // downloadBytes mengunduh URL media langsung (CDN) dengan tameng SSRF
 // sendiri (paket ini dilarang import plugins, jadi cek duplikat minimal di
 // sini — pola sama dengan isPublicGetURL milik .get). Batas 100MB per file.
+// Pakai dlClient (timeout 10 menit), BUKAN httpClient 20-detik yang hanya
+// untuk API JSON.
 func downloadBytes(ctx context.Context, rawURL string) ([]byte, error) {
 	if err := checkPublicURL(ctx, rawURL); err != nil {
 		return nil, err
@@ -127,7 +136,7 @@ func downloadBytes(ctx context.Context, rawURL string) ([]byte, error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", scraperUA)
-	resp, err := httpClient.Do(req)
+	resp, err := dlClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
