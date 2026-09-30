@@ -13,10 +13,27 @@ import (
 	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/proto/waAICommon"
 	"go.mau.fi/whatsmeow/proto/waAICommonDeprecated"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
 )
+
+// richMetaAIBotJID adalah JID bot Meta AI asli (dari referensi NIXCODE).
+// Versi port sebelumnya memakai "0@bot" (dari port YuukiBot) — kemungkinan
+// penyebab render ditolak klien yang memvalidasi identitas bot.
+const richMetaAIBotJID = "867051314767696@bot"
+
+// richAlertSubmessage adalah submessage placeholder "[ UNSUPPORTED_TYPE - X ]"
+// (type TEXT) yang WAJIB menyertai section non-teks/tabel/kode (source,
+// suggest, widget) menurut referensi — tanpanya section yatim diabaikan
+// klien (pelajaran uji Sep 2026: source & suggest tak tampil).
+func richAlertSubmessage(typename string) *waAICommonDeprecated.AIRichResponseSubMessage {
+	return &waAICommonDeprecated.AIRichResponseSubMessage{
+		MessageType: waAICommonDeprecated.AIRichResponseSubMessageType_AI_RICH_RESPONSE_TEXT.Enum(),
+		MessageText: proto.String("[ UNSUPPORTED_TYPE - " + typename + "]"),
+	}
+}
 
 // richCodeKeywords adalah kata kunci per bahasa untuk highlight (cermin
 // referensi; bahasa tak dikenal = satu blok DEFAULT utuh).
@@ -278,7 +295,7 @@ func richForwardedContext() *waE2E.ContextInfo {
 		ForwardingScore: proto.Uint32(1),
 		IsForwarded:     proto.Bool(true),
 		ForwardedAiBotMessageInfo: &waAICommon.ForwardedAIBotMessageInfo{
-			BotJID: proto.String("0@bot"),
+			BotJID: proto.String(richMetaAIBotJID),
 		},
 		ForwardOrigin: waE2E.ContextInfo_META_AI.Enum(),
 	}
@@ -308,6 +325,7 @@ func (b *AIRichBuilder) AddCode(language, code string) *AIRichBuilder {
 // (ada di versi referensi, hilang di upstream) — sumber hanya dibawa di
 // section unified (cukup untuk render; metadata proto-nya opsional).
 func (b *AIRichBuilder) AddSource(iconURL, url, displayName string) *AIRichBuilder {
+	b.submessages = append(b.submessages, richAlertSubmessage("GenAISearchResultPrimitive"))
 	b.sections = append(b.sections, newRichLayout("Single", map[string]any{
 		"sources": []any{
 			map[string]any{
@@ -328,21 +346,23 @@ func (b *AIRichBuilder) AddSource(iconURL, url, displayName string) *AIRichBuild
 	return b
 }
 
-// AddTip menambah teks metadata kecil (GenAIMetadataTextPrimitive).
+// AddTip menambah teks metadata kecil (GenAIMetadataTextPrimitive). Section
+// memakai prefix "? " seperti referensi (tanpanya tip tak tampil).
 func (b *AIRichBuilder) AddTip(text string) *AIRichBuilder {
 	b.submessages = append(b.submessages, &waAICommonDeprecated.AIRichResponseSubMessage{
 		MessageType: waAICommonDeprecated.AIRichResponseSubMessageType_AI_RICH_RESPONSE_TEXT.Enum(),
 		MessageText: proto.String(text),
 	})
 	b.sections = append(b.sections, newRichLayout("Single", map[string]any{
-		"text":       text,
+		"text":       "? " + text,
 		"__typename": "GenAIMetadataTextPrimitive",
 	}))
 	return b
 }
 
-// AddSuggest menambah saran follow-up (GenAIFollowUpSuggestionPillPrimitive)
-// sebagai section HScroll.
+// AddSuggest menambah saran follow-up (GenAIFollowUpSuggestionPillPrimitive):
+// 1 saran = layout Single, >1 = HScroll — plus submessage alert WAJIB
+// (tanpanya section yatim, pelajaran uji Sep 2026).
 func (b *AIRichBuilder) AddSuggest(suggestions []string) *AIRichBuilder {
 	var pills []any
 	for _, s := range suggestions {
@@ -352,7 +372,12 @@ func (b *AIRichBuilder) AddSuggest(suggestions []string) *AIRichBuilder {
 			"__typename":  "GenAIFollowUpSuggestionPillPrimitive",
 		})
 	}
-	b.sections = append(b.sections, newRichLayout("HScroll", pills))
+	b.submessages = append(b.submessages, richAlertSubmessage("GenAIFollowUpSuggestionPillPrimitive"))
+	if len(pills) == 1 {
+		b.sections = append(b.sections, newRichLayout("Single", pills[0]))
+	} else {
+		b.sections = append(b.sections, newRichLayout("HScroll", pills))
+	}
 	return b
 }
 
@@ -360,10 +385,12 @@ func (b *AIRichBuilder) AddSuggest(suggestions []string) *AIRichBuilder {
 // envelope bot + metadata sumber). Dipisah dari Send supaya bisa
 // di-unit-test tanpa koneksi.
 func (b *AIRichBuilder) build() *waE2E.Message {
-	sections := b.sections
+	// response_id + botResponseId unik per kiriman (cermin referensi yang
+	// me-refresh keduanya tiap pesan dinamis).
+	respID := fmt.Sprintf("resp-%d", time.Now().UnixNano())
 	unified := map[string]any{
-		"response_id": fmt.Sprintf("resp-%d", time.Now().UnixNano()),
-		"sections":    sections,
+		"response_id": respID,
+		"sections":    b.sections,
 	}
 	data, _ := json.Marshal(unified)
 	return &waE2E.Message{
@@ -372,6 +399,7 @@ func (b *AIRichBuilder) build() *waE2E.Message {
 			DeviceListMetadataVersion: proto.Int32(2),
 			BotMetadata: &waAICommon.BotMetadata{
 				MessageDisclaimerText: proto.String(b.title),
+				BotResponseID:         proto.String(respID),
 			},
 		},
 		BotForwardedMessage: &waE2E.FutureProofMessage{
@@ -390,14 +418,36 @@ func (b *AIRichBuilder) build() *waE2E.Message {
 }
 
 // Send mengirim pesan rich MENTAH (varian menang V1 — tanpa wrapper
-// ViewOnceMessage yang terbukti menghilangkan pesan). Error = gagal kirim.
+// ViewOnceMessage yang terbukti menghilangkan pesan), lalu mengirim EDIT
+// SUSULAN berisi konten yang sama (protocolMessage type 14 dalam
+// BotForwardedMessage — cermin referensi NIXCODE; diduga pemicu render
+// klien). Edit biasanya sunyi (tanpa notifikasi kedua). Error = gagal kirim.
 func (b *AIRichBuilder) Send(ctx context.Context, mctx *store.MessageContext) (types.MessageID, error) {
 	if len(b.submessages) == 0 && len(b.sections) == 0 {
 		return "", fmt.Errorf("AIRich butuh minimal satu blok (AddText/AddTable/AddCode/dll)")
 	}
-	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, b.build())
+	msg := b.build()
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, msg)
 	if err != nil {
 		return "", err
+	}
+	editMsg := &waE2E.Message{
+		BotForwardedMessage: &waE2E.FutureProofMessage{
+			Message: &waE2E.Message{
+				ProtocolMessage: &waE2E.ProtocolMessage{
+					Key: &waCommon.MessageKey{
+						RemoteJID: proto.String(mctx.Chat.String()),
+						FromMe:    proto.Bool(true),
+						ID:        proto.String(string(resp.ID)),
+					},
+					Type:          waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
+					EditedMessage: msg,
+				},
+			},
+		},
+	}
+	if _, err := mctx.Client.SendMessage(ctx, mctx.Chat, editMsg); err != nil {
+		fmt.Printf("⚠️ airich: edit susulan gagal (pesan utama %s tetap terkirim): %v\n", resp.ID, err)
 	}
 	return resp.ID, nil
 }
