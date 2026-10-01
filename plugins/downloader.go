@@ -932,8 +932,10 @@ const webpConvertTimeout = 60 * time.Second
 
 // runFfmpegConvert menjalankan ffmpeg (input byte → file output) lalu
 // membaca hasilnya kembali. Pola temp+stderr sama dengan
-// convertToStickerWebp di sticker.go.
-func runFfmpegConvert(ctx context.Context, data []byte, inExt, outName string, args ...string) ([]byte, error) {
+// convertToStickerWebp di sticker.go. inArgs adalah opsi INPUT yang harus
+// muncul SEBELUM "-i" (mis. "-c:v libwebp" untuk memaksa decoder tertentu);
+// args adalah opsi output biasa. nil untuk inArgs kalau tidak perlu.
+func runFfmpegConvert(ctx context.Context, data []byte, inExt, outName string, inArgs []string, args ...string) ([]byte, error) {
 	tmpDir, err := os.MkdirTemp(store.MustBotTempDir(), "dl-webp-*")
 	if err != nil {
 		return nil, err
@@ -946,7 +948,9 @@ func runFfmpegConvert(ctx context.Context, data []byte, inExt, outName string, a
 	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, webpConvertTimeout)
 	defer cancel()
-	full := append([]string{"-y", "-i", inPath}, args...)
+	full := append([]string{"-y"}, inArgs...)
+	full = append(full, "-i", inPath)
+	full = append(full, args...)
 	full = append(full, outPath)
 	cmd := exec.CommandContext(timeoutCtx, "ffmpeg", full...)
 	var stderr bytes.Buffer
@@ -960,15 +964,30 @@ func runFfmpegConvert(ctx context.Context, data []byte, inExt, outName string, a
 // convertWebPToJPEG mengubah webp STATIS jadi JPEG (dimensi asli
 // dipertahankan — bukan kanvas stiker 512x512, karena tujuannya anak
 // album/gambar biasa).
+//
+// JPEG tidak punya channel alpha: piksel transparan (stiker) ter-decode
+// jadi HITAM kalau dibiarkan (teramati: .toimg menghasilkan foto berlatar
+// hitam). Filter menimpa frame putih seukuran input (drawbox t=fill dengan
+// iw/ih eksplisit — tanpa dimensi hardcode) lalu overlay gambar asli di
+// atasnya, sehingga latar jadi putih.
 func convertWebPToJPEG(ctx context.Context, data []byte) ([]byte, error) {
-	return runFfmpegConvert(ctx, data, ".webp", "out.jpg", "-frames:v", "1", "-q:v", "3")
+	return runFfmpegConvert(ctx, data, ".webp", "out.jpg", nil,
+		"-vf", "split[a][b];[a]drawbox=x=0:y=0:w=iw:h=ih:c=white:t=fill[bg];[bg][b]overlay,format=yuv420p",
+		"-frames:v", "1", "-q:v", "3")
 }
 
-// convertWebPToMP4 mengubah webp ANIMASI jadi MP4 h264 (durasi animasi asli
-// terbawa) supaya bisa menjadi anak VIDEO album.
+// convertWebPToMP4 mengubah webp ANIMASI jadi MP4 h264 supaya bisa menjadi
+// anak VIDEO album (dan dipakai .togif).
+//
+// Decoder webp NATIVE ffmpeg (termasuk build Debian 12 di panel) melewati
+// chunk animasi (log: "skipping unsupported chunk: ANIM/ANMF" → "image data
+// not found") sehingga webp animasi GAGAL di-decode — wajib paksa decoder
+// libwebp via opsi input -c:v SEBELUM -i. -t 10 membatasi durasi keluaran
+// (stiker animasi pendek; tanpa ini animasi panjang jadi MP4 raksasa).
 func convertWebPToMP4(ctx context.Context, data []byte) ([]byte, error) {
-	return runFfmpegConvert(ctx, data, ".webp", "out.mp4",
-		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart")
+	return runFfmpegConvert(ctx, data, ".webp", "out.mp4", []string{"-c:v", "libwebp"},
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+		"-t", "10")
 }
 
 // normalizePhotoBytes menyiapkan byte foto untuk dikirim: WebP statis →

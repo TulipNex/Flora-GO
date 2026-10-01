@@ -77,12 +77,21 @@ func printBanner() {
 	fmt.Println(line)
 	fmt.Printf("  Language : Go (%s)\n", runtime.Version())
 	fmt.Println("  Library  : whatsmeow")
-	fmt.Printf("  Owner    : %s (%s)\n", config.OwnerName, config.OwnerNumber)
+	fmt.Printf("  Owner    : %s (%s)\n", config.OwnerName, strings.Join(config.OwnerNumbers, ", "))
 	fmt.Println(line)
 	fmt.Println()
 }
 
 func main() {
+	// Validasi owner PALING AWAL, sebelum apa pun (termasuk banner): nomor
+	// owner WAJIB dari .env (OWNER_NUMBERS), tanpa fallback hardcoded.
+	// Kosong = semua command admin terkunci + notifikasi error AI tanpa
+	// tujuan — lebih baik tolak start dengan pesan eksplisit (preseden:
+	// LOGIN_METHOD kosong juga panic).
+	if len(config.OwnerNumbers) == 0 {
+		panic("OWNER_NUMBERS kosong di file .env. Isi dengan 1-2 nomor, contoh: OWNER_NUMBERS=62812xxxxxxx,62813xxxxxxx (digit saja, pisah koma).")
+	}
+
 	printBanner()
 
 	// ==========================================================

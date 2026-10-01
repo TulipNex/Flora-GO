@@ -16,6 +16,7 @@ const (
 	CategoryMedia = "Media"
 	CategoryAI    = "AI"
 	CategoryAlat  = "Alat"
+	CategoryGame  = "Game"
 	CategoryOwner = "Owner"
 )
 
@@ -31,6 +32,7 @@ var CategoryOrder = []string{
 	CategoryMedia,
 	CategoryAI,
 	CategoryAlat,
+	CategoryGame,
 	CategoryOwner,
 }
 

@@ -93,7 +93,7 @@ func RegisterMenu(r *Registry) {
 			// nama+versi bot, deskripsi = jumlah command TERLIHAT.
 			pageURL := strings.TrimSpace(config.MenuLink)
 			if pageURL == "" {
-				botNum := config.OwnerNumber
+				botNum := config.PrimaryOwnerNumber()
 				if id := mctx.Client.Store.ID; id != nil && id.ToNonAD().User != "" {
 					botNum = id.ToNonAD().User
 				}

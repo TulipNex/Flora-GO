@@ -16,7 +16,8 @@ func init() {
 	registerPlugin(RegisterOwnerAdmin)
 }
 
-// IsOwner mengecek apakah pengirim pesan adalah owner bot (config.OwnerNumber).
+// IsOwner mengecek apakah pengirim pesan adalah salah satu owner bot
+// (config.OwnerNumbers dari .env).
 // SenderAlt ikut dicek karena di grup mode LID pengirim bisa muncul sebagai
 // @lid sementara nomor owner tersimpan sebagai PN — tanpa cek alt ini owner
 // justru terkunci di luar command miliknya sendiri.
@@ -40,10 +41,16 @@ func IsOwnerEvent(evt *events.Message) bool {
 }
 
 func isJIDOwner(jid types.JID) bool {
-	if jid.IsEmpty() || config.OwnerNumber == "" {
+	if jid.IsEmpty() || len(config.OwnerNumbers) == 0 {
 		return false
 	}
-	return jid.ToNonAD().User == config.OwnerNumber
+	user := jid.ToNonAD().User
+	for _, owner := range config.OwnerNumbers {
+		if user == owner {
+			return true
+		}
+	}
+	return false
 }
 
 // requireOwner adalah gerbang semua command di file ini: mengembalikan pesan

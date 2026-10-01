@@ -24,7 +24,7 @@ func RegisterAI(r *Registry) {
 	r.Register(Command{
 		Name:        "agent",
 		Aliases:     []string{"ai"},
-		Description: "Kelola Flora (.agent model/provider/status/trust/trustlist/reset)",
+		Description: "Kelola Flora (.agent model/provider/status/trust/trustlist/reset/voice)",
 		Category:    CategoryOwner,
 		Handler:     handleAgentCommand,
 	})
@@ -62,6 +62,8 @@ func handleAgentCommand(ctx context.Context, mctx *store.MessageContext) error {
 		return handleTrustListSubcommand(ctx, mctx)
 	case "reset":
 		return handleResetSubcommand(ctx, mctx)
+	case "voice":
+		return handleVoiceSubcommand(ctx, mctx)
 	default:
 		return store.ReplyText(ctx, mctx, agentUsage())
 	}
@@ -78,6 +80,7 @@ func agentUsage() string {
 		".agent trustlist\n" +
 		".agent reset\n" +
 		".agent reset -memory [@user/nomor]\n" +
+		".agent voice [on/off]\n" +
 		"Ngobrol: sebut nama Flora / reply pesannya."
 }
 
@@ -325,6 +328,43 @@ func handleModelSubcommand(ctx context.Context, mctx *store.MessageContext) erro
 	return store.ReplyText(ctx, mctx, fmt.Sprintf("Oke, model AI sekarang: *%s*", name))
 }
 
+// handleVoiceSubcommand menangani ".agent voice on/off" (mode suara Flora:
+// balasan AI dikirim sebagai SATU voice note, bukan teks) dan
+// ".agent voice" polos (tampilkan status). KHUSUS owner — tiap balasan
+// memakan panggilan TTS + convert, jadi bukan keputusan user biasa.
+func handleVoiceSubcommand(ctx context.Context, mctx *store.MessageContext) error {
+	if msg := requireOwner(mctx); msg != "" {
+		return store.ReplyText(ctx, mctx, msg)
+	}
+	arg := strings.ToLower(strings.TrimSpace(strings.Join(mctx.Args[1:], " ")))
+
+	if arg == "" {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Mode suara Flora: *%s*\n\nPakai `.agent voice on` / `.agent voice off` untuk mengubah.", voiceOnOffText(ctx)))
+	}
+	switch arg {
+	case "on", "aktif", "enable", "nyala":
+		if err := ai.SetVoiceReply(ctx, true); err != nil {
+			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal menyalakan mode suara: %v", err))
+		}
+		return store.ReplyText(ctx, mctx, "Mode suara Flora: *ON* — balasan Flora dikirim sebagai voice note.")
+	case "off", "mati", "disable", "padam":
+		if err := ai.SetVoiceReply(ctx, false); err != nil {
+			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal mematikan mode suara: %v", err))
+		}
+		return store.ReplyText(ctx, mctx, "Mode suara Flora: *OFF* — balasan Flora dikirim sebagai teks seperti biasa.")
+	default:
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Argumen tidak dikenal. Pakai `.agent voice on` / `.agent voice off`.\nStatus sekarang: *%s*", voiceOnOffText(ctx)))
+	}
+}
+
+// voiceOnOffText mengembalikan "ON"/"OFF" untuk status mode suara Flora.
+func voiceOnOffText(ctx context.Context) string {
+	if ai.IsVoiceReplyOn(ctx) {
+		return "ON"
+	}
+	return "OFF"
+}
+
 // handleStatusSubcommand menangani ".agent status": menampilkan status lock
 // trigger natural (global), provider + model aktif, dan status sesi chat
 // ini (aktif kalau masih dalam idle timeout 30 menit, idle kalau sudah
@@ -350,8 +390,8 @@ func handleStatusSubcommand(ctx context.Context, mctx *store.MessageContext) err
 	}
 
 	return store.ReplyText(ctx, mctx, fmt.Sprintf(
-		"Status Flora:\n- Lock: %s\n- Provider: %s\n- Model: %s\n- Sesi chat ini: %s",
-		lockText, ai.GetActiveProviderName(ctx), ai.GetActiveModelName(ctx), sessionText,
+		"Status Flora:\n- Lock: %s\n- Provider: %s\n- Model: %s\n- Voice: %s\n- Sesi chat ini: %s",
+		lockText, ai.GetActiveProviderName(ctx), ai.GetActiveModelName(ctx), voiceOnOffText(ctx), sessionText,
 	))
 }
 
@@ -396,7 +436,7 @@ func HandleAIMessage(ctx context.Context, mctx *store.MessageContext, text strin
 		return store.ReplyText(ctx, mctx, "Maaf, lagi ada gangguan nih. Coba lagi sebentar ya~")
 	}
 
-	return sendBubbles(ctx, mctx, resultText)
+	return sendFloraReply(ctx, mctx, resultText)
 }
 
 // sendBubbles memecah balasan final jadi beberapa bubble (Fase 5) dan
@@ -444,6 +484,51 @@ func sendBubbles(ctx context.Context, mctx *store.MessageContext, text string) e
 	_ = mctx.Client.SendChatPresence(ctx, mctx.Chat, types.ChatPresencePaused, types.ChatPresenceMediaText)
 
 	return nil
+}
+
+// sendFloraReply mengirim balasan final Flora lewat jalur yang sesuai
+// mode: voice note UTUH bila `.agent voice on`, teks bubble bila OFF.
+// Satu-satunya pintu keluar balasan AI (HandleAIMessage) lewat sini.
+func sendFloraReply(ctx context.Context, mctx *store.MessageContext, text string) error {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	if ai.IsVoiceReplyOn(ctx) {
+		if err := sendVoiceReply(ctx, mctx, text); err != nil {
+			// Fail-soft: TTS gagal = kirim sebagai teks biasa. Balasan
+			// user tidak boleh hilang gara-gara layanan suara bermasalah.
+			fmt.Printf("⚠️ voice reply gagal (%v), fallback teks.\n", err)
+		} else {
+			return nil
+		}
+	}
+	return sendBubbles(ctx, mctx, text)
+}
+
+// sendVoiceReply mengirim SELURUH teks balasan sebagai SATU voice note
+// (tanpa pecah bubble, tanpa batas 500 char): teks dipecah jadi chunk di
+// dalam SynthesizeLong, MP3 digabung, sekali convert Opus, sekali kirim.
+// Suara fixed Gadis (identitas suara Flora). Presence composing dipakai
+// selama menyiapkan (whatsmeow tidak punya presence "recording").
+func sendVoiceReply(ctx context.Context, mctx *store.MessageContext, text string) error {
+	_ = mctx.Client.SendChatPresence(ctx, mctx.Chat, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+	defer func() {
+		_ = mctx.Client.SendChatPresence(ctx, mctx.Chat, types.ChatPresencePaused, types.ChatPresenceMediaText)
+	}()
+
+	mp3Bytes, err := SynthesizeLong(ctx, strings.TrimSpace(text), ttsDefaultVoice)
+	if err != nil {
+		return err
+	}
+	if len(mp3Bytes) == 0 {
+		return fmt.Errorf("hasil sintesis kosong")
+	}
+	opusBytes, err := runFfmpegConvert(ctx, mp3Bytes, ".mp3", "out.opus", nil,
+		"-c:a", "libopus", "-b:a", "48k")
+	if err != nil || len(opusBytes) == 0 {
+		return fmt.Errorf("gagal siapkan voice note: %v", err)
+	}
+	return sendVoiceNote(ctx, mctx, opusBytes)
 }
 
 // processAITurn adalah isi satu giliran percakapan AI, dipisah dari
@@ -626,12 +711,12 @@ func extractTriggerImage(ctx context.Context, mctx *store.MessageContext) (imgBy
 	return data, mime, ""
 }
 
-// notifyOwnerOfAIError mengirim laporan error teknis ke nomor owner
-// (config.OwnerNumber), terpisah dari pesan ramah yang dilihat user biasa.
+// notifyOwnerOfAIError mengirim laporan error teknis ke nomor owner UTAMA
+// (entri pertama OWNER_NUMBERS), terpisah dari pesan ramah yang dilihat user biasa.
 // Kegagalan kirim notifikasi ini sendiri sengaja diabaikan (fail-soft) —
 // tidak boleh sampai bikin proses utama gagal gara-gara notifikasi gagal.
 func notifyOwnerOfAIError(mctx *store.MessageContext, err error) {
-	ownerJID := types.NewJID(config.OwnerNumber, types.DefaultUserServer)
+	ownerJID := types.NewJID(config.PrimaryOwnerNumber(), types.DefaultUserServer)
 	report := ai.FormatOwnerErrorReport(mctx.Sender.String(), mctx.Chat.String(), err)
 
 	_, sendErr := mctx.Client.SendMessage(context.Background(), ownerJID, &waE2E.Message{

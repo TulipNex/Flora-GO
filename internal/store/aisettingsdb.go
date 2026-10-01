@@ -27,7 +27,8 @@ func InitAISettingsDB() error {
 		model_google      TEXT NOT NULL DEFAULT '',
 		model_openrouter  TEXT NOT NULL DEFAULT '',
 		model_nexarouter  TEXT NOT NULL DEFAULT '',
-		model_ciora       TEXT NOT NULL DEFAULT ''
+		model_ciora       TEXT NOT NULL DEFAULT '',
+		voice_reply       INTEGER NOT NULL DEFAULT 0
 	);
 	`
 	if _, err := aiDB.db.Exec(createSchema); err != nil {
@@ -45,6 +46,7 @@ func InitAISettingsDB() error {
 	for _, alter := range []string{
 		`ALTER TABLE ai_settings ADD COLUMN model_nexarouter TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE ai_settings ADD COLUMN model_ciora TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE ai_settings ADD COLUMN voice_reply INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := aiDB.db.Exec(alter); err != nil && !isDuplicateColumnError(err) {
 			return fmt.Errorf("gagal migrasi ai_settings (%s): %w", alter, err)
@@ -55,8 +57,8 @@ func InitAISettingsDB() error {
 	// menyebut kolom baru karena langkah 1+2 di atas menjamin kolomnya sudah
 	// pasti ada di titik ini, baik deployment baru maupun lama.
 	insertDefault := `
-	INSERT OR IGNORE INTO ai_settings (id, active_provider, model_google, model_openrouter, model_nexarouter, model_ciora)
-	VALUES (1, 'google', '', '', '', '');
+	INSERT OR IGNORE INTO ai_settings (id, active_provider, model_google, model_openrouter, model_nexarouter, model_ciora, voice_reply)
+	VALUES (1, 'google', '', '', '', '', 0);
 	`
 	if _, err := aiDB.db.Exec(insertDefault); err != nil {
 		return fmt.Errorf("gagal insert default ai_settings: %w", err)
@@ -91,16 +93,22 @@ type AISettings struct {
 	ModelOpenRouter string
 	ModelNexaRouter string
 	ModelCiora      string
+	VoiceReply      bool
 }
 
 // GetAISettings membaca baris setting (selalu ada tepat 1 baris, dijamin
 // oleh INSERT OR IGNORE di InitAISettingsDB).
 func (a *AIDB) GetAISettings(ctx context.Context) (AISettings, error) {
 	var s AISettings
+	var voiceReply int
 	err := a.db.QueryRowContext(ctx, `
-		SELECT active_provider, model_google, model_openrouter, model_nexarouter, model_ciora FROM ai_settings WHERE id = 1
-	`).Scan(&s.ActiveProvider, &s.ModelGoogle, &s.ModelOpenRouter, &s.ModelNexaRouter, &s.ModelCiora)
-	return s, err
+		SELECT active_provider, model_google, model_openrouter, model_nexarouter, model_ciora, voice_reply FROM ai_settings WHERE id = 1
+	`).Scan(&s.ActiveProvider, &s.ModelGoogle, &s.ModelOpenRouter, &s.ModelNexaRouter, &s.ModelCiora, &voiceReply)
+	if err != nil {
+		return s, err
+	}
+	s.VoiceReply = voiceReply != 0
+	return s, nil
 }
 
 // SetActiveProvider mengganti provider aktif (mis. "google" -> "openrouter").
@@ -110,6 +118,20 @@ func (a *AIDB) SetActiveProvider(ctx context.Context, provider string) error {
 	_, err := a.db.ExecContext(ctx, `
 		UPDATE ai_settings SET active_provider = ? WHERE id = 1
 	`, provider)
+	return err
+}
+
+// SetVoiceReply menyalakan/mematikan mode suara Flora (command
+// `.agent voice on/off`): true = balasan AI dikirim sebagai voice note,
+// false = teks bubble seperti biasa.
+func (a *AIDB) SetVoiceReply(ctx context.Context, on bool) error {
+	val := 0
+	if on {
+		val = 1
+	}
+	_, err := a.db.ExecContext(ctx, `
+		UPDATE ai_settings SET voice_reply = ? WHERE id = 1
+	`, val)
 	return err
 }
 

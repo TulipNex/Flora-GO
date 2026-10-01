@@ -276,6 +276,28 @@ func SetActiveModel(ctx context.Context, model string) error {
 	return nil
 }
 
+// IsVoiceReplyOn mengembalikan status mode suara Flora (command
+// `.agent voice on/off`), dibaca dari cache/SQLite. Fail-soft ke false
+// (teks) kalau DB bermasalah — supaya chat tetap jalan normal, bukan
+// gagal total gara-gara setting tidak terbaca.
+func IsVoiceReplyOn(ctx context.Context) bool {
+	s, err := getSettingsCached(ctx)
+	if err != nil {
+		return false
+	}
+	return s.VoiceReply
+}
+
+// SetVoiceReply menyimpan mode suara Flora, persist ke SQLite, dan
+// memperbarui cache — pola sama seperti SetActiveProvider.
+func SetVoiceReply(ctx context.Context, on bool) error {
+	if err := store.AI().SetVoiceReply(ctx, on); err != nil {
+		return err
+	}
+	invalidateSettingsCache()
+	return nil
+}
+
 // FormatProviderList merangkai daftar provider tersedia + penanda provider
 // aktif saat ini, dipakai saat user ketik ".agent provider" tanpa argumen.
 // Bernomor urut (1-based mengikuti AvailableProviders) supaya user bisa

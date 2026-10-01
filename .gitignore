@@ -6,4 +6,5 @@ wabot-go
 wabot-go-linux
 wabot-go.md
 .env
+test-env.ps1
 wabot-tmp/

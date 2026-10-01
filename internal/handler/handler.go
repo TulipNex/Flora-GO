@@ -117,6 +117,13 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 		return
 	}
 
+	// Bukan command (termasuk pesan media tanpa caption) → cek input game
+	// dulu (angka polos tictactoe): kalau dikonsumsi game, setop di sini
+	// supaya tidak bocor ke trigger AI. Bukan input game = lanjut normal.
+	if text != "" && plugins.CheckGameInput(client, evt, text) {
+		return
+	}
+
 	// Bukan command (termasuk pesan media tanpa caption) → cek trigger AI.
 	handleAITrigger(client, evt, text)
 }

@@ -1,21 +1,58 @@
 package config
 
-import "os"
+import (
+	"os"
+	"strings"
+)
 
 // ==========================
 // Data Owner
 // ==========================
 // Dipakai bersama oleh plugin manapun yang butuh info owner
 // (misal plugin .owner, pengecekan hak akses admin, dll).
-// Ganti nilai di bawah dengan data owner yang sebenarnya.
 const (
 	// OwnerName adalah nama yang ditampilkan (contoh: di contact card .owner)
 	OwnerName = "Mitra"
-
-	// OwnerNumber adalah nomor WhatsApp owner, format internasional,
-	// TANPA tanda "+", TANPA spasi/strip. Contoh: "6283853531950"
-	OwnerNumber = "6285324023198"
 )
+
+var (
+	// OwnerNumbers adalah daftar nomor WhatsApp owner, format internasional,
+	// TANPA tanda "+", TANPA spasi/strip. Contoh: "6283853531950".
+	// Dibaca MURNI dari .env (OWNER_NUMBERS=..., pisah koma) — tidak ada
+	// fallback hardcoded: .env kosong berarti TIDAK ADA owner, dan main.go
+	// menolak start (fail-fast) supaya bot tidak jalan pincang tanpa admin.
+	OwnerNumbers = parseOwnerNumbers(os.Getenv("OWNER_NUMBERS"))
+)
+
+// parseOwnerNumbers memecah nilai OWNER_NUMBERS (koma) jadi daftar digit
+// bersih: trim spasi, buang "+", strip, dan karakter non-digit; entri
+// kosong dibuang. "62812xxx, 62813xxx" -> ["62812xxx","62813xxx"].
+func parseOwnerNumbers(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		var digits strings.Builder
+		for _, r := range strings.TrimSpace(part) {
+			if r >= '0' && r <= '9' {
+				digits.WriteRune(r)
+			}
+		}
+		if s := digits.String(); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// PrimaryOwnerNumber mengembalikan owner pertama untuk keperluan yang butuh
+// SATU nomor (vCard .owner, target notifikasi error AI, fallback link
+// .menu, banner startup). "" kalau OWNER_NUMBERS kosong (main.go sudah
+// memastikan kondisi ini tidak lolos saat start normal).
+func PrimaryOwnerNumber() string {
+	if len(OwnerNumbers) == 0 {
+		return ""
+	}
+	return OwnerNumbers[0]
+}
 
 // ==========================
 // Identitas Bot
