@@ -23,7 +23,7 @@ wabot-go/
 │   │   ├── loop.go                # agent loop: generate -> eksekusi tool -> ulang (max 8 putaran)
 │   │   ├── registry.go            # registry tool AI + AgentContext
 │   │   ├── reliability.go         # retry error transient + notifikasi owner saat gagal
-│   │   ├── session.go             # sesi percakapan per private/grup, idle timeout 30 mnt, hydrate dari SQLite
+│   │   ├── session.go             # sesi percakapan per private/grup, idle timeout 10 mnt + ringkasan FIFO, hydrate dari SQLite
 │   │   ├── trigger.go             # deteksi trigger: kata kunci "flora/flo", reply, sticker, media + lock/unlock
 │   │   ├── lock.go                # perintah lock/unlock trigger natural (global, khusus owner)
 │   │   ├── spam_gate.go           # anti-spam per sender + lock per sesi
@@ -295,7 +295,7 @@ Bot merespons pesan **natural** (tanpa prefix) lewat trigger berikut — **hanya
 | Trigger | Keterangan |
 |---|---|
 | Kata kunci | Sebut nama bot: "flora", "flor", atau "flo" di dalam pesan |
-| Reply ke bot | Membalas bubble bot (hanya jika sesi masih aktif, belum idle 30 menit) |
+| Reply ke bot | Membalas bubble bot (hanya jika sesi masih aktif, belum idle 10 menit) |
 | Sticker-reply | Membalas pesan bot dengan stiker (sesi aktif) |
 | Media-reply | Membalas pesan bot dengan gambar/video/audio/dokumen tanpa caption (sesi aktif) |
 
@@ -317,7 +317,7 @@ Model bisa diganti per provider lewat `.agent model <nama>` (daftar model hardco
 ### Kemampuan AI
 
 - **Tool-calling**: AI bisa mengeksekusi `system_info`, `kick_member`, `promote_member`, `demote_member`, `set_group_name`, `tag_all`, `group_link`, `group_close`, `group_open`, `make_sticker` (butuh hak admin grup yang cukup), serta `make_call` & `bot_mode` (khusus owner) — hanya jika user eksplisit minta aksi.
-- **Sesi percakapan**: histori per user, terpisah antara chat private dan tiap grup. Idle timeout 30 menit, persist ke SQLite (survive restart).
+- **Sesi percakapan**: histori per user, terpisah antara chat private dan tiap grup. Idle timeout 10 menit (sesi diringkas ≤1000 karakter, FIFO 4, sebagai konteks), persist ke SQLite (survive restart).
 - **Ingatan jangka panjang**: fakta tentang user (nama, hobi, dll) diekstrak otomatis tiap 8 giliran dan disuntik ke system prompt lintas chat/grup. Dihapus total via `.agent reset -memory`.
 - **Multi-bubble**: balasan panjang dipecah jadi beberapa bubble dengan delay ketik simulasi + status "mengetik...".
 - **Mood detection**: deteksi mood user dari teks (sedih/stres/senang) menyesuaikan nada balasan.

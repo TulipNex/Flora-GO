@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"wabot-go/internal/timex"
 )
 
 // MaxLoops adalah batas jumlah putaran tool-calling dalam satu giliran
@@ -23,8 +25,11 @@ const MaxLoops = 8
 // ke SessionStore/SQLite).
 func RunAgentLoop(actx *AgentContext, provider ProviderAdapter, history []Content, systemPrompt string) (string, error) {
 	current := append([]Content{}, history...)
+	loopStart := time.Now()
+	sessionKey := BuildSessionKey(actx.IsGroup, actx.ChatJID, actx.SenderJID)
 
 	for i := 0; i < MaxLoops; i++ {
+		logRoundRequest(sessionKey, i, current, systemPrompt)
 		resp, err := provider.Generate(actx.Context, GenerateParams{
 			History:      current,
 			SystemPrompt: systemPrompt,
@@ -33,9 +38,11 @@ func RunAgentLoop(actx *AgentContext, provider ProviderAdapter, history []Conten
 		if err != nil {
 			return "", err
 		}
+		logRoundResponse(sessionKey, i, resp)
 
 		// Tidak ada tool call → ini jawaban final.
 		if len(resp.ToolCalls) == 0 {
+			logLoopDone(sessionKey, i+1, loopStart, resp)
 			return resp.Text, nil
 		}
 
@@ -74,19 +81,25 @@ func RunAgentLoop(actx *AgentContext, provider ProviderAdapter, history []Conten
 		var responseParts []Part
 		for _, tc := range resp.ToolCalls {
 			key := fmt.Sprintf("%s:%v", tc.Name, tc.Args)
-			var output string
+			var output, status string
 			if seen[key] {
 				output = "[DILEWATI] Tool ini sudah dipanggil dengan argumen yang sama pada giliran ini."
+				status = "dilewati"
+				logToolFull(sessionKey, tc, output, i, 0, status)
 			} else {
 				seen[key] = true
+				toolStart := time.Now()
 				result, execErr := CallTool(actx, tc.Name, tc.Args)
+				toolMs := time.Since(toolStart).Milliseconds()
 				if execErr != nil {
 					output = fmt.Sprintf("[TOOL_GAGAL] %s", execErr.Error())
+					status = "gagal"
 				} else {
 					output = result
+					status = "ok"
 				}
+				logToolFull(sessionKey, tc, output, i, toolMs, status)
 			}
-			logToolCall(tc.Name, tc.Args, output)
 			responseParts = append(responseParts, Part{
 				FunctionResponse: &FunctionResponse{
 					// ID di-echo balik dari tc.ID (bukan lagi memakai Name
@@ -106,20 +119,93 @@ func RunAgentLoop(actx *AgentContext, provider ProviderAdapter, history []Conten
 	return "", fmt.Errorf("agent loop: melebihi %d putaran tanpa jawaban final", MaxLoops)
 }
 
-// logToolCall mencatat satu eksekusi tool ke terminal: nama, argumen
-// ringkas, dan hasil ringkas (sukses/gagal). Argumen & hasil dipadatkan
-// satu baris + dipotong 100 rune supaya tidak membanjiri log.
-func logToolCall(name string, args map[string]interface{}, output string) {
-	fmt.Printf("%s │ ● TOOL %s(%s) → %s\n",
-		time.Now().Format("15:04"),
-		name,
-		compactOneLine(fmt.Sprintf("%v", args), 80),
-		compactOneLine(output, 100),
-	)
+// logToolFull mencatat satu eksekusi tool UTUH (format blok MESSAGE).
+// Mode ringkas (AI_LOG_FULL=0) kembali ke satu baris ala format lama.
+func logToolFull(sessionKey string, tc ToolCall, output string, round int, toolMs int64, status string) {
+	if !AILogFullMode() {
+		fmt.Printf("%s │ ● TOOL %s(%s) → %s\n",
+			timex.Now().Format("15:04"),
+			tc.Name,
+			compactOneLine(fmt.Sprintf("%v", tc.Args), 80),
+			compactOneLine(output, 100),
+		)
+		return
+	}
+	id := tc.ID
+	if id == "" {
+		id = "-"
+	}
+	aiBlockNew("AI_TOOL", []AIField{
+		{"name", tc.Name},
+		{"at", fmt.Sprintf("putaran=%d sesi=%s", round+1, sessionKey)},
+		{"status", fmt.Sprintf("%s %dms", status, toolMs)},
+		{"id", id},
+	}, []AISection{
+		{"args", aiJSON(tc.Args)},
+		{"output", output},
+	})
+}
+
+// logRoundRequest mencatat request tiap putaran (format blok MESSAGE).
+func logRoundRequest(sessionKey string, round int, current []Content, systemPrompt string) {
+	if !AILogFullMode() {
+		return
+	}
+	decls := GetToolDeclarations()
+	names := make([]string, 0, len(decls))
+	for _, d := range decls {
+		names = append(names, d.Name)
+	}
+	aiBlockNew("AI_REQ", []AIField{
+		{"at", fmt.Sprintf("putaran=%d sesi=%s", round+1, sessionKey)},
+		{"konten", fmt.Sprintf("%d", len(current))},
+		{"tools", fmt.Sprintf("%d (%s)", len(names), strings.Join(names, ", "))},
+	}, []AISection{
+		{"system", systemPrompt},
+		{"history", aiJSON(current)},
+	})
+}
+
+// logRoundResponse mencatat respons tiap putaran (format blok MESSAGE).
+func logRoundResponse(sessionKey string, round int, resp *AgentResponse) {
+	if !AILogFullMode() {
+		return
+	}
+	var calls strings.Builder
+	for _, tc := range resp.ToolCalls {
+		fmt.Fprintf(&calls, "- %s id=%s args=%s\n", tc.Name, tc.ID, aiJSON(tc.Args))
+	}
+	text := resp.Text
+	if strings.TrimSpace(text) == "" {
+		text = "(kosong — model minta tool)"
+	}
+	aiBlockNew("AI_RESP", []AIField{
+		{"at", fmt.Sprintf("putaran=%d sesi=%s", round+1, sessionKey)},
+		{"provider", resp.Provider},
+		{"durasi", fmt.Sprintf("%dms", resp.DurationMs)},
+		{"finish", resp.FinishReason},
+		{"usage", fmt.Sprintf("%d/%d/%d", resp.Usage.Prompt, resp.Usage.Completion, resp.Usage.Total)},
+	}, []AISection{
+		{"calls", strings.TrimRight(calls.String(), "\n")},
+		{"text", text},
+	})
+}
+
+// logLoopDone mencatat selesainya loop (format blok MESSAGE).
+func logLoopDone(sessionKey string, rounds int, start time.Time, resp *AgentResponse) {
+	if !AILogFullMode() {
+		return
+	}
+	aiBlockNew("AI_LOOP", []AIField{
+		{"at", "sesi=" + sessionKey},
+		{"putaran", fmt.Sprintf("%d", rounds)},
+		{"total", fmt.Sprintf("%dms", time.Since(start).Milliseconds())},
+		{"usage", fmt.Sprintf("%d/%d/%d", resp.Usage.Prompt, resp.Usage.Completion, resp.Usage.Total)},
+	}, nil)
 }
 
 // compactOneLine memadatkan teks jadi satu baris dan memotongnya ke max
-// rune (tambah "..." kalau dipotong).
+// rune (tambah "..." kalau dipotong). Dipakai hanya mode ringkas.
 func compactOneLine(text string, max int) string {
 	oneLine := strings.Join(strings.Fields(text), " ")
 	runes := []rune(oneLine)

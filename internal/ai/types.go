@@ -99,8 +99,16 @@ type PropertySchema struct {
 // --- Struct response Gemini (hanya field yang kita butuhkan) ---
 
 type generateResponse struct {
-	Candidates []candidate `json:"candidates"`
-	Error      *apiError   `json:"error,omitempty"`
+	Candidates    []candidate    `json:"candidates"`
+	Error         *apiError      `json:"error,omitempty"`
+	UsageMetadata *usageMetadata `json:"usageMetadata,omitempty"`
+}
+
+// usageMetadata adalah pemakaian token Gemini (bila dikirim API).
+type usageMetadata struct {
+	PromptTokenCount     int `json:"promptTokenCount"`
+	CandidatesTokenCount int `json:"candidatesTokenCount"`
+	TotalTokenCount      int `json:"totalTokenCount"`
 }
 
 type candidate struct {

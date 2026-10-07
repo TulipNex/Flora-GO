@@ -3,7 +3,6 @@ package messaging
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"image"
 	"image/jpeg"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 )
 
@@ -57,6 +57,44 @@ func InlineThumbForImage(data []byte) []byte {
 	return out
 }
 
+// mapInlineDim/Quality/Bytes adalah racikan thumbnail KHUSUS preview
+// lokasi (.shareloc): bubble peta butuh gambar jauh lebih besar daripada
+// kartu link (tinyInlineDim 128px terbukti tampil buram/diabaikan lalu
+// diganti peta bawaan klien). Konstanta dipisah supaya tune lokasi tidak
+// menggeser kartu link — keduanya punya ambang klien yang berbeda.
+const (
+	mapInlineDim      = 480
+	mapInlineQuality  = 70
+	mapInlineMaxBytes = 100 << 10 // 100KB
+)
+
+// InlineMapThumb membuat thumbnail JPEG untuk field JPEGThumbnail pesan
+// lokasi dari byte gambar bebas (thumb menu / --img). Reuse downscale +
+// jpeg.Encode yang sama dengan InlineThumbForImage, hanya beda ukuran.
+// Mengembalikan nil kalau tidak bisa dibuat / melebihi cap (fail-soft:
+// kirim tanpa preview). CATATAN JUJUR: klien WhatsApp mengganti preview
+// ini dengan render petanya sendiri setelah dimuat — thumb besar hanya
+// mempertajam tampilan AWAL + daftar chat, bukan mengunci gambar permanen.
+func InlineMapThumb(data []byte) []byte {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil
+	}
+	big := img
+	if b := img.Bounds(); b.Dx() > mapInlineDim || b.Dy() > mapInlineDim {
+		big = downscaleBilinear(img, mapInlineDim)
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, big, &jpeg.Options{Quality: mapInlineQuality}); err != nil {
+		return nil
+	}
+	out := buf.Bytes()
+	if len(out) == 0 || len(out) > mapInlineMaxBytes {
+		return nil
+	}
+	return out
+}
+
 // InlineThumbForVideo mengekstrak 1 frame video via ffmpeg lalu mengecilkannya
 // jadi thumbnail inline. Butuh ffmpeg di server (sudah wajib untuk .sticker).
 // Gagal di titik mana pun = nil (kirim tanpa thumb, bukan gagal total).
@@ -87,7 +125,7 @@ func InlineThumbForVideo(ctx context.Context, data []byte) []byte {
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
-			fmt.Printf("⚠️ mediathumb: ffmpeg frame gagal (strategi %d): %v (%s)\n", i+1, err, lastLine(stderr.String()))
+			logfmt.Warn("mediathumb: ffmpeg frame gagal (strategi %d): %v (%s)\n", i+1, err, lastLine(stderr.String()))
 			continue
 		}
 		thumb, err := os.ReadFile(out)

@@ -29,7 +29,7 @@ type MessageContext struct {
 // ReplyText adalah helper supaya plugin tidak perlu menulis ulang boilerplate
 // SendMessage tiap kali membalas pesan teks biasa.
 func ReplyText(ctx context.Context, mctx *MessageContext, text string) error {
-	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{
+	outMsg := &waE2E.Message{
 		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
 			Text: proto.String(text),
 			ContextInfo: &waE2E.ContextInfo{
@@ -38,7 +38,8 @@ func ReplyText(ctx context.Context, mctx *MessageContext, text string) error {
 				QuotedMessage: mctx.RawEvt.Message,
 			},
 		},
-	})
+	}
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, outMsg)
 	if err == nil {
 		LogOutgoing(mctx, "text", text)
 		// Dicatat supaya trigger detector AI bisa mengenali kalau nanti
@@ -47,6 +48,33 @@ func ReplyText(ctx context.Context, mctx *MessageContext, text string) error {
 		// di-reply (lihat GetBotMessageText, dipakai untuk konteks reply
 		// multi-bubble).
 		TrackBotMessageID(resp.ID, text)
+		// Arsip keluar FIORA/CRM: async fire-and-forget supaya latensi
+		// reply nol; fail-soft di dalam bila DB arsip mati.
+		go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg)
+	}
+	return err
+}
+
+// ReplyTextAgent sama seperti ReplyText tapi mencatat agent:true —
+// dipakai HANYA bubble pertama balasan AI (lihat sendBubbles).
+func ReplyTextAgent(ctx context.Context, mctx *MessageContext, text string) error {
+	outMsg := &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String(text),
+			ContextInfo: &waE2E.ContextInfo{
+				StanzaID:      proto.String(mctx.RawEvt.Info.ID),
+				Participant:   proto.String(mctx.Sender.String()),
+				QuotedMessage: mctx.RawEvt.Message,
+			},
+		},
+	}
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, outMsg)
+	if err == nil {
+		LogOutgoingAgent(mctx, "text", text)
+		// Sama seperti ReplyText: catat ID agar reply ke bubble ini
+		// dikenali trigger AI.
+		TrackBotMessageID(resp.ID, text)
+		go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg)
 	}
 	return err
 }
@@ -66,7 +94,7 @@ func ReplyTextWithMentions(ctx context.Context, mctx *MessageContext, text strin
 	for _, jid := range mentions {
 		bare = append(bare, jid.ToNonAD().String())
 	}
-	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{
+	outMsg := &waE2E.Message{
 		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
 			Text: proto.String(text),
 			ContextInfo: &waE2E.ContextInfo{
@@ -76,10 +104,29 @@ func ReplyTextWithMentions(ctx context.Context, mctx *MessageContext, text strin
 				MentionedJID:  bare,
 			},
 		},
-	})
+	}
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, outMsg)
 	if err == nil {
 		LogOutgoing(mctx, "text-mention", text)
 		TrackBotMessageID(resp.ID, text)
+		go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg)
+	}
+	return err
+}
+
+// SendTextAgent sama seperti SendText tapi mencatat agent:true — dipakai
+// bubble ke-2 dst balasan AI.
+func SendTextAgent(ctx context.Context, mctx *MessageContext, text string) error {
+	outMsg := &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String(text),
+		},
+	}
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, outMsg)
+	if err == nil {
+		LogOutgoingAgent(mctx, "text", text)
+		TrackBotMessageID(resp.ID, text)
+		go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg)
 	}
 	return err
 }
@@ -89,14 +136,16 @@ func ReplyTextWithMentions(ctx context.Context, mctx *MessageContext, text strin
 // hanya bubble pertama yang reply ke pesan user, sisanya pesan lepas
 // supaya terasa natural seperti orang mengetik beberapa pesan berturut.
 func SendText(ctx context.Context, mctx *MessageContext, text string) error {
-	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{
+	outMsg := &waE2E.Message{
 		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
 			Text: proto.String(text),
 		},
-	})
+	}
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, outMsg)
 	if err == nil {
 		LogOutgoing(mctx, "text", text)
 		TrackBotMessageID(resp.ID, text)
+		go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg)
 	}
 	return err
 }

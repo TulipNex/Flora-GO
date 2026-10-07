@@ -3,12 +3,16 @@ package plugins
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"wabot-go/internal/ai"
 	"wabot-go/internal/config"
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
+	"wabot-go/internal/timex"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -24,7 +28,7 @@ func RegisterAI(r *Registry) {
 	r.Register(Command{
 		Name:        "agent",
 		Aliases:     []string{"ai"},
-		Description: "Kelola Flora (.agent model/provider/status/trust/trustlist/reset/voice)",
+		Description: "Kelola Flora (.agent model/provider/status/tools/trust/trustlist/reset/voice)",
 		Category:    CategoryOwner,
 		Handler:     handleAgentCommand,
 	})
@@ -64,6 +68,8 @@ func handleAgentCommand(ctx context.Context, mctx *store.MessageContext) error {
 		return handleResetSubcommand(ctx, mctx)
 	case "voice":
 		return handleVoiceSubcommand(ctx, mctx)
+	case "tools":
+		return handleToolsSubcommand(ctx, mctx)
 	default:
 		return store.ReplyText(ctx, mctx, agentUsage())
 	}
@@ -75,6 +81,7 @@ func agentUsage() string {
 		".agent model [nomor/nama]\n" +
 		".agent provider [nomor/nama]\n" +
 		".agent status\n" +
+		".agent tools\n" +
 		".agent trust @user\n" +
 		".agent untrust @user\n" +
 		".agent trustlist\n" +
@@ -367,7 +374,7 @@ func voiceOnOffText(ctx context.Context) string {
 
 // handleStatusSubcommand menangani ".agent status": menampilkan status lock
 // trigger natural (global), provider + model aktif, dan status sesi chat
-// ini (aktif kalau masih dalam idle timeout 30 menit, idle kalau sudah
+// ini (aktif kalau masih dalam idle timeout 10 menit, idle kalau sudah
 // lama tidak chat). KHUSUS owner. Sengaja jalan walau sedang terkunci —
 // gunanya justru untuk mengecek status lock.
 func handleStatusSubcommand(ctx context.Context, mctx *store.MessageContext) error {
@@ -393,6 +400,128 @@ func handleStatusSubcommand(ctx context.Context, mctx *store.MessageContext) err
 		"Status Flora:\n- Lock: %s\n- Provider: %s\n- Model: %s\n- Voice: %s\n- Sesi chat ini: %s",
 		lockText, ai.GetActiveProviderName(ctx), ai.GetActiveModelName(ctx), voiceOnOffText(ctx), sessionText,
 	))
+}
+
+// agentToolOrder adalah urutan kurasi tampil ".agent tools", dikelompokkan
+// per kategori. Nama tool diambil DINAMIS dari registry (lihat
+// handleToolsSubcommand) — daftar ini hanya mengatur urutan + kategori,
+// jadi tool baru tetap muncul (di kelompok "Lainnya", urutan abjad) walau
+// belum ditambahkan ke sini.
+var agentToolOrder = []string{
+	"catat_keuangan", "baca_keuangan", "rekap_keuangan", "edit_keuangan", "hapus_keuangan", "export_keuangan",
+	"reminder",
+	"kick_member", "promote_member", "demote_member", "set_group_name", "tag_all", "group_link", "group_close", "group_open",
+	"make_call", "make_sticker", "buat_excel",
+	"bot_mode", "system_info",
+}
+
+// agentToolCategory memetakan nama tool ke judul kelompok di daftar.
+var agentToolCategory = map[string]string{
+	"catat_keuangan": "Keuangan", "baca_keuangan": "Keuangan",
+	"rekap_keuangan": "Keuangan", "edit_keuangan": "Keuangan",
+	"hapus_keuangan": "Keuangan", "export_keuangan": "Keuangan",
+	"reminder":    "Pengingat",
+	"kick_member": "Grup (di dalam grup)", "promote_member": "Grup (di dalam grup)",
+	"demote_member": "Grup (di dalam grup)", "set_group_name": "Grup (di dalam grup)",
+	"tag_all": "Grup (di dalam grup)", "group_link": "Grup (di dalam grup)",
+	"group_close": "Grup (di dalam grup)", "group_open": "Grup (di dalam grup)",
+	"make_call": "Telepon & Media", "make_sticker": "Telepon & Media", "buat_excel": "Telepon & Media",
+	"bot_mode": "Sistem", "system_info": "Sistem",
+}
+
+// agentToolTrusted menandai tool yang bisa dipakai user terpercaya
+// (simbol Ⓣ setelah nama). Tanpa tanda = khusus owner. Untuk kelompok
+// grup, trusted tetap perlu jadi admin (lihat catatan kaki render).
+var agentToolTrusted = map[string]bool{
+	"kick_member": true, "promote_member": true, "demote_member": true,
+	"set_group_name": true, "tag_all": true, "group_link": true,
+	"group_close": true, "group_open": true,
+	"make_sticker": true, "buat_excel": true, "system_info": true,
+}
+
+// agentToolExample adalah contoh kalimat natural pemicu tiap tool (tool
+// dipanggil model dari obrolan biasa, bukan dari command). Tool yang belum
+// punya entri tampil dengan teks fallback — lihat handleToolsSubcommand.
+var agentToolExample = map[string]string{
+	"catat_keuangan":  "Flora, catat bensin 50rb dari rekening",
+	"baca_keuangan":   "Flora, tampilkan 10 pengeluaran terakhirku",
+	"rekap_keuangan":  "Flora, saldo kas berapa?",
+	"edit_keuangan":   "Flora, ubah parkir kemarin jadi 15rb",
+	"hapus_keuangan":  "Flora, hapus catatan kopi tadi pagi (Flora konfirmasi dulu)",
+	"export_keuangan": "Flora, export keuanganku bulan ini ke Excel",
+	"buat_excel":      "Flora, jadikan data ini Excel",
+	"reminder":        "Flora, ingatkan aku jam 5 sore bayar listrik",
+	"kick_member":     "Flora, tendang @user",
+	"promote_member":  "Flora, jadikan @user admin",
+	"demote_member":   "Flora, turunkan @user dari admin",
+	"set_group_name":  "Flora, ganti nama grup jadi Keluarga",
+	"tag_all":         "Flora, tag semua member",
+	"group_link":      "Flora, minta link grup ini",
+	"group_close":     "Flora, tutup grup",
+	"group_open":      "Flora, buka grup",
+	"make_call":       "Flora, telepon 081234567890",
+	"make_sticker":    "Flora, jadiin stiker (kirim/quote gambar)",
+	"bot_mode":        "Flora, ganti mode ke public",
+	"system_info":     "Flora, info server",
+}
+
+// handleToolsSubcommand menangani ".agent tools": menampilkan SEMUA tool
+// Flora dari registry (dinamis — tool baru otomatis ikut tanpa edit daftar)
+// dengan contoh quote per tool. Gerbang owner+trusted (tanpa requireOwner
+// tambahan): user terpercaya memang boleh memakai Flora, jadi boleh tahu
+// kemampuannya. Format per tool: bullet + nama (+ Ⓣ bila trusted boleh)
+// + baris quote contoh.
+func handleToolsSubcommand(ctx context.Context, mctx *store.MessageContext) error {
+	decls := ai.GetToolDeclarations()
+	if len(decls) == 0 {
+		return store.ReplyText(ctx, mctx, "Belum ada tool yang terdaftar.")
+	}
+	byName := make(map[string]bool, len(decls))
+	for _, d := range decls {
+		byName[d.Name] = true
+	}
+	// Susun urutan: kurasi dulu, sisa tool (baru) abjad di belakang.
+	ordered := make([]string, 0, len(decls))
+	for _, name := range agentToolOrder {
+		if byName[name] {
+			ordered = append(ordered, name)
+			delete(byName, name)
+		}
+	}
+	rest := make([]string, 0, len(byName))
+	for name := range byName {
+		rest = append(rest, name)
+	}
+	sort.Strings(rest)
+	ordered = append(ordered, rest...)
+
+	var sb strings.Builder
+	sb.WriteString("Kemampuan Flora via ngobrol (bukan diketik sebagai command).\n" +
+		"Bisa dipakai owner; bertanda Ⓣ juga bisa dipakai user terpercaya.")
+	lastCat := ""
+	for _, name := range ordered {
+		cat, ok := agentToolCategory[name]
+		if !ok {
+			cat = "Lainnya"
+		}
+		if cat != lastCat {
+			sb.WriteString("\n\n" + cat + ":")
+			if strings.HasPrefix(cat, "Grup") {
+				sb.WriteString(" (Ⓣ perlu jadi admin)")
+			}
+			lastCat = cat
+		}
+		display := name
+		if agentToolTrusted[name] {
+			display += " Ⓣ"
+		}
+		example, ok := agentToolExample[name]
+		if !ok {
+			example = "(contoh menyusul)"
+		}
+		fmt.Fprintf(&sb, "\n• %s\n> %s", display, example)
+	}
+	return store.ReplyText(ctx, mctx, strings.TrimRight(sb.String(), "\n"))
 }
 
 // HandleAIMessage adalah logic inti pemrosesan AI — sekarang HANYA dipanggil
@@ -469,9 +598,9 @@ func sendBubbles(ctx context.Context, mctx *store.MessageContext, text string) e
 
 		var err error
 		if i == 0 {
-			err = store.ReplyText(ctx, mctx, bubble)
+			err = store.ReplyTextAgent(ctx, mctx, bubble)
 		} else {
-			err = store.SendText(ctx, mctx, bubble)
+			err = store.SendTextAgent(ctx, mctx, bubble)
 		}
 		if err != nil {
 			return err
@@ -497,7 +626,7 @@ func sendFloraReply(ctx context.Context, mctx *store.MessageContext, text string
 		if err := sendVoiceReply(ctx, mctx, text); err != nil {
 			// Fail-soft: TTS gagal = kirim sebagai teks biasa. Balasan
 			// user tidak boleh hilang gara-gara layanan suara bermasalah.
-			fmt.Printf("⚠️ voice reply gagal (%v), fallback teks.\n", err)
+			logfmt.Warn("voice reply gagal (%v), fallback teks.\n", err)
 		} else {
 			return nil
 		}
@@ -528,7 +657,7 @@ func sendVoiceReply(ctx context.Context, mctx *store.MessageContext, text string
 	if err != nil || len(opusBytes) == 0 {
 		return fmt.Errorf("gagal siapkan voice note: %v", err)
 	}
-	return sendVoiceNote(ctx, mctx, opusBytes)
+	return sendVoiceNote(ctx, mctx, opusBytes, true)
 }
 
 // processAITurn adalah isi satu giliran percakapan AI, dipisah dari
@@ -585,6 +714,9 @@ func processAITurn(ctx context.Context, mctx *store.MessageContext, sessionKey, 
 	}
 
 	history := ai.GlobalSession.Get(sessionKey)
+	// Backstop hemat-token: kirim maks 40 giliran terakhir. Penyimpanan
+	// (memori + SQLite) tetap utuh — yang dipangkas hanya kiriman.
+	history = ai.CapHistoryForSend(history, 40)
 	history = append(history, ai.Content{
 		Role:  "user",
 		Parts: []ai.Part{userPart},
@@ -600,6 +732,14 @@ func processAITurn(ctx context.Context, mctx *store.MessageContext, sessionKey, 
 	// hanya mood user, tanpa mood bot/crush detector, sesuai blueprint).
 	mood := ai.DetectUserMood(text)
 	systemPrompt := config.AISystemPromptBase
+	// Acuan tanggal: model tidak punya jam internal — tanpa baris ini,
+	// kata relatif seperti "kemarin"/"minggu ini" ditebak dari pengetahuan
+	// model yang bisa basi. Zona aktif timex (WIB/WITA/WIT via env).
+	nowLocal := timex.Now()
+	systemPrompt = systemPrompt + "\n\nHari ini (zona " + timex.Name() + "): " +
+		nowLocal.Format("Monday, 2 January 2006") +
+		" — format tanggal tool YYYY-MM-DD: " + nowLocal.Format("2006-01-02") + ". " +
+		"Hitung tanggal relatif (kemarin, minggu/bulan ini) dari tanggal ini."
 	if modifier := ai.MoodModifier(mood); modifier != "" {
 		systemPrompt = systemPrompt + "\n\n" + modifier
 	}
@@ -613,11 +753,22 @@ func processAITurn(ctx context.Context, mctx *store.MessageContext, sessionKey, 
 		}
 	}
 
+	// Ingatan hemat: ringkasan FIFO sesi-sesi sebelumnya (maks 4) disuntik
+	// sebagai konteks. Fail-soft seperti fakta — chat tetap jalan tanpanya.
+	if summaries, err := store.AI().ListSessionSummaries(ctx, sessionKey); err == nil {
+		if sp := ai.FormatSummariesForPrompt(summaries); sp != "" {
+			systemPrompt = systemPrompt + "\n\n" + sp
+		}
+	}
+
 	notifyOwner := func(err error) {
 		notifyOwnerOfAIError(mctx, err)
 	}
 
+	logAITurnStart(ctx, mctx, sessionKey, history, text)
+	turnStart := time.Now()
 	resultText, err := ai.RunAgentLoopWithRetry(actx, provider, history, systemPrompt, notifyOwner)
+	logAITurnDone(sessionKey, resultText, err, time.Since(turnStart))
 	if err != nil {
 		return "", err
 	}
@@ -697,11 +848,11 @@ func extractTriggerImage(ctx context.Context, mctx *store.MessageContext) (imgBy
 	c := candidates[0]
 	data, err := mctx.Client.Download(ctx, c.msg)
 	if err != nil {
-		fmt.Printf("⚠️ vision: gagal download %s: %v\n", c.label, err)
+		logfmt.Warn("vision: gagal download %s: %v\n", c.label, err)
 		return nil, "", fmt.Sprintf("[Catatan: ada %s terlampir tapi tidak bisa dibaca.]", c.label)
 	}
 	if len(data) > maxVisionImageBytes {
-		fmt.Printf("⚠️ vision: %s terlalu besar (%d byte), dilewati.\n", c.label, len(data))
+		logfmt.Warn("vision: %s terlalu besar (%d byte), dilewati.\n", c.label, len(data))
 		return nil, "", fmt.Sprintf("[Catatan: ada %s terlampir tapi terlalu besar untuk dibaca.]", c.label)
 	}
 	mime := c.mime
@@ -711,13 +862,71 @@ func extractTriggerImage(ctx context.Context, mctx *store.MessageContext) (imgBy
 	return data, mime, ""
 }
 
+// ownerNotifyCooldown: notifikasi error AI ke owner dibatasi max 1 per
+// jendela ini — saat provider down + grup ramai, ratusan giliran gagal
+// tidak boleh membanjiri DM owner. Error yang ditahan dihitung (suppressed)
+// dan dilaporkan pada notifikasi berikutnya. Mutex karena dipanggil dari
+// banyak goroutine trigger konkuren.
+var (
+	ownerNotifyMu         sync.Mutex
+	ownerNotifyLast       time.Time
+	ownerNotifySuppressed int
+)
+
+const ownerNotifyCooldown = 5 * time.Minute
+
+// logAITurnStart mencatat pembuka giliran AI UTUH (format blok MESSAGE).
+// Mode ringkas (AI_LOG_FULL=0) tidak mencetak apa pun di sini.
+func logAITurnStart(ctx context.Context, mctx *store.MessageContext, sessionKey string, history []ai.Content, text string) {
+	if !ai.AILogFullMode() {
+		return
+	}
+	at := "private " + mctx.Chat.User
+	if mctx.IsGroup() {
+		at = "group " + mctx.Chat.User
+	}
+	ai.LogTurnStart(
+		mctx.Sender.String(), at,
+		ai.GetActiveProviderName(ctx), ai.GetActiveModelName(ctx),
+		sessionKey, len(history), text,
+	)
+}
+
+// logAITurnDone mencatat penutup giliran (format blok MESSAGE).
+func logAITurnDone(sessionKey, resultText string, err error, elapsed time.Duration) {
+	if !ai.AILogFullMode() {
+		return
+	}
+	if err != nil {
+		ai.LogTurnDone("GAGAL "+elapsed.String(), err.Error())
+		return
+	}
+	ai.LogTurnDone("selesai "+elapsed.String(), resultText)
+}
+
 // notifyOwnerOfAIError mengirim laporan error teknis ke nomor owner UTAMA
 // (entri pertama OWNER_NUMBERS), terpisah dari pesan ramah yang dilihat user biasa.
 // Kegagalan kirim notifikasi ini sendiri sengaja diabaikan (fail-soft) —
 // tidak boleh sampai bikin proses utama gagal gara-gara notifikasi gagal.
 func notifyOwnerOfAIError(mctx *store.MessageContext, err error) {
+	ownerNotifyMu.Lock()
+	if time.Since(ownerNotifyLast) < ownerNotifyCooldown {
+		ownerNotifySuppressed++
+		n := ownerNotifySuppressed
+		ownerNotifyMu.Unlock()
+		logfmt.Skip("Notifikasi error AI ke owner ditahan (cooldown, +%d ditahan).\n", n)
+		return
+	}
+	ownerNotifyLast = time.Now()
+	suppressed := ownerNotifySuppressed
+	ownerNotifySuppressed = 0
+	ownerNotifyMu.Unlock()
+
 	ownerJID := types.NewJID(config.PrimaryOwnerNumber(), types.DefaultUserServer)
 	report := ai.FormatOwnerErrorReport(mctx.Sender.String(), mctx.Chat.String(), err)
+	if suppressed > 0 {
+		report += fmt.Sprintf("\n(+%d error serupa ditahan dalam 5 menit terakhir.)", suppressed)
+	}
 
 	_, sendErr := mctx.Client.SendMessage(context.Background(), ownerJID, &waE2E.Message{
 		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
@@ -725,6 +934,6 @@ func notifyOwnerOfAIError(mctx *store.MessageContext, err error) {
 		},
 	})
 	if sendErr != nil {
-		fmt.Printf("❌ Gagal kirim notifikasi error AI ke owner: %v\n", sendErr)
+		logfmt.Error("Gagal kirim notifikasi error AI ke owner: %v\n", sendErr)
 	}
 }

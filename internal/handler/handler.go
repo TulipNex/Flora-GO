@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"wabot-go/internal/ai"
+	"wabot-go/internal/ai/tools/bridge"
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 	"wabot-go/plugins"
 
@@ -33,11 +35,11 @@ func NewEventHandler(client *whatsmeow.Client) func(interface{}) {
 			// ditangani di plugins/welcome.go.
 			plugins.HandleGroupJoin(client, evt)
 		case *events.Connected:
-			fmt.Println("🔌 Terhubung ke server WhatsApp")
+			logfmt.Plain("Terhubung ke server WhatsApp\n")
 		case *events.Disconnected:
-			fmt.Println("⚠️  Terputus dari server WhatsApp")
+			logfmt.Warn("Terputus dari server WhatsApp\n")
 		case *events.LoggedOut:
-			fmt.Println("🚪 Bot logout dari WhatsApp. Hapus folder data/ lalu login ulang jika perlu.")
+			logfmt.Plain("Bot logout dari WhatsApp. Hapus folder data/ lalu login ulang jika perlu.\n")
 		}
 	}
 }
@@ -51,7 +53,9 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 		return
 	}
 
-	store.LogIncoming(client, evt)
+	// Teks diekstrak duluan karena klasifikasi aim butuh isinya.
+	text := extractText(evt)
+	store.LogIncoming(client, evt, classifyAim(client, evt, text))
 
 	// Gerbang owner (ban user, ban grup, mode self/public) — dicek SEBELUM
 	// routing command maupun trigger AI supaya user/grup yang di-ban benar-benar
@@ -61,25 +65,51 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 	if !plugins.IsOwnerEvent(evt) {
 		bg := context.Background()
 		if self, err := store.Groups().IsSelfMode(bg); err != nil {
-			fmt.Printf("⚠️ Gagal cek mode bot: %v\n", err)
+			logfmt.Warn("Gagal cek mode bot: %v\n", err)
 		} else if self {
 			return
 		}
 		if banned, err := store.Groups().IsUserBanned(bg, evt.Info.Sender, evt.Info.SenderAlt); err != nil {
-			fmt.Printf("⚠️ Gagal cek ban user: %v\n", err)
+			logfmt.Warn("Gagal cek ban user: %v\n", err)
 		} else if banned {
 			return
 		}
 		if evt.Info.IsGroup {
 			if gbanned, err := store.Groups().IsGroupBanned(bg, evt.Info.Chat.String()); err != nil {
-				fmt.Printf("⚠️ Gagal cek ban grup: %v\n", err)
+				logfmt.Warn("Gagal cek ban grup: %v\n", err)
 			} else if gbanned {
 				return
 			}
 		}
 	}
 
-	text := extractText(evt)
+	// Cap-stempel aktivitas DM owner untuk eskalasi telepon reminder:
+	// pesan DM apa pun dari owner menandakan "merespons" dan membatalkan
+	// telepon susulan. Ditaruh di sini (setelah gerbang, sebelum routing)
+	// supaya SEMUA pesan tercatat — termasuk command dan pesan yang nantinya
+	// ditindak moderasi. Murah (map in-memory) dan tidak mengubah alur.
+	if !evt.Info.IsGroup && plugins.IsOwnerEvent(evt) {
+		bridge.NoteOwnerDMActivity(evt.Info.Sender, evt.Info.SenderAlt)
+	}
+
+	// Arsip pesan masuk ala FIORA/CRM (observasi murni: tak konsumsi atau
+	// mutasi evt, tak ada early-return baru). Setelah gerbang ban supaya
+	// pesan dari user/grup banned tetap tidak terarsip, konsisten dengan
+	// "diabaikan total". Fail-soft di dalam (DB mati = no-op).
+	plugins.ArchiveIncoming(client, evt)
+
+	// Vote polling: PollUpdateMessage tidak mengandung teks — catat ke tally
+	// polling bot lalu setop (jangan ke moderasi/AI). Ditaruh setelah
+	// gerbang ban + stempel DM supaya vote dari user/grup yang di-ban tetap
+	// diabaikan total, konsisten dengan pesan biasa.
+	if plugins.RecordPollVote(client, evt) {
+		return
+	}
+
+	// Check-in absensi: share live location di grup bersesi aktif dicatat
+	// otomatis (observasi murni, fail-soft di dalam). Setelah gerbang ban
+	// supaya konsisten; sebelum AI (lokasi tak ber-teks, tak mengganggu AI).
+	plugins.CheckAbsensiCheckin(client, evt)
 
 	// Moderasi antilink otomatis — hanya pesan grup NON-command. Kalau pesan
 	// ditindak (link asing dihapus + warn), setop di sini supaya tidak
@@ -93,6 +123,14 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 	// Cek apakah pesan diawali prefix command
 	if text != "" && strings.HasPrefix(text, CommandPrefix) {
 		handleCommand(client, registry, evt, text)
+		return
+	}
+
+	// Staging PDF (.pdfmerge up): pesan non-command berisi PDF atau
+	// reply-angka reorder ditampung/diproses di sini lalu setop — supaya
+	// tidak bocor ke autodownload/AI. Tanpa text pun dicek (PDF tanpa
+	// caption): fungsi ini yang memutuskan false bila tak relevan.
+	if plugins.CheckPDFStaging(client, evt) {
 		return
 	}
 
@@ -126,6 +164,44 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 
 	// Bukan command (termasuk pesan media tanpa caption) → cek trigger AI.
 	handleAITrigger(client, evt, text)
+}
+
+// classifyAim menentukan baris aim: untuk log pesan masuk (lihat
+// store.LogIncoming). "command (.x)" bila teks berprefix command/spesial,
+// "agent" bila pemicu AI cocok, "none" bila keduanya tidak.
+// Catatan jujur: ini MAKSUD pesan, bukan hasilnya — gerbang ban/lock/trust
+// bisa tetap menggugurkan pesan ber-aim agent/command setelahnya. Input
+// game angka polos tidak diklasifikasikan di sini (CheckGameInput punya
+// efek samping konsumsi, tak boleh dipanggil dua kali) — ia tercatat
+// mengikuti hasil trigger seperti pesan biasa.
+func classifyAim(client *whatsmeow.Client, evt *events.Message, text string) string {
+	if text != "" {
+		if strings.HasPrefix(text, CommandPrefix) {
+			name := text
+			if f := strings.Fields(strings.TrimPrefix(text, CommandPrefix)); len(f) > 0 {
+				name = f[0]
+			}
+			return "command (." + strings.ToLower(name) + ")"
+		}
+		if _, ok := cutSpecialPrefix(text, "$"); ok {
+			return "command ($)"
+		}
+		if _, ok := cutSpecialPrefix(text, "\\"); ok {
+			return "command (\\)"
+		}
+	}
+	sessionKey := ai.BuildSessionKey(evt.Info.IsGroup, evt.Info.Chat.String(), evt.Info.Sender.String())
+	trigger := ai.DetectTrigger(ai.TriggerInput{
+		Text:             text,
+		IsReplyToBot:     store.IsReplyToBot(evt),
+		IsStickerMsg:     store.IsStickerMessage(evt),
+		IsMediaMsg:       store.IsMediaMessage(evt),
+		HasActiveSession: ai.GlobalSession.HasActive(sessionKey),
+	})
+	if trigger.Matched {
+		return "agent"
+	}
+	return "none"
 }
 
 // cutSpecialPrefix memotong prefix spesial di awal teks. Mengembalikan sisa
@@ -186,7 +262,7 @@ func executeNamedCommand(client *whatsmeow.Client, registry *plugins.Registry, e
 	}
 
 	if err := cmd.Handler(context.Background(), ctx); err != nil {
-		fmt.Printf("❌ Error menjalankan command '%s': %v\n", cmdName, err)
+		logfmt.Error("Error menjalankan command '%s': %v\n", cmdName, err)
 		_ = store.ReplyText(context.Background(), ctx, "Terjadi kesalahan saat menjalankan perintah.")
 	}
 }
@@ -242,7 +318,7 @@ func handleAITrigger(client *whatsmeow.Client, evt *events.Message, text string)
 	// chat diabaikan diam-diam. Command admin .agent TIDAK lewat sini
 	// sehingga tetap jalan.
 	if locked, err := store.Groups().IsAILocked(context.Background()); err != nil {
-		fmt.Printf("⚠️ Gagal cek lock AI: %v\n", err)
+		logfmt.Warn("Gagal cek lock AI: %v\n", err)
 	} else if locked {
 		return
 	}
@@ -285,7 +361,7 @@ func handleAITrigger(client *whatsmeow.Client, evt *events.Message, text string)
 	// sesi yang sama sudah diserialkan via ai.WithSenderLock di dalamnya.
 	go func() {
 		if err := plugins.HandleAIMessage(context.Background(), ctx, finalText); err != nil {
-			fmt.Printf("❌ Error memproses trigger AI (alasan: %s): %v\n", trigger.Reason, err)
+			logfmt.Error("Error memproses trigger AI (alasan: %s): %v\n", trigger.Reason, err)
 			_ = store.ReplyText(context.Background(), ctx, "Maaf, ada gangguan saat memproses ini.")
 		}
 	}()

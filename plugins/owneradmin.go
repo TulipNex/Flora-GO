@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"wabot-go/internal/config"
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 
 	"go.mau.fi/whatsmeow/types"
@@ -77,7 +78,7 @@ func IsOwnerOrTrusted(ctx context.Context, mctx *store.MessageContext) bool {
 	}
 	ok, err := store.Groups().IsUserTrusted(ctx, mctx.Sender, senderAlt)
 	if err != nil {
-		fmt.Printf("❌ Gagal cek trust Flora untuk %s: %v\n", mctx.Sender.String(), err)
+		logfmt.Error("Gagal cek trust Flora untuk %s: %v\n", mctx.Sender.String(), err)
 		return false
 	}
 	return ok
@@ -92,7 +93,7 @@ func IsOwnerOrTrustedEvent(ctx context.Context, evt *events.Message) bool {
 	}
 	ok, err := store.Groups().IsUserTrusted(ctx, evt.Info.Sender, evt.Info.SenderAlt)
 	if err != nil {
-		fmt.Printf("❌ Gagal cek trust Flora untuk %s: %v\n", evt.Info.Sender.String(), err)
+		logfmt.Error("Gagal cek trust Flora untuk %s: %v\n", evt.Info.Sender.String(), err)
 		return false
 	}
 	return ok

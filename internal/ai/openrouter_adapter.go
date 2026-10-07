@@ -127,7 +127,15 @@ type openAIToolFunction struct {
 
 type openAIResponse struct {
 	Choices []openAIChoice `json:"choices"`
+	Usage   *openAIUsage   `json:"usage,omitempty"`
 	Error   *openAIError   `json:"error,omitempty"`
+}
+
+// openAIUsage adalah pemakaian token gaya OpenAI (bila dikirim API).
+type openAIUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 type openAIChoice struct {
@@ -303,6 +311,25 @@ func fromOpenAIMessage(msg openAIMessage) *AgentResponse {
 	}
 }
 
+// fillOpenAIResponse melengkapi AgentResponse dengan usage/finish-reason
+// dari respons API + durasi + identitas provider/model (observabilitas log).
+func fillOpenAIResponse(resp *AgentResponse, parsed *openAIResponse, provider, model string, durationMs int64) *AgentResponse {
+	if len(parsed.Choices) > 0 {
+		resp.FinishReason = parsed.Choices[0].FinishReason
+	}
+	if parsed.Usage != nil {
+		resp.Usage = TokenUsage{
+			Prompt:     parsed.Usage.PromptTokens,
+			Completion: parsed.Usage.CompletionTokens,
+			Total:      parsed.Usage.TotalTokens,
+		}
+	}
+	resp.DurationMs = durationMs
+	resp.Provider = provider
+	resp.Model = model
+	return resp
+}
+
 func (o *OpenRouterAdapter) Generate(ctx context.Context, params GenerateParams) (*AgentResponse, error) {
 	if o.APIKey == "" {
 		return nil, fmt.Errorf("openrouter: API key kosong")
@@ -329,7 +356,9 @@ func (o *OpenRouterAdapter) Generate(ctx context.Context, params GenerateParams)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+o.APIKey)
 
+	start := time.Now()
 	resp, err := o.HTTPClient.Do(httpReq)
+	durationMs := time.Since(start).Milliseconds()
 	if err != nil {
 		return nil, fmt.Errorf("openrouter: request gagal: %w", err)
 	}
@@ -357,5 +386,5 @@ func (o *OpenRouterAdapter) Generate(ctx context.Context, params GenerateParams)
 		return nil, fmt.Errorf("openrouter: tidak ada choice dalam response")
 	}
 
-	return fromOpenAIMessage(parsed.Choices[0].Message), nil
+	return fillOpenAIResponse(fromOpenAIMessage(parsed.Choices[0].Message), &parsed, "openrouter", o.Model, durationMs), nil
 }

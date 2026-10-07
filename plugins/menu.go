@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"wabot-go/internal/config"
 	"wabot-go/internal/messaging"
 	"wabot-go/internal/store"
+	"wabot-go/internal/timex"
 
 	"go.mau.fi/whatsmeow/types"
 )
@@ -39,6 +39,11 @@ func RegisterMenu(r *Registry) {
 			// alfabet supaya urutan stabil walau map All() acak.
 			grouped := make(map[string][]string, len(CategoryOrder))
 			for name, cmd := range all {
+				// Command hidden (privat, mis. tool owner) tidak masuk menu
+				// APAPUN — bahkan untuk owner sekalipun.
+				if cmd.Hidden {
+					continue
+				}
 				cat := cmd.Category
 				if cat == "" {
 					// Pengaman untuk plugin lama yang lupa isi Category:
@@ -108,12 +113,20 @@ func RegisterMenu(r *Registry) {
 				desc = fmt.Sprintf("%d commands tersedia", shown)
 			}
 			greeting, mentions := greetingHeader(mctx)
+			// Thumbnail & favicon: nilai kustom DB (.thumbnail/.favicon)
+			// menang atas .env; gagal baca DB = fallback .env (fail-soft,
+			// kartu tetap terkirim tanpa gambar kustom).
+			thumbURL := resolveMenuThumbURL(ctx)
+			faviconURL := strings.TrimSpace(config.MenuFaviconURL)
+			if custom, err := store.Groups().GetMenuFaviconURL(ctx); err == nil && custom != "" {
+				faviconURL = custom
+			}
 			if err := messaging.SendLinkCard(ctx, mctx, messaging.LinkCard{
 				PageURL:     pageURL,
 				Title:       title,
 				Description: desc,
-				ThumbURL:    strings.TrimSpace(config.MenuThumbURL),
-				FaviconURL:  strings.TrimSpace(config.MenuFaviconURL),
+				ThumbURL:    thumbURL,
+				FaviconURL:  faviconURL,
 				Body:        greeting + "\n\n*Daftar Menu*\n" + body,
 				Mentions:    mentions,
 			}); err != nil {
@@ -124,17 +137,29 @@ func RegisterMenu(r *Registry) {
 	})
 }
 
+// resolveMenuThumbURL mengembalikan URL thumbnail kartu: kustom DB
+// (.thumbnail) menang atas .env (MENU_THUMB_URL); gagal baca DB = fallback
+// .env (fail-soft). Dipakai menu + shareloc (preview lokasi) supaya satu
+// aturan prioritas dipakai di semua tempat.
+func resolveMenuThumbURL(ctx context.Context) string {
+	thumbURL := strings.TrimSpace(config.MenuThumbURL)
+	if custom, err := store.Groups().GetMenuThumbURL(ctx); err == nil && custom != "" {
+		thumbURL = custom
+	}
+	return thumbURL
+}
+
 // greetingHeader menyusun sapaan + perkenalan, keduanya bold, dipisah satu
 // baris kosong: "*Halo @<user>, selamat <periode>!*" lalu "*Saya <NamaBot>,
 // <deskripsi>.*". Sambutan men-tag pengirim ASLI (bukan PushName): teks
 // memakai "@<User>" dari JID pengirim yang sudah ToNonAD (di grup mode LID
 // = "@<LID>") supaya pairing mention valid dan klien me-render-nya jadi
-// nama kontak yang bisa diketuk. Periode tetap dari jam WITA (dayPeriod).
+// nama kontak yang bisa diketuk. Periode tetap dari jam zona aktif (dayPeriod).
 // Mengembalikan teks + daftar JID untuk field Mentions kartu link; kalau
 // pengirim tak ter-resolve, fallback "kamu" TANPA mention agar pairing
 // tidak rusak.
 func greetingHeader(mctx *store.MessageContext) (string, []types.JID) {
-	periode := dayPeriod(time.Now().In(witaLocation))
+	periode := dayPeriod(timex.Now())
 	sender := mctx.Sender.ToNonAD()
 	if sender.User == "" {
 		return fmt.Sprintf("*Halo kamu, selamat %s!*\n\n*Saya %s, %s.*",

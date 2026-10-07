@@ -1,99 +1,31 @@
-# AGENTS.md
+# AGENTS.md — wabot-go (Flora GO)
 
-Panduan untuk AI agent (dan developer baru) yang bekerja di repo `wabot-go` — bot WhatsApp "Flora GO" berbasis Go + whatsmeow.
+WhatsApp bot in Go (`whatsmeow`, pure-Go `modernc.org/sqlite`, no cgo). Module `wabot-go`, Go 1.26+. Entry: `main.go`. No CI, no lint/typecheck config, no `opencode.json`.
 
-## Build & Run
+## Run / verify
 
-| Perintah | Fungsi |
-|---|---|
-| `go mod tidy` | Sinkronkan dependency |
-| `go build .` / `go run .` | Build & jalankan lokal |
-| `go vet ./...` | Cek statis |
-| `GOOS=linux GOARCH=amd64 go build -o wabot-go-linux .` | Build binary untuk panel Pterodactyl |
-| `.\deploy.ps1` | Build linux + sync binary ke panel via rclone |
-| `.\push.ps1 "pesan"` | `git add` + `commit` + `push` (ada filter file sensitif) |
+- `go run .` — but there is **no dotenv loader** (only `os.Getenv`, no godotenv/viper). The `.env` file is never auto-read; export vars in the shell first (see `test-env.ps1` pattern: `$env:OWNER_NUMBERS=...` then `go run .`).
+- `OWNER_NUMBERS` (comma-separated digits) is mandatory — empty panics at startup. `LOGIN_METHOD` must be `qr` or `pairing`, else panic. `PHONE_NUMBER` required for pairing.
+- `go build ./...` · `go vet ./...` (clean) · `go test ./...`
+- Only `plugins` has tests: `go test ./plugins/ -v`; single test: `go test ./plugins/ -run TestNoCommandAliasCollision -v`
+- `ffmpeg` must be in PATH wherever the bot runs (stickers, thumbnails, transcode fail otherwise).
 
-> Repo ini **belum punya test suite, linter config, atau CI**. Verifikasi minimal: `go vet ./...` lalu `go run .` dan chat bot di WhatsApp untuk uji manual.
+## Add a command (plugins/)
 
-## Aturan Konfirmasi (WAJIB)
+Self-registration — never edit `registry.go`. New file in `plugins/` with `init() { registerPlugin(RegisterX) }`; `Category` must be a `CategoryXxx` const (free strings spawn ghost menu groups); `Hidden: true` + `CategoryHidden` to hide from `.menu`. Aliases share the command map and **silently overwrite** — `go test ./plugins/` catches collisions. `.tt` belongs to `tiktok` (regression-tested; tictactoe uses `.ttt`/`.tc`).
 
-- **Selalu tanya/konfirmasi SEBELUM eksekusi.** Pertanyaan user dijawab sebagai pertanyaan dulu; usulan perubahan disampaikan sebagai rencana + diminta persetujuan eksplisit. Berlaku terutama untuk hal penting: build/deploy config, database/migrasi, perilaku bot, dependency baru, dan penghapusan kode.
-- Dilarang "langsung eksekusi" atas inisiatif sendiri — tidak ada eksekusi tanpa kata setuju user, kecuali user sudah memberi perintah eksplisit ("buatkan", "perbaiki", "lanjutkan", dll).
-- Pengecualian: perintah verifikasi read-only/baca (`go vet`, `gofmt -l`, build cek lokal, baca file) boleh jalan tanpa konfirmasi karena tidak mengubah apa pun.
+## Add an AI tool (internal/ai/)
 
-## Arsitektur
+Same pattern, different registry: put pure tools in `internal/ai/tools/native/`, WhatsApp-access tools in `internal/ai/tools/bridge/`, register via `ai.RegisterTool(...)` in `init()` — then add the **side-effect import in `main.go`**, or the tool silently never registers.
 
-### Self-registration pattern
-- **Command baru**: buat file di `plugins/`, daftarkan di `init()` via `registerPlugin(RegisterX)`.
-  **JANGAN** edit `plugins/registry.go` — `RegisterAll` menjalankan semua registrar otomatis.
-- **Tool AI baru**: buat file di `internal/ai/tools/native/` (murni, tanpa akses WhatsApp) atau
-  `internal/ai/tools/bridge/` (butuh whatsmeow client), daftarkan via `ai.RegisterTool(...)` di `init()`.
-  **WAJIB** tambah side-effect import di `main.go` (baris `_ "wabot-go/internal/ai/tools/..."`) —
-  tanpa import ini tool tidak akan pernah terdaftar meski file `.go`-nya ada.
+## Gotchas that bite
 
-### Arah dependency (JANGAN dibalik)
-```
-plugins  ->  internal/ai  ->  internal/store
-   ^              ^                  ^
-   |              |                  |
-   +--- tools/bridge (satu-satunya yang boleh import plugins)
-   +--- internal/messaging (dipakai plugins & tools/bridge)
-```
-- `internal/ai` TIDAK boleh import whatsmeow langsung — akses client/mctx lewat `AgentContext.Extra`.
-- `internal/messaging` adalah lapisan "merakit + mengirim pesan kaya" (link card, dst): boleh dipakai `plugins` & `tools/bridge`, tapi TIDAK boleh import `plugins`/`internal/ai`. Fitur JANGAN ditaruh di `internal/store` (itu infra tipis: DB, context, reply mentah).
-- `internal/handler` adalah satu-satunya tempat routing pesan masuk.
+- Temp files: always `store.BotTempDir()` / `MustBotTempDir()` (`<workdir>/wabot-tmp`). Never `os.MkdirTemp`/`os.TempDir()` — panel `/tmp` is a 100 MB tmpfs, videos >~50 MB die with Errno 28.
+- `data/` = session (`session.db`) + SQLite state (group/ai/facts/settings/finance/crm/absensi). Never delete, never commit (gitignored with `.env`, `wabot-go-linux`, `wabot-tmp/`). `push.ps1` warns on sensitive paths — heed it. `test-env.ps1` holds real secrets, stays uncommitted.
+- Identity (owner name, bot name/version) is **compile-time** in `internal/config/config.go` — changing it needs rebuild + redeploy. Provider/model choice is **runtime** in SQLite (`.agent` commands, no redeploy).
+- WhatsApp identity is dual-format (LID vs phone number): never compare JIDs by raw string — use `store.ParticipantMatchesJID` / `IsSenderAdmin` / `IsBotAdmin`.
+- README claims `run.sh` sources `.env`, but current `run.sh` does not — trust the script, not the prose; ensure env reaches the process via the panel environment.
 
-### Command prefix
-- Prefix `.` didefinisikan di `internal/handler/handler.go` (`CommandPrefix`) DAN terduplikasi di
-  `plugins/menu.go` (`CommandPrefixForMenu`) untuk hindari dependency melingkar.
-  **Ubah keduanya** kalau mau ganti prefix.
+## Deploy (laptop → Pterodactyl panel)
 
-## Konvensi Kode
-
-- Komentar panjang dalam **bahasa Indonesia**, jelaskan MENAPA sebuah keputusan dibuat, bukan hanya apa yang dilakukan.
-- Komentar berlabel "Fase X" adalah riwayat evolusi fitur — pertahankan, jangan dihapus saat refactor.
-- Pesan ke user: ramah & ringkas via `store.ReplyText`. Detail teknis: ke console (`fmt.Printf`) atau ke owner via WhatsApp.
-- Operasi non-kritis (baca fakta, kirim notifikasi, presence "mengetik") wajib **fail-soft**: log error, jangan panic/gagalkan alur utama.
-- Sebelum membaca isi `evt.Message`, selalu `store.UnwrapMessage(...)` — WhatsApp membungkus pesan dalam EphemeralMessage/ViewOnceMessage.
-- Balasan AI panjang: pecah via `ai.SplitIntoBubbles` + typing delay (`sendBubbles` di `plugins/ai.go`), jangan kirim satu bubble raksasa.
-
-## Database (SQLite via `modernc.org/sqlite`, pure Go, tanpa cgo)
-
-| File | Init | Akses |
-|---|---|---|
-| `data/session.db` | whatsmeow `sqlstore` | Jangan disentuh manual |
-| `data/group.db` | `store.InitGroupDB` | `store.Groups()` |
-| `data/ai.db` | `store.InitAIDB` → `InitFactsDB` → `InitAISettingsDB` | `store.AI()` |
-
-- **Urutan init di `main.go` WAJIB**: group → ai → facts → settings (facts & settings reuse koneksi ai.db).
-- Pola migration: `CREATE TABLE IF NOT EXISTS` + toleransi error "duplicate column" (lihat `aisettingsdb.go`).
-- Semua DSN pakai `journal_mode(WAL)` + `busy_timeout(10000)`.
-
-## AI Engine
-
-- **4 provider** di belakang interface `ProviderAdapter`: `google` (Gemini), `openrouter`, `nexarouter`, `ciora`.
-  Pilihan aktif disimpan di SQLite + cache in-memory (`providers.go`), diganti via `.ai provider` / `.ai model`.
-- **NexaRouter/Ciora**: adapter mencoba mengirim field `tools`; kalau server menolak (400 soal tools), otomatis fallback sekali tanpa tools (mode chat teks). Lihat `postChat` di `nexarouter_adapter.go` / `ciora_adapter.go`.
-- **Session key**: selalu pakai `ai.BuildSessionKey(isGroup, chatJID, senderJID)` — jangan format string sendiri.
-  Histori percakapan pakai sessionKey; fakta jangka panjang pakai `senderJID` murni (lintas chat/grup).
-- **Tool calling**: saat menyusun ulang history, WAJIB echo balik apa adanya:
-  - `ThoughtSignature` (di `Part`) — Gemini menolak request kalau hilang (error 400).
-  - `ID` (di `FunctionCall`/`FunctionResponse`) — provider OpenAI-style mensyaratkan `tool_call_id` cocok persis.
-- **Reliability**: retry transient (timeout/429/5xx) max 3x dengan backoff, lalu notifikasi owner.
-
-## Hal yang Mudah Rusak
-
-- **Dual-format JID (LID vs nomor telepon)**: selalu pakai `store.ParticipantMatchesJID` — jangan bandingkan `.User` polos, bisa false-negative di grup AddressingMode "lid", dan jangan bikin salinan logic-nya sendiri.
-- **Baca ContextInfo** (reply/mention/quoted): selalu lewat helper di `internal/store/trigger_extract.go` (`ExtractStanzaID`, `ExtractMentionedJIDs`, `ExtractQuotedParticipant`, `ExtractQuotedMessage`) yang sudah unwrap Ephemeral/ViewOnce — jangan baca `RawEvt.Message.GetExtendedTextMessage()` langsung.
-- `.sticker` / `.swm` butuh **ffmpeg** di PATH server.
-- `LOGIN_METHOD` di `.env` wajib `qr` atau `pairing` — kosong/tidak valid = panic saat startup.
-- `.env` berisi nomor HP & API key — **jangan pernah commit** (sudah di `.gitignore`, `push.ps1` juga memperingatkan).
-- Jangan commit: `.env`, `data/`, `wabot-go-linux`.
-- Jangan hapus `data/` di panel — session login + 3 database ada di sana.
-
-## Deploy Workflow
-
-Source code hanya hidup di laptop; panel Pterodactyl hanya menerima binary. Alur perubahan:
-1. Edit kode → 2. Stop bot di panel → 3. `.\deploy.ps1` → 4. Start bot di panel.
-
-Detail lengkap: `README.md`.
+Source lives only on the laptop; the panel gets just the binary. Order: stop bot in panel → `.\deploy.ps1` (`-y` skips prompt) → start bot. It builds `GOOS=linux GOARCH=amd64 go build -o wabot-go-linux .` then `rclone copyto` to remote `panel:/` with `--inplace` (panel SFTP rejects rename) and verifies remote size. `greeting.mp3`/`.env` are uploaded separately, not via deploy.

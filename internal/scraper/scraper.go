@@ -122,12 +122,17 @@ func postFormJSON(ctx context.Context, engine, rawURL string, form map[string]st
 	return nil
 }
 
-// downloadBytes mengunduh URL media langsung (CDN) dengan tameng SSRF
-// sendiri (paket ini dilarang import plugins, jadi cek duplikat minimal di
-// sini — pola sama dengan isPublicGetURL milik .get). Batas 100MB per file.
-// Pakai dlClient (timeout 10 menit), BUKAN httpClient 20-detik yang hanya
-// untuk API JSON.
-func downloadBytes(ctx context.Context, rawURL string) ([]byte, error) {
+// DownloadBytes adalah versi exported untuk dipakai plugins (engine
+// downloader mengunduh tiap item hasil scrape lewat sini).
+func DownloadBytes(ctx context.Context, rawURL string) ([]byte, error) {
+	return DownloadBytesWithHeaders(ctx, rawURL, nil)
+}
+
+// DownloadBytesWithHeaders seperti DownloadBytes tapi dengan header HTTP
+// tambahan (mis. Referer untuk CDN anti-hotlink seperti overfetch).
+// Header User-Agent standar selalu dipasang; header custom menimpanya
+// kecuali User-Agent yang tidak boleh dioverride diam-diam.
+func DownloadBytesWithHeaders(ctx context.Context, rawURL string, headers map[string]string) ([]byte, error) {
 	if err := checkPublicURL(ctx, rawURL); err != nil {
 		return nil, err
 	}
@@ -136,6 +141,12 @@ func downloadBytes(ctx context.Context, rawURL string) ([]byte, error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", scraperUA)
+	for k, v := range headers {
+		if strings.EqualFold(k, "User-Agent") {
+			continue
+		}
+		req.Header.Set(k, v)
+	}
 	resp, err := dlClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -144,6 +155,8 @@ func downloadBytes(ctx context.Context, rawURL string) ([]byte, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("media HTTP %d", resp.StatusCode)
 	}
+	// Batas 100MB per file. Pakai dlClient (timeout 10 menit), BUKAN
+	// httpClient 20-detik yang hanya untuk API JSON.
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (100<<20)+1))
 	if err != nil {
 		return nil, err
@@ -152,12 +165,6 @@ func downloadBytes(ctx context.Context, rawURL string) ([]byte, error) {
 		return nil, fmt.Errorf("file media terlalu besar (>100MB)")
 	}
 	return data, nil
-}
-
-// DownloadBytes adalah versi exported untuk dipakai plugins (engine
-// downloader mengunduh tiap item hasil scrape lewat sini).
-func DownloadBytes(ctx context.Context, rawURL string) ([]byte, error) {
-	return downloadBytes(ctx, rawURL)
 }
 
 // checkPublicURL menolak URL non-http(s) dan host internal (loopback,

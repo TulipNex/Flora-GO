@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/messaging"
 	"wabot-go/internal/store"
 
@@ -90,7 +92,7 @@ func handleTTS(ctx context.Context, mctx *store.MessageContext) error {
 	go func() {
 		bg := context.Background()
 		if err := ttsGenerate(bg, mctx, text, voice); err != nil {
-			fmt.Printf("⚠️ tts: %v\n", err)
+			logfmt.Warn("tts: %v\n", err)
 			_ = store.ReplyText(bg, mctx, "Gagal bikin voice note: "+err.Error())
 		}
 	}()
@@ -130,20 +132,21 @@ func ttsGenerate(ctx context.Context, mctx *store.MessageContext, text, voice st
 	opusBytes, err := runFfmpegConvert(ctx, mp3Bytes, ".mp3", "out.opus", nil,
 		"-c:a", "libopus", "-b:a", "48k")
 	if err != nil || len(opusBytes) == 0 {
-		fmt.Printf("⚠️ tts: convert opus gagal (%v), fallback audio biasa.\n", err)
+		logfmt.Warn("tts: convert opus gagal (%v), fallback audio biasa.\n", err)
 		if serr := sendDlBytesAudio(ctx, mctx, mp3Bytes, "tts"); serr != nil {
 			return fmt.Errorf("gagal kirim audio: %v", serr)
 		}
 		return nil
 	}
-	return sendVoiceNote(ctx, mctx, opusBytes)
+	return sendVoiceNote(ctx, mctx, opusBytes, false)
 }
 
 // sendVoiceNote mengupload + mengirim byte Opus sebagai voice note
 // (AudioMessage PTT=true, pola SendTextToSpeech repo referensi). Beda dari
 // sendDlBytesAudio (PTT=false, audio/mpeg) sehingga helper baru di sini,
-// bukan duplikasi.
-func sendVoiceNote(ctx context.Context, mctx *store.MessageContext, data []byte) error {
+// bukan duplikasi. agent=true bila dari balasan AI (catat agent:true),
+// false bila dari command .tts biasa.
+func sendVoiceNote(ctx context.Context, mctx *store.MessageContext, data []byte, agent bool) error {
 	if err := messaging.CheckMediaBytes(data); err != nil {
 		return err
 	}
@@ -166,7 +169,11 @@ func sendVoiceNote(ctx context.Context, mctx *store.MessageContext, data []byte)
 	if err != nil {
 		return err
 	}
-	store.LogOutgoing(mctx, "voicenote", "tts")
+	if agent {
+		store.LogOutgoingAgent(mctx, "voicenote", "tts")
+	} else {
+		store.LogOutgoing(mctx, "voicenote", "tts")
+	}
 	store.TrackBotMessageID(resp.ID, "tts")
 	return nil
 }
@@ -179,7 +186,7 @@ func sendVoiceNote(ctx context.Context, mctx *store.MessageContext, data []byte)
 // berurutan oleh semua decoder (termasuk WhatsApp). Dipakai mode suara
 // Flora; command .tts manual tetap cap 500 char satu panggilan.
 func SynthesizeLong(ctx context.Context, text, voice string) ([]byte, error) {
-	text = strings.TrimSpace(text)
+	text = ttsCleanText(strings.TrimSpace(text))
 	if text == "" {
 		return nil, fmt.Errorf("teks kosong")
 	}
@@ -196,6 +203,119 @@ func SynthesizeLong(ctx context.Context, text, voice string) ([]byte, error) {
 		out.Write(mp3)
 	}
 	return out.Bytes(), nil
+}
+
+// ttsParenRe mengenali (...) berpasangan (tanpa nested) untuk diubah jadi
+// jeda apit. ":)" aman (tanpa buka) dan "(x" tanpa tutup dibiarkan.
+var ttsParenRe = regexp.MustCompile(`\(([^()]*)\)`)
+
+// ttsCleanText menyiapkan teks untuk DIBACAKAN (bukan ditampilkan):
+// buang emoji, markdown WA (* _ ~ • # >), URL → "tautan", @angka/nomor
+// panjang → "nomor tersebut", "/" → "," (jeda netral), "(...)" → ", ..., "
+// (jeda apit). Struktur baris DIPERTAHANKAN (\n\n = ganti paragraf, \n =
+// ganti baris) karena jeda disisipkan dari sana di SSML — beda dari versi
+// lama yang menggabung semua jadi satu aliran datar. Teks chat asli TIDAK
+// diubah — hanya versi suara. Dipusatkan di SynthesizeLong sehingga .tts
+// manual dan voice-reply AI ikut aturan yang sama.
+func ttsCleanText(s string) string {
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	blank := 0
+	for _, ln := range lines {
+		t := ttsCleanLine(ln)
+		if strings.TrimSpace(t) == "" {
+			blank++
+			if blank <= 2 {
+				out = append(out, "")
+			}
+			continue
+		}
+		blank = 0
+		out = append(out, t)
+	}
+	return strings.Trim(strings.Join(out, "\n"), "\n")
+}
+
+// ttsCleanLine membersihkan satu baris (tanpa menyentuh newline).
+// Urutan penting: URL dulu (mengandung "/" yang tak boleh disentuh),
+// lalu kurung + garis miring, lalu emoji/markdown, terakhir mention/angka.
+func ttsCleanLine(s string) string {
+	words := strings.Fields(s)
+	for i, w := range words {
+		lw := strings.ToLower(w)
+		if strings.HasPrefix(lw, "http://") || strings.HasPrefix(lw, "https://") || strings.HasPrefix(lw, "www.") {
+			words[i] = "tautan"
+		}
+	}
+	s = strings.Join(words, " ")
+	s = ttsParenRe.ReplaceAllString(s, ", $1, ")
+	s = strings.ReplaceAll(s, "/", ", ")
+	var sb strings.Builder
+	for _, r := range s {
+		if isTTSEmoji(r) {
+			sb.WriteRune(' ')
+			continue
+		}
+		switch r {
+		case '*', '_', '~', '•', '#', '>':
+			sb.WriteRune(' ')
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	words = strings.Fields(sb.String())
+	for i, w := range words {
+		if strings.HasPrefix(w, "@") && len([]rune(w)) > 1 {
+			words[i] = "nomor tersebut"
+			continue
+		}
+		// "62812..." panjang (≥8 digit) → "nomor tersebut" supaya tidak
+		// dieja digit per digit.
+		digits := 0
+		for _, r := range w {
+			if r >= '0' && r <= '9' {
+				digits++
+			} else if r != '+' && r != '-' && r != ' ' && r != ',' {
+				digits = -100
+				break
+			}
+		}
+		if digits >= 8 {
+			words[i] = "nomor tersebut"
+		}
+	}
+	joined := strings.Join(words, " ")
+	// Rapikan sisa substitusi: ", ," → ",", " ," → ",".
+	for strings.Contains(joined, ", ,") {
+		joined = strings.ReplaceAll(joined, ", ,", ",")
+	}
+	for strings.Contains(joined, " ,") {
+		joined = strings.ReplaceAll(joined, " ,", ",")
+	}
+	return strings.Trim(joined, " ,")
+}
+
+// isTTSEmoji true untuk rune emoji/simbol dekoratif yang sebaiknya tidak
+// dibacakan: blok Emoticons, Dingbats, simbol lain (So), pictograph
+// extended, variation selector, dan regional indicator (bendera).
+func isTTSEmoji(r rune) bool {
+	switch {
+	case r >= 0x1F600 && r <= 0x1F64F, // emoticons
+		r >= 0x1F300 && r <= 0x1F5FF, // simbol & piktograf
+		r >= 0x1F680 && r <= 0x1F6FF, // transport & simbol
+		r >= 0x1F700 && r <= 0x1F77F, // alkemis/geometris
+		r >= 0x1F780 && r <= 0x1F7FF, // geometris extended
+		r >= 0x1F800 && r <= 0x1F8FF, // panah suplemen
+		r >= 0x1F900 && r <= 0x1F9FF, // suplemen simbol
+		r >= 0x1FA00 && r <= 0x1FAFF, // simbol extended-A
+		r >= 0x2600 && r <= 0x26FF,   // simbol lain (So)
+		r >= 0x2700 && r <= 0x27BF,   // dingbats
+		r >= 0x2B00 && r <= 0x2BFF,   // simbol panah/bintang
+		r >= 0xFE00 && r <= 0xFE0F,   // variation selector
+		r >= 0x1F1E6 && r <= 0x1F1FF: // regional indicator (bendera)
+		return true
+	}
+	return false
 }
 
 // splitTTSChunks memecah teks jadi potongan ≤ maxBytes byte dengan urutan
@@ -249,9 +369,16 @@ func edgeTTSSynthesize(ctx context.Context, text, voice string) ([]byte, error) 
 	text = removeIncompatibleChars(text)
 	reqID := ttsRequestID()
 	connID := ttsRequestID()
+	// Jeda eksplisit dari struktur baris (audit intonasi): SSML melebur
+	// newline jadi spasi, jadi \n\n (ganti paragraf) → break 600ms dan \n
+	// tunggal → break 300ms. Diterapkan SETELAH escape (tag break tidak
+	// boleh ter-escape) dan SEBELUM chunking tak relevan — chunk sudah
+	// dipecah di batas newline oleh splitTTSChunks, sisa newline di dalam
+	// chunk tetap dapat jedanya di sini.
+	spoken := ttsBreakSSML(xmlEscapeText(text))
 	ssml := "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
 		"<voice name='" + voice + "'><prosody rate='+0%' volume='+0%' pitch='+0Hz'>" +
-		xmlEscapeText(text) + "</prosody></voice></speak>"
+		spoken + "</prosody></voice></speak>"
 
 	endpoint := ttsWSBase +
 		"&ConnectionId=" + connID +
@@ -360,6 +487,18 @@ func removeIncompatibleChars(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// ttsBreakSSML mengubah newline yang lolos (sudah ter-escape) jadi jeda
+// SSML eksplisit. Urutan penting: \n\n dulu (600ms), lalu sisa \n (300ms).
+func ttsBreakSSML(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	for strings.Contains(s, "\n\n\n") {
+		s = strings.ReplaceAll(s, "\n\n\n", "\n\n")
+	}
+	s = strings.ReplaceAll(s, "\n\n", `<break time="600ms"/>`)
+	s = strings.ReplaceAll(s, "\n", `<break time="300ms"/>`)
+	return s
 }
 
 // ttsRequestID membuat ID request 32-hex (format X-RequestId Edge).

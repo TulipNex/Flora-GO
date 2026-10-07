@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"wabot-go/internal/timex"
 )
 
 // MaxRetries adalah jumlah percobaan ulang saat provider gagal karena error
@@ -55,22 +57,36 @@ func RunAgentLoopWithRetry(actx *AgentContext, provider ProviderAdapter, history
 	for attempt := 0; attempt < MaxRetries; attempt++ {
 		text, err := RunAgentLoop(actx, provider, history, systemPrompt)
 		if err == nil {
+			if attempt > 0 {
+				LogSide("retry", []AIField{
+					{"attempt", fmt.Sprintf("%d", attempt+1)},
+					{"hasil", "berhasil"},
+				}, "")
+			}
 			return text, nil
 		}
 
 		lastErr = err
+		LogSide("retry", []AIField{
+			{"attempt", fmt.Sprintf("%d", attempt+1)},
+			{"transient", fmt.Sprintf("%v", isTransientError(err))},
+		}, err.Error())
 
 		if !isTransientError(err) {
 			break // error permanen, tidak ada gunanya diulang
 		}
 
 		// backoff sederhana: 1s, 2s, 3s — cukup untuk skala pemakaian ini,
-		// tidak perlu exponential backoff yang lebih rumit.
-		select {
-		case <-time.After(time.Duration(attempt+1) * time.Second):
-		case <-actx.Context.Done():
-			lastErr = actx.Context.Err()
-			attempt = MaxRetries // hentikan loop, context sudah dibatalkan
+		// tidak perlu exponential backoff yang lebih rumit. Tidur HANYA
+		// bila masih ada attempt tersisa (audit T3): tidur setelah attempt
+		// terakhir hanya menunda laporan gagal 3 detik tanpa manfaat.
+		if attempt < MaxRetries-1 {
+			select {
+			case <-time.After(time.Duration(attempt+1) * time.Second):
+			case <-actx.Context.Done():
+				lastErr = actx.Context.Err()
+				attempt = MaxRetries // hentikan loop, context sudah dibatalkan
+			}
 		}
 	}
 
@@ -85,8 +101,9 @@ func RunAgentLoopWithRetry(actx *AgentContext, provider ProviderAdapter, history
 // diubah tanpa menyentuh logic retry.
 func FormatOwnerErrorReport(senderJID, chatJID string, err error) string {
 	return fmt.Sprintf(
-		"[AI ERROR]\nWaktu: %s\nDari: %s\nChat: %s\nError: %s",
-		time.Now().Format("2006-01-02 15:04:05"),
+		"[AI ERROR]\nWaktu: %s (%s)\nDari: %s\nChat: %s\nError: %s",
+		timex.Now().Format("2006-01-02 15:04:05"),
+		timex.Name(),
 		senderJID,
 		chatJID,
 		err.Error(),

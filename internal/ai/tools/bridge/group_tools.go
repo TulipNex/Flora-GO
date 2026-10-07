@@ -31,7 +31,7 @@ func requireSenderAdmin(actx *ai.AgentContext, mctx *store.MessageContext) error
 func init() {
 	ai.RegisterTool(ai.ToolDefinition{
 		Name:        "set_group_name",
-		Description: "Ganti nama grup WhatsApp ini. Hanya bisa dipakai di dalam grup, dan hanya kalau pengirim perintah adalah admin grup serta bot juga admin grup.",
+		Description: "Ganti nama grup ini (perlu di grup; pengirim & bot harus admin).",
 		Parameters: ai.ParameterSchema{
 			Type: "OBJECT",
 			Properties: map[string]ai.PropertySchema{
@@ -63,13 +63,13 @@ func init() {
 
 	ai.RegisterTool(ai.ToolDefinition{
 		Name:        "tag_all",
-		Description: "Tandai (mention) SEMUA member grup ini sekaligus, opsional dengan pesan pengumuman. Hanya bisa dipakai di dalam grup, dan hanya kalau pengirim perintah adalah admin grup.",
+		Description: "Tandai SEMUA member grup ini sekaligus, opsional dengan pengumuman (perlu di grup; pengirim harus admin).",
 		Parameters: ai.ParameterSchema{
 			Type: "OBJECT",
 			Properties: map[string]ai.PropertySchema{
 				"message": {
 					Type:        "STRING",
-					Description: "Pesan pengumuman yang menyertai tag, contoh: Rapat jam 8 malam ini. Boleh kosong.",
+					Description: "Pengumuman penyerta tag, cth: Rapat jam 8 malam ini. Boleh kosong.",
 				},
 			},
 		},
@@ -95,7 +95,7 @@ func init() {
 
 	ai.RegisterTool(ai.ToolDefinition{
 		Name:        "group_link",
-		Description: "Ambil link invite grup WhatsApp ini. Hanya bisa dipakai di dalam grup, dan hanya kalau pengirim perintah adalah admin grup serta bot juga admin grup.",
+		Description: "Ambil link invite grup ini (perlu di grup; pengirim & bot harus admin).",
 		Parameters: ai.ParameterSchema{
 			Type:       "OBJECT",
 			Properties: map[string]ai.PropertySchema{},
@@ -118,7 +118,7 @@ func init() {
 
 	ai.RegisterTool(ai.ToolDefinition{
 		Name:        "group_close",
-		Description: "Kunci grup WhatsApp ini sehingga hanya admin yang bisa kirim pesan. Hanya bisa dipakai di dalam grup, dan hanya kalau pengirim perintah adalah admin grup serta bot juga admin grup.",
+		Description: "Kunci grup ini sehingga hanya admin bisa kirim pesan (perlu di grup; pengirim & bot harus admin).",
 		Parameters: ai.ParameterSchema{
 			Type:       "OBJECT",
 			Properties: map[string]ai.PropertySchema{},
@@ -130,7 +130,7 @@ func init() {
 
 	ai.RegisterTool(ai.ToolDefinition{
 		Name:        "group_open",
-		Description: "Buka kunci grup WhatsApp ini sehingga semua member boleh kirim pesan. Hanya bisa dipakai di dalam grup, dan hanya kalau pengirim perintah adalah admin grup serta bot juga admin grup.",
+		Description: "Buka kunci grup ini sehingga semua member boleh kirim pesan (perlu di grup; pengirim & bot harus admin).",
 		Parameters: ai.ParameterSchema{
 			Type:       "OBJECT",
 			Properties: map[string]ai.PropertySchema{},

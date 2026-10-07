@@ -11,8 +11,10 @@ import (
 
 	"runtime"
 
+	"wabot-go/internal/ai"
 	"wabot-go/internal/config"
 	"wabot-go/internal/handler"
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 	"wabot-go/plugins"
 
@@ -21,13 +23,14 @@ import (
 	// Tanpa baris import ini, tool-tool tersebut TIDAK akan pernah terdaftar
 	// meski file .go-nya ada di project (persis prinsip yang sama dengan
 	// kenapa plugins/ perlu di-import agar init() plugin jalan).
-	_ "wabot-go/internal/ai/tools/bridge"
+	// Bridge di-import BERNAMA (bukan blank) karena main butuh memanggil
+	// InitReminderClient + RestoreReminders di bawah.
+	"wabot-go/internal/ai/tools/bridge"
 	_ "wabot-go/internal/ai/tools/native"
 
 	qrcode "github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
-	waLog "go.mau.fi/whatsmeow/util/log"
 	_ "modernc.org/sqlite"
 
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -50,7 +53,7 @@ const onlinePresenceInterval = 30 * time.Second
 func startOnlinePresence(client *whatsmeow.Client) {
 	send := func() {
 		if err := client.SendPresence(context.Background(), types.PresenceAvailable); err != nil {
-			fmt.Printf("⚠️ Gagal kirim presence online: %v\n", err)
+			logfmt.Warn("Gagal kirim presence online: %v\n", err)
 		}
 	}
 	go func() {
@@ -110,6 +113,15 @@ func main() {
 	}
 
 	// ==========================================================
+	// 0b2. Siapkan database SQLite untuk keuangan Flora (catat/baca/
+	//     rekap/edit/hapus/export lokal — pengganti Google Sheet).
+	//     File sendiri supaya backup/retensi mandiri.
+	// ==========================================================
+	if err := store.InitFinanceDB("data/finance.db"); err != nil {
+		panic(fmt.Sprintf("gagal inisialisasi finance.db: %v", err))
+	}
+
+	// ==========================================================
 	// 0c. Siapkan database SQLite untuk histori percakapan AI (command
 	//     .agent + trigger natural). Terpisah dari group.db dan session.db.
 	// ==========================================================
@@ -134,10 +146,46 @@ func main() {
 	}
 
 	// ==========================================================
+	// 0e2. Siapkan tabel ringkasan sesi (ingatan hemat: sesi idle 10 menit
+	//     diringkas ≤1000 karakter, FIFO maksimal 4 per kunci sesi).
+	//     Reuse koneksi ai.db yang sama.
+	// ==========================================================
+	if err := store.InitSummariesDB(); err != nil {
+		panic(fmt.Sprintf("gagal inisialisasi summaries DB: %v", err))
+	}
+
+	// ==========================================================
+	// 0e3. Siapkan arsip pesan ala FIORA/CRM (data/crm.db, maks 200
+	//     terbaru global) untuk .lastchat/.crm/.insp. SENGAJA fail-soft
+	//     (Warn + lanjut tanpa arsip, BUKAN panic seperti DB operasional)
+	//     — forensik tidak boleh membunuh bot.
+	// ==========================================================
+	if err := store.InitCRMDB("data/crm.db"); err != nil {
+		logfmt.Warn("gagal inisialisasi crm.db (arsip pesan mati): %v\n", err)
+	}
+
+	// ==========================================================
+	// 0e4. Siapkan database absensi (data/absensi.db): patokan, sesi,
+	//     catatan hadir, jadwal harian. Fail-soft seperti CRM (Warn +
+	//     lanjut tanpa absensi) — presensi tak boleh membunuh bot.
+	// ==========================================================
+	if err := store.InitAbsensiDB("data/absensi.db"); err != nil {
+		logfmt.Warn("gagal inisialisasi absensi.db (absensi mati): %v\n", err)
+	}
+
+	// Penyapu sesi idle → ringkas background. Hidup seumur proses;
+	// berhenti saat main return (tak pernah, kecuali shutdown).
+	ai.StartSummarySweeper(context.Background())
+
+	// Status warna log (diagnostik NO_COLOR/FORCE_COLOR — kondisi langsung
+	// terlihat di console, tak perlu menebak kenapa header polos).
+	fmt.Printf("warna log: %s\n", logfmt.ColorStatus())
+
+	// ==========================================================
 	// 1. Siapkan penyimpanan session (auth) memakai SQLite.
 	//    File ini yang membuat bot tidak perlu scan ulang tiap restart.
 	// ==========================================================
-	dbLog := waLog.Stdout("Database", "ERROR", true)
+	dbLog := logfmt.NewWALogger("Database", "ERROR")
 
 	container, err := sqlstore.New(context.Background(), "sqlite", "file:data/session.db?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)", dbLog)
 	if err != nil {
@@ -149,7 +197,7 @@ func main() {
 		panic(fmt.Sprintf("gagal mengambil device: %v", err))
 	}
 
-	clientLog := waLog.Stdout("Client", "INFO", true)
+	clientLog := logfmt.NewWALogger("Client", "INFO")
 	client := whatsmeow.NewClient(deviceStore, clientLog)
 
 	// ==========================================================
@@ -164,6 +212,14 @@ func main() {
 	//     whatsmeow mulai jalan.
 	// ==========================================================
 	plugins.InitCallClient(client)
+
+	// 2b2. Pasang client untuk scheduler reminder Flora (pengiriman DM +
+	//     telepon eskalasi dari timer). Sama posisinya dengan InitCallClient.
+	bridge.InitReminderClient(client)
+
+	// 2b3. Pasang client untuk timer absensi (reminder H-5, tutup otomatis,
+	//     rekap) + ticker jadwal harian. Sama posisinya dengan di atas.
+	plugins.InitAbsensiScheduler(client)
 
 	// ==========================================================
 	// 2c. Jaga nomor bot tampil "online" (bukan "terakhir dilihat").
@@ -198,7 +254,7 @@ func main() {
 		if err != nil {
 			panic(fmt.Sprintf("gagal connect: %v", err))
 		}
-		fmt.Println("✅ Bot berhasil terhubung ke WhatsApp (session lama)!")
+		fmt.Println("Bot berhasil terhubung ke WhatsApp (session lama)!")
 	}
 
 	// ==========================================================
@@ -208,6 +264,12 @@ func main() {
 	// ==========================================================
 	plugins.RestoreScheduledCalls()
 
+	// 3b2. Pulihkan pengingat Flora (berdampingan jadwal call di atas).
+	bridge.RestoreReminders()
+
+	// 3b3. Pulihkan timer sesi absen aktif + nyalakan ticker jadwal harian.
+	plugins.RestoreAbsensiSessions()
+
 	// ==========================================================
 	// 4. Tunggu sinyal berhenti (Ctrl+C atau kill dari Pterodactyl)
 	//    supaya proses shutdown-nya bersih.
@@ -216,7 +278,7 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	fmt.Println("⏳ Menutup koneksi...")
+	fmt.Println("Menutup koneksi...")
 	client.Disconnect()
 }
 
@@ -233,19 +295,19 @@ func loginWithQR(client *whatsmeow.Client) error {
 		switch evt.Event {
 		case "code":
 			if genErr := qrcode.WriteFile(evt.Code, qrcode.Medium, 512, qrImagePath); genErr != nil {
-				fmt.Printf("⚠️  Gagal membuat file QR PNG: %v\n", genErr)
+				logfmt.Warn(" Gagal membuat file QR PNG: %v\n", genErr)
 			} else {
-				fmt.Printf("\n📷 QR code tersimpan sebagai gambar: %s\n", qrImagePath)
+				logfmt.Plain("\nQR code tersimpan sebagai gambar: %s\n", qrImagePath)
 				fmt.Println("   Buka file manager panel, download/preview file itu, lalu scan dari WhatsApp > Perangkat Tertaut.")
 			}
 			fmt.Println("\nAtau salin teks QR mentah ini ke generator QR online:")
 			fmt.Println(evt.Code)
 		case "success":
-			fmt.Println("\n✅ Berhasil login lewat QR!")
+			fmt.Println("\nBerhasil login lewat QR!")
 			// Hapus file QR setelah berhasil supaya tidak membingungkan di restart berikutnya
 			_ = os.Remove(qrImagePath)
 		case "timeout":
-			fmt.Println("⌛ QR code kadaluarsa, menunggu kode baru...")
+			fmt.Println("QR code kadaluarsa, menunggu kode baru...")
 		default:
 			fmt.Println("Status login:", evt.Event)
 		}
@@ -272,7 +334,7 @@ func loginWithPairingCode(client *whatsmeow.Client) error {
 		return err
 	}
 
-	fmt.Printf("\n📱 Masukkan kode berikut di WhatsApp > Perangkat Tertaut > Tautkan dengan nomor telepon:\n\n   %s\n\n", code)
+	fmt.Printf("\nMasukkan kode berikut di WhatsApp > Perangkat Tertaut > Tautkan dengan nomor telepon:\n\n   %s\n\n", code)
 	fmt.Println("Kode berlaku sekitar 1-2 menit. Kalau kadaluarsa, restart server untuk mendapat kode baru.")
 	return nil
 }

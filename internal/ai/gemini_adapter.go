@@ -67,7 +67,9 @@ func (g *GeminiAdapter) Generate(ctx context.Context, params GenerateParams) (*A
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-goog-api-key", g.APIKey)
 
+	start := time.Now()
 	resp, err := g.HTTPClient.Do(httpReq)
+	durationMs := time.Since(start).Milliseconds()
 	if err != nil {
 		return nil, fmt.Errorf("gemini: request gagal: %w", err)
 	}
@@ -97,6 +99,10 @@ func (g *GeminiAdapter) Generate(ctx context.Context, params GenerateParams) (*A
 
 	text := ""
 	var toolCalls []ToolCall
+	finishReason := ""
+	if len(parsed.Candidates) > 0 {
+		finishReason = parsed.Candidates[0].FinishReason
+	}
 	for _, part := range parsed.Candidates[0].Content.Parts {
 		if part.FunctionCall != nil {
 			toolCalls = append(toolCalls, ToolCall{
@@ -109,8 +115,22 @@ func (g *GeminiAdapter) Generate(ctx context.Context, params GenerateParams) (*A
 		text += part.Text
 	}
 
+	usage := TokenUsage{}
+	if parsed.UsageMetadata != nil {
+		usage = TokenUsage{
+			Prompt:     parsed.UsageMetadata.PromptTokenCount,
+			Completion: parsed.UsageMetadata.CandidatesTokenCount,
+			Total:      parsed.UsageMetadata.TotalTokenCount,
+		}
+	}
+
 	return &AgentResponse{
-		Text:      text,
-		ToolCalls: toolCalls,
+		Text:         text,
+		ToolCalls:    toolCalls,
+		Usage:        usage,
+		FinishReason: finishReason,
+		DurationMs:   durationMs,
+		Provider:     "google",
+		Model:        g.Model,
 	}, nil
 }

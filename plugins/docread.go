@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"wabot-go/internal/ai"
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 
 	"github.com/ledongthuc/pdf"
@@ -64,11 +65,11 @@ func readTriggerDocument(ctx context.Context, mctx *store.MessageContext) (name,
 
 	data, err := mctx.Client.Download(ctx, doc)
 	if err != nil {
-		fmt.Printf("⚠️ docread: gagal download dokumen %s: %v\n", name, err)
+		logfmt.Warn("docread: gagal download dokumen %s: %v\n", name, err)
 		return name, "", fmt.Sprintf("[Catatan: ada dokumen %q terlampir tapi tidak bisa diunduh.]", name)
 	}
 	if len(data) > maxDocBytes {
-		fmt.Printf("⚠️ docread: dokumen %s terlalu besar (%d byte), dilewati.\n", name, len(data))
+		logfmt.Warn("docread: dokumen %s terlalu besar (%d byte), dilewati.\n", name, len(data))
 		return name, "", fmt.Sprintf("[Catatan: dokumen %q terlalu besar untuk dibaca (%.1f MB).]", name, float64(len(data))/(1<<20))
 	}
 
@@ -86,7 +87,7 @@ func readTriggerDocument(ctx context.Context, mctx *store.MessageContext) (name,
 		return name, "", fmt.Sprintf("[Catatan: dokumen %q bertipe %s yang tidak didukung. Format yang bisa dibaca: PDF, DOCX, XLSX, dan teks polos (TXT/CSV/Markdown).]", name, kindLabel(doc.GetMimetype(), name))
 	}
 	if err != nil {
-		fmt.Printf("⚠️ docread: gagal ekstrak %s: %v\n", name, err)
+		logfmt.Warn("docread: gagal ekstrak %s: %v\n", name, err)
 		return name, "", fmt.Sprintf("[Catatan: dokumen %q gagal dibaca (%v).]", name, err)
 	}
 	if strings.TrimSpace(text) == "" {
@@ -121,7 +122,7 @@ func formatDocBlock(name, text string, truncated bool) string {
 // (perilaku lama) supaya user tetap dapat sesuatu.
 func summarizeLongDocument(ctx context.Context, provider ai.ProviderAdapter, name, text string) string {
 	chunks := splitDocChunks(text)
-	fmt.Printf("📄 docread: dokumen %q panjang (%d karakter), dibaca bertahap %d bagian.\n", name, len([]rune(text)), len(chunks))
+	logfmt.Plain("docread: dokumen %q panjang (%d karakter), dibaca bertahap %d bagian.\n", name, len([]rune(text)), len(chunks))
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -141,11 +142,16 @@ func summarizeLongDocument(ctx context.Context, provider ai.ProviderAdapter, nam
 				History: []ai.Content{{Role: "user", Parts: []ai.Part{{Text: prompt}}}},
 			})
 			if err != nil || strings.TrimSpace(resp.Text) == "" {
-				fmt.Printf("⚠️ docread: ringkas bagian %d/%d gagal: %v\n", idx+1, len(chunks), err)
+				logfmt.Warn("docread: ringkas bagian %d/%d gagal: %v\n", idx+1, len(chunks), err)
 				summaries[idx] = "[bagian ini gagal diringkas]"
 				return
 			}
 			summaries[idx] = strings.TrimSpace(resp.Text)
+			ai.LogSide("docread", []ai.AIField{
+				{K: "dokumen", V: name},
+				{K: "bagian", V: fmt.Sprintf("%d/%d", idx+1, len(chunks))},
+				{K: "hasil", V: fmt.Sprintf("%d kar", len([]rune(resp.Text)))},
+			}, resp.Text)
 		}(i, chunk)
 	}
 	wg.Wait()
@@ -157,7 +163,7 @@ func summarizeLongDocument(ctx context.Context, provider ai.ProviderAdapter, nam
 		}
 	}
 	if ok == 0 {
-		fmt.Printf("⚠️ docread: semua ringkasan %q gagal, fallback tempel langsung.\n", name)
+		logfmt.Warn("docread: semua ringkasan %q gagal, fallback tempel langsung.\n", name)
 		trimmed, _ := truncateRunes(text, maxDocChars)
 		return formatDocBlock(name, trimmed, true)
 	}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 
 	"github.com/robertkrimen/otto"
@@ -100,7 +101,7 @@ func handleShell(ctx context.Context, mctx *store.MessageContext) error {
 			text = "(tidak ada output)"
 		}
 		if rerr := store.ReplyText(bg, mctx, truncateRunesExec(text)); rerr != nil {
-			fmt.Printf("❌ Gagal balas hasil shell: %v\n", rerr)
+			logfmt.Error("Gagal balas hasil shell: %v\n", rerr)
 		}
 	}()
 	return nil
@@ -193,7 +194,7 @@ func handleEvalJS(ctx context.Context, mctx *store.MessageContext) error {
 			result = "(tidak ada output)"
 		}
 		if rerr := store.ReplyText(bg, mctx, truncateRunesExec(result)); rerr != nil {
-			fmt.Printf("❌ Gagal balas hasil eval: %v\n", rerr)
+			logfmt.Error("Gagal balas hasil eval: %v\n", rerr)
 		}
 	}()
 	return nil

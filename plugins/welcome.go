@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
+	"wabot-go/internal/timex"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -34,8 +37,22 @@ const (
 // teks selalu format kanonis ("@"+bare.User untuk user).
 var templateVarRe = regexp.MustCompile(`(?i)@(user|group|desc|periode|time|count)\b`)
 
-// dayPeriod menentukan periode waktu Indonesia berdasarkan jam (zona WITA,
-// konsisten dengan penjadwalan .call): pagi 04–10, siang 11–14,
+// botJoinSeen mencatat kapan bot pertama terlihat join tiap grup — untuk
+// mendeteksi burst sinkronisasi awal: WhatsApp mengirim Join berisi bot +
+// puluhan member LAMA sekaligus saat bot baru dimasukkan ke grup besar.
+// Map in-memory + mutex karena HandleGroupJoin jalan dari dispatcher event.
+// Entri lama (>1 jam) dibersihkan oportunistik tiap ada join bot.
+var (
+	botJoinSeenMu sync.Mutex
+	botJoinSeen   = map[string]time.Time{}
+)
+
+// syncBurstWindow: burst Join besar dalam jendela ini setelah bot masuk
+// dianggap sisa sinkronisasi awal (yang pecah jadi beberapa event).
+const syncBurstWindow = 2 * time.Minute
+
+// dayPeriod menentukan periode waktu Indonesia berdasarkan jam (zona aktif
+// timex, konsisten dengan penjadwalan .call): pagi 04–10, siang 11–14,
 // sore 15–17, malam 18–03.
 func dayPeriod(t time.Time) string {
 	switch h := t.Hour(); {
@@ -274,20 +291,21 @@ func handleSimulateGreeting(ctx context.Context, mctx *store.MessageContext, isW
 		groupDesc = info.Topic
 		memberCount = info.ParticipantCount
 	}
-	now := time.Now().In(witaLocation)
+	now := timex.Now()
 	sendGreeting(mctx.Client, mctx.Chat, mctx.Sender.ToNonAD(), tmpl, groupName, groupDesc, dayPeriod(now), now.Format("15:04:05"), memberCount)
 	return store.ReplyText(ctx, mctx, fmt.Sprintf("Terkirim contoh %s di atas (kamu sebagai @user).", kind))
 }
 
 // setTemplateHelp adalah teks bantuan variabel yang dipakai ".welcome set"
 // dan ".bye set" tanpa argumen. Baris baru di sini adalah bagian dari
-// format — jangan digabung jadi satu paragraf.
-const setTemplateHelp = "Variabel yang bisa dipakai:\n" +
+// format — jangan digabung jadi satu paragraf. Var (bukan const) supaya
+// label zona mengikuti BOT_TIMEZONE aktif.
+var setTemplateHelp = "Variabel yang bisa dipakai:\n" +
 	"@user - tag member yang join/keluar\n" +
 	"@group - nama grup ini\n" +
 	"@desc - deskripsi grup ini\n" +
-	"@periode - pagi/siang/sore/malam (WITA)\n" +
-	"@time - jam saat ini HH:MM:SS (WITA)\n" +
+	"@periode - pagi/siang/sore/malam (" + timex.Name() + ")\n" +
+	"@time - jam saat ini HH:MM:SS (" + timex.Name() + ")\n" +
 	"@count - member ke-N saat ini\n" +
 	"\n" +
 	"Contoh:\n" +
@@ -305,6 +323,8 @@ const setTemplateHelp = "Variabel yang bisa dipakai:\n" +
 // mode self → diam (sapaan adalah broadcast ke non-owner),
 // grup di-ban → diam (konsisten dengan pesan biasa),
 // bot sendiri yang join → tidak menyapa diri sendiri,
+// burst sync-awal (bot ada di batch Join > 1, atau burst > 3 dalam 2 menit
+// setelah bot masuk) → skip semua, member lama tidak disapa,
 // anggota keluar karena ditendang bot (actor = bot) → tidak ada bye
 // (command kick/warn sudah mengirim pesannya sendiri),
 // anggota di-ban → tidak disapa maupun diantar.
@@ -315,20 +335,20 @@ func HandleGroupJoin(client *whatsmeow.Client, evt *events.GroupInfo) {
 	ctx := context.Background()
 
 	if self, err := store.Groups().IsSelfMode(ctx); err != nil {
-		fmt.Printf("⚠️ Gagal cek mode untuk greeting %s: %v\n", evt.JID, err)
+		logfmt.Warn("Gagal cek mode untuk greeting %s: %v\n", evt.JID, err)
 		return
 	} else if self {
 		return
 	}
 	if gbanned, err := store.Groups().IsGroupBanned(ctx, evt.JID.String()); err != nil {
-		fmt.Printf("⚠️ Gagal cek ban grup untuk greeting %s: %v\n", evt.JID, err)
+		logfmt.Warn("Gagal cek ban grup untuk greeting %s: %v\n", evt.JID, err)
 		return
 	} else if gbanned {
 		return
 	}
 	gr, err := store.Groups().GetGreeting(ctx, evt.JID.String())
 	if err != nil {
-		fmt.Printf("⚠️ Gagal baca greeting %s: %v\n", evt.JID, err)
+		logfmt.Warn("Gagal baca greeting %s: %v\n", evt.JID, err)
 		return
 	}
 
@@ -340,7 +360,7 @@ func HandleGroupJoin(client *whatsmeow.Client, evt *events.GroupInfo) {
 	// akan mendapat angka sesuai kondisi grup saat itu.
 	groupName, groupDesc, memberCount := "grup ini", "", 0
 	if info, err := client.GetGroupInfo(ctx, evt.JID); err != nil {
-		fmt.Printf("⚠️ Gagal ambil info grup untuk greeting %s: %v\n", evt.JID, err)
+		logfmt.Warn("Gagal ambil info grup untuk greeting %s: %v\n", evt.JID, err)
 	} else {
 		// GroupName/GroupTopic di-embed sebagai struct, jadi field-nya
 		// ter-promote langsung: info.Name dan info.Topic berupa string.
@@ -351,13 +371,13 @@ func HandleGroupJoin(client *whatsmeow.Client, evt *events.GroupInfo) {
 		memberCount = info.ParticipantCount
 	}
 
-	// Periode & jam untuk variabel @periode/@time — zona WITA supaya sama
-	// dengan jam penjadwalan .call (lihat witaLocation di call.go).
-	now := time.Now().In(witaLocation)
+	// Periode & jam untuk variabel @periode/@time — zona aktif timex (WIB/
+	// WITA/WIT via env BOT_TIMEZONE), sama dengan jam penjadwalan .call.
+	now := timex.Now()
 	periode := dayPeriod(now)
 	timeStr := now.Format("15:04:05")
 
-	if len(evt.Join) > 0 && gr.WelcomeOn {
+	if len(evt.Join) > 0 && gr.WelcomeOn && !isSyncBurst(client, evt) {
 		tmpl := gr.WelcomeMsg
 		if tmpl == "" {
 			tmpl = DefaultWelcomeTemplate
@@ -383,8 +403,53 @@ func HandleGroupJoin(client *whatsmeow.Client, evt *events.GroupInfo) {
 	}
 }
 
-// sendGreeting merender satu template untuk satu member lalu mengirimnya
-// sebagai pesan lepas (bukan reply — tidak ada pesan yang di-quote) dengan
+// isSyncBurst mendeteksi burst sinkronisasi awal saat bot baru dimasukkan
+// ke grup besar: WhatsApp mengirim Join berisi bot + puluhan member LAMA
+// (bukan join sungguhan), kadang pecah jadi beberapa event berurutan.
+// Ciri 1: JID bot sendiri ada di batch dan batch > 1 → skip semua + catat
+// waktu masuk (bot tetap diam, tanpa pesan perkenalan — keputusan owner).
+// Ciri 2: burst besar (>3 JID, tanpa bot) dalam 2 menit setelah bot masuk
+// → sisa sync pecahan, skip. Join asli (1–3 orang, di luar jendela) lolos.
+func isSyncBurst(client *whatsmeow.Client, evt *events.GroupInfo) bool {
+	if len(evt.Join) == 0 {
+		return false
+	}
+	chatKey := evt.JID.String()
+	selfInBatch := false
+	for _, j := range evt.Join {
+		if isOwnJID(client, j.ToNonAD()) {
+			selfInBatch = true
+			break
+		}
+	}
+	botJoinSeenMu.Lock()
+	defer botJoinSeenMu.Unlock()
+	if selfInBatch {
+		// Bersihkan entri basi + catat momen masuk grup ini.
+		for k, t := range botJoinSeen {
+			if time.Since(t) > time.Hour {
+				delete(botJoinSeen, k)
+			}
+		}
+		botJoinSeen[chatKey] = time.Now()
+		if len(evt.Join) > 1 {
+			logfmt.Skip("greeting %s: skip burst sync-awal (%d JID termasuk bot).\n", chatKey, len(evt.Join))
+			return true
+		}
+		return false
+	}
+	if len(evt.Join) > 3 {
+		if since, ok := botJoinSeen[chatKey]; ok && time.Since(since) < syncBurstWindow {
+			logfmt.Skip("greeting %s: skip burst susulan (%d JID, %.0fs setelah bot masuk).\n",
+				chatKey, len(evt.Join), time.Since(since).Seconds())
+			return true
+		}
+	}
+	return false
+}
+
+// sendGreeting merakit satu pesan perkenalan/perpisahan untuk satu member
+// lalu mengirimnya sebagai pesan lepas (bukan reply — tidak ada pesan yang di-quote) dengan
 // mention beneran kalau template memakai @user.
 func sendGreeting(client *whatsmeow.Client, chat, member types.JID, tmpl, groupName, groupDesc, periode, timeStr string, count int) {
 	bare := member.ToNonAD()
@@ -393,7 +458,7 @@ func sendGreeting(client *whatsmeow.Client, chat, member types.JID, tmpl, groupN
 	}
 	ctx := context.Background()
 	if banned, err := store.Groups().IsUserBanned(ctx, bare, types.EmptyJID); err != nil {
-		fmt.Printf("⚠️ Gagal cek ban untuk greeting %s: %v\n", bare, err)
+		logfmt.Warn("Gagal cek ban untuk greeting %s: %v\n", bare, err)
 	} else if banned {
 		return
 	}
@@ -407,7 +472,7 @@ func sendGreeting(client *whatsmeow.Client, chat, member types.JID, tmpl, groupN
 			},
 		},
 	}); err != nil {
-		fmt.Printf("⚠️ Gagal kirim greeting ke %s: %v\n", chat, err)
+		logfmt.Warn("Gagal kirim greeting ke %s: %v\n", chat, err)
 		return
 	}
 	// Sapaan dikirim langsung via client (tanpa mctx), jadi dicatat manual

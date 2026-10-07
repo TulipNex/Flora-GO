@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
+
+	"wabot-go/internal/logfmt"
+	"wabot-go/internal/timex"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -14,106 +16,161 @@ import (
 
 const logTimeFormat = "15:04"
 
-// logWrapWidth adalah lebar LIPATAN visual per baris log. Ini BUKAN batas
-// karakter — tidak ada teks yang dibuang. Baris yang lebih panjang hanya
-// dilipat ke baris berikut dengan benang │ yang tetap tersambung ke bawah
-// sepanjang teksnya. Pelipatan dihitung per rune (bukan byte) agar emoji
-// atau karakter multi-byte tidak terpotong di tengah.
-const logWrapWidth = 120
+// Format blok MESSAGE (keputusan owner): header + baris kunci + isi mentah.
+// Contoh masuk:
+//   [16:05 - MESSAGE]
+//   from : Mitra (6285324023198)
+//   at   : private 6285324023198
+//   type : text
+//   aim  : agent
+//   content :
+//   halo flo
+// Isi dicetak APA ADANYA tanpa prefix/lipat supaya bisa disalin langsung.
+// Timestamp = jam zona aktif timex.
 
-// Layout log memakai gaya timeline (opsi 23): poros waktu di kiri, panah
-// ▼ untuk pesan masuk dan ▲ untuk pesan keluar, isi pesan di baris bawah
-// yang tersambung benang │. Contoh:
-//
-// 16:05 │ ▼ Mitra (62853...) → grup 120363 [teks]
-//       │   halo bot apa kabar
-// 16:05 │ ▲ bot → grup 120363 [teks]
-//       │   Halo juga, ada yang bisa dibantu
-
-// LogIncoming mencetak pesan masuk ke console.
+// LogIncoming mencetak pesan masuk dengan format blok MESSAGE. aim adalah
+// hasil klasifikasi handler ("command (.x)" / "agent" / "none") — maksud
+// pesan, bukan hasil akhirnya (gerbang ban/lock bisa tetap menggugurkan).
 //
 // Pesan di-unwrap dulu (ephemeral/sekali-lihat) supaya tipenya terdeteksi
 // benar — sebelumnya pesan berbungkus selalu tercatat sebagai "other".
-func LogIncoming(client *whatsmeow.Client, evt *events.Message) {
+func LogIncoming(client *whatsmeow.Client, evt *events.Message, aim string) {
 	msg := UnwrapMessage(evt.Message)
 	tipe, ringkasan := describeMessage(msg)
 	ctx := context.Background()
-	printLogBlock(
-		fmt.Sprintf("%s │ ▼ %s → %s [%s]",
-			time.Now().Format(logTimeFormat),
-			formatSender(ctx, client, evt.Info.PushName, evt.Info.Sender, evt.Info.SenderAlt),
-			formatChat(ctx, client, evt.Info.IsGroup, evt.Info.Chat),
-			tipe,
-		),
+	fmt.Println(logfmt.PaintCode("32", fmt.Sprintf("[%s - MESSAGE]",
+		timex.Now().Format(logTimeFormat))))
+	fmt.Printf("from : %s\nat   : %s\ntype : %s\naim  : %s\ncontent :\n%s\n",
+		formatSender(ctx, client, evt.Info.PushName, evt.Info.Sender, evt.Info.SenderAlt),
+		formatChatEn(ctx, client, evt.Info.IsGroup, evt.Info.Chat),
+		normMsgType(tipe),
+		aimOrDash(aim),
 		ringkasan,
 	)
+	fmt.Println(logfmt.Divider())
 }
 
-// LogOutgoing mencetak pesan yang dikirim bot ke console.
-// msgType diisi pemanggil; teks ditampilkan UTUH (tanpa batas karakter),
-// dilipat otomatis kalau melebihi lebar terminal.
+// LogOutgoing mencetak pesan keluar bot dengan format blok MESSAGE
+// (agent=false). Untuk balasan AI pakai LogOutgoingAgent.
 func LogOutgoing(mctx *MessageContext, msgType, text string) {
-	printLogBlock(
-		fmt.Sprintf("%s │ ▲ bot → %s [%s]",
-			time.Now().Format(logTimeFormat),
-			formatChat(context.Background(), mctx.Client, mctx.IsGroup(), mctx.Chat),
-			msgType,
-		),
+	logOutgoingAs(mctx, msgType, text, false)
+}
+
+// LogOutgoingAgent sama seperti LogOutgoing tapi menandai agent:true —
+// dipakai HANYA jalur balasan AI (bubble teks / voice note Flora).
+func LogOutgoingAgent(mctx *MessageContext, msgType, text string) {
+	logOutgoingAs(mctx, msgType, text, true)
+}
+
+func logOutgoingAs(mctx *MessageContext, msgType, text string, agent bool) {
+	agentText := "false"
+	if agent {
+		agentText = "true"
+	}
+	fmt.Println(logfmt.PaintCode("34", fmt.Sprintf("[%s - MESSAGE]",
+		timex.Now().Format(logTimeFormat))))
+	fmt.Printf("from : Bot\nat   : %s\ntype : %s\nagent: %s\ncontent :\n%s\n",
+		formatChatEn(context.Background(), mctx.Client, mctx.IsGroup(), mctx.Chat),
+		normOutgoingType(msgType),
+		agentText,
 		text,
 	)
+	fmt.Println(logfmt.Divider())
 }
 
-// printLogBlock mencetak header satu baris lalu isi teks di bawahnya,
-// SETIAP baris diawali benang "│" supaya garis pemisah turun ke bawah
-// sepanjang teksnya — termasuk template multi-baris dan baris hasil
-// lipatan otomatis.
-func printLogBlock(header, text string) {
-	fmt.Println(header)
-	for _, line := range logBodyLines(text) {
-		fmt.Printf("      │   %s\n", line)
+// aimOrDash mengembalikan "-" bila aim kosong (jangan tampil kosong).
+func aimOrDash(aim string) string {
+	if strings.TrimSpace(aim) == "" {
+		return "-"
+	}
+	return aim
+}
+
+// formatChatEn menyusun "private <id>" atau "group <id>" (format blok
+// MESSAGE memakai bahasa Inggris pendek).
+func formatChatEn(ctx context.Context, client *whatsmeow.Client, isGroup bool, chat types.JID) string {
+	id := displayID(ctx, client, chat, types.EmptyJID)
+	if isGroup {
+		return "group " + id
+	}
+	return "private " + id
+}
+
+// normMsgType memetakan label tipe Indonesia describeMessage ke token
+// Inggris pendek untuk baris type: (mis. "teks"→"text", "vn 12s"→"voicenote").
+func normMsgType(tipe string) string {
+	base := strings.ToLower(strings.TrimSpace(tipe))
+	if i := strings.Index(base, " "); i >= 0 {
+		base = base[:i]
+	}
+	switch base {
+	case "teks":
+		return "text"
+	case "gambar":
+		return "image"
+	case "video":
+		return "video"
+	case "gif":
+		return "gif"
+	case "audio":
+		return "audio"
+	case "vn":
+		return "voicenote"
+	case "dokumen":
+		return "document"
+	case "stiker":
+		return "sticker"
+	case "kontak":
+		return "contact"
+	case "lokasi":
+		return "location"
+	case "reaksi":
+		return "reaction"
+	case "polling":
+		return "poll"
+	case "undangan-grup":
+		return "group-invite"
+	case "protokol":
+		return "protocol"
+	default:
+		return "other"
 	}
 }
 
-// logBodyLines memecah teks jadi baris-baris siap cetak: baris baru asli
-// dipertahankan apa adanya, baris yang melebihi logWrapWidth dilipat.
-// Tidak ada teks yang dibuang — teks kosong jadi "-".
-func logBodyLines(text string) []string {
-	var out []string
-	for _, raw := range strings.Split(text, "\n") {
-		line := strings.TrimRight(raw, " \t\r")
-		if strings.TrimSpace(line) == "" {
-			out = append(out, "")
-			continue
-		}
-		out = append(out, wrapLogLine(line)...)
+// normOutgoingType memetakan label internal pengirim ke token type:.
+// Label teks/balasan → text; label media → jenis medianya; sisanya (sapaan,
+// moderasi, tagall, dl-status, ...) adalah pesan teks → text.
+func normOutgoingType(msgType string) string {
+	switch strings.ToLower(strings.TrimSpace(msgType)) {
+	case "text", "text-mention", "":
+		return "text"
+	case "voicenote":
+		return "voicenote"
+	case "gif":
+		return "gif"
+	case "sticker", "image->sticker":
+		return "sticker"
+	case "dl-video", "video":
+		return "video"
+	case "dl-image", "image":
+		return "image"
+	case "dl-audio", "audio":
+		return "audio"
+	case "dl-document", "get-document", "document":
+		return "document"
+	case "contact":
+		return "contact"
+	case "location":
+		return "location"
+	case "poll":
+		return "poll"
+	case "event":
+		return "event"
+	case "rsvp":
+		return "rsvp"
+	default:
+		return "text"
 	}
-	if len(out) == 0 {
-		return []string{"-"}
-	}
-	return out
-}
-
-// wrapLogLine melipat satu baris panjang ke beberapa baris: dipotong di
-// spasi terakhir sebelum batas supaya kata tidak terpotong; kalau tidak
-// ada spasi (mis. satu kata raksasa), dipotong keras per rune.
-func wrapLogLine(line string) []string {
-	var out []string
-	runes := []rune(line)
-	for len(runes) > logWrapWidth {
-		cut := logWrapWidth
-		for i := logWrapWidth; i > logWrapWidth-20 && i > 0; i-- {
-			if runes[i] == ' ' {
-				cut = i
-				break
-			}
-		}
-		out = append(out, string(runes[:cut]))
-		runes = runes[cut:]
-		for len(runes) > 0 && runes[0] == ' ' {
-			runes = runes[1:]
-		}
-	}
-	return append(out, string(runes))
 }
 
 // formatSender menyusun "Nama (id)" — PushName (nama kontak pengirim) di
@@ -127,17 +184,6 @@ func formatSender(ctx context.Context, client *whatsmeow.Client, pushName string
 		return id
 	}
 	return fmt.Sprintf("%s (%s)", name, id)
-}
-
-// formatChat menyusun "grup <id>" atau "privat <id>" — cukup user part JID
-// (tanpa @server) supaya baris log pendek dan mudah di-scan. Chat privat
-// ber-mode LID ikut di-resolve ke nomor HP bila pemetaannya ada.
-func formatChat(ctx context.Context, client *whatsmeow.Client, isGroup bool, chat types.JID) string {
-	id := displayID(ctx, client, chat, types.EmptyJID)
-	if isGroup {
-		return "grup " + id
-	}
-	return "privat " + id
 }
 
 // displayID mengembalikan identitas pendek untuk log: nomor HP (PN) kalau
@@ -168,21 +214,6 @@ func displayID(ctx context.Context, client *whatsmeow.Client, jid, alt types.JID
 		return bare.User
 	}
 	return jid.String()
-}
-
-// compactText memadatkan teks multi-baris jadi satu baris (baris baru jadi
-// spasi, spasi ganda digabung) lalu memotongnya ke max rune. Dipakai supaya
-// template welcome multi-baris atau chat panjang tidak mengacak terminal.
-func compactText(text string, max int) string {
-	oneLine := strings.Join(strings.Fields(text), " ")
-	if oneLine == "" {
-		return "-"
-	}
-	runes := []rune(oneLine)
-	if len(runes) <= max {
-		return oneLine
-	}
-	return string(runes[:max]) + "..."
 }
 
 // describeMessage menentukan tipe + ringkasan isi pesan untuk log. Mencakup
@@ -253,6 +284,17 @@ func describeMessage(msg *waE2E.Message) (string, string) {
 	if poll := msg.GetPollCreationMessage(); poll != nil {
 		return "polling", captionOr("-", poll.GetName())
 	}
+	if em := msg.GetEventMessage(); em != nil {
+		if em.GetIsCanceled() {
+			return "acara", "dibatalkan"
+		}
+		return "acara", captionOr("-", em.GetName())
+	}
+	// RSVP acara (Hadir/Tidak/Mungkin) masuk terenkripsi dan tak bisa
+	// dibaca versi whatsmeow ini — cukup catat keberadaannya di log.
+	if msg.GetEncEventResponseMessage() != nil {
+		return "rsvp", "-"
+	}
 	if inv := msg.GetGroupInviteMessage(); inv != nil {
 		return "undangan-grup", captionOr("-", inv.GetGroupName())
 	}
@@ -260,6 +302,16 @@ func describeMessage(msg *waE2E.Message) (string, string) {
 		return "protokol", strings.ToLower(protocolTypeName(proto.GetType()))
 	}
 	return "lainnya", "-"
+}
+
+// DescribeMessage mengekspor describeMessage untuk dipakai fitur arsip
+// (.lastchat/.crm): tipe Indonesia + ringkasan satu baris dari sebuah
+// pesan protobuf. Nil-guard karena baris arsip bisa corrupt.
+func DescribeMessage(msg *waE2E.Message) (string, string) {
+	if msg == nil {
+		return "lainnya", "-"
+	}
+	return describeMessage(msg)
 }
 
 // firstText mengambil teks utama pesan (teks biasa atau extended).
@@ -274,8 +326,7 @@ func firstText(msg *waE2E.Message) string {
 }
 
 // captionOr mengembalikan fallback ("-") kalau caption kosong, atau caption
-// apa adanya kalau ada. Perapian (lipat/potong baris) dilakukan terpusat di
-// printLogBlock, bukan di sini.
+// apa adanya kalau ada (isi log tidak dilipat/dipotong agar bisa disalin).
 func captionOr(fallback, caption string) string {
 	if strings.TrimSpace(caption) == "" {
 		return fallback

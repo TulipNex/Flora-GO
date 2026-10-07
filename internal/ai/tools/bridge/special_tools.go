@@ -6,6 +6,7 @@ import (
 
 	"wabot-go/internal/ai"
 	"wabot-go/internal/store"
+	"wabot-go/internal/timex"
 	"wabot-go/plugins"
 
 	"go.mau.fi/whatsmeow/types"
@@ -31,11 +32,11 @@ func init() {
 			Properties: map[string]ai.PropertySchema{
 				"phone_number": {
 					Type:        "STRING",
-					Description: "Nomor telepon yang mau dihubungi (628xxx, 08xx, atau +62 8xx-xxxx), atau LID member (dari mention @<angka> di grup). Contoh: 6281234567890",
+					Description: "Nomor telepon yang mau dihubungi (628xxx, 08xx, atau +62 8xx-xxxx; bukan nomor bot sendiri), atau LID member (dari mention @<angka> di grup). Contoh: 6281234567890",
 				},
 				"at": {
 					Type:        "STRING",
-					Description: "Opsional: jadwalkan panggilan pada jam format HH.MM zona WITA hari ini (atau besok kalau sudah lewat), contoh: 17.00. Jadwal tersimpan dan tahan restart. Kosongkan untuk menelpon langsung.",
+					Description: "Opsional: jadwalkan panggilan pada jam format HH.MM zona waktu bot hari ini (atau besok kalau sudah lewat), contoh: 17.00. Jadwal tersimpan dan tahan restart. Kosongkan untuk menelpon langsung.",
 				},
 			},
 			Required: []string{"phone_number"},
@@ -67,12 +68,12 @@ func init() {
 			if atRaw, _ := args["at"].(string); strings.TrimSpace(atRaw) != "" {
 				at, err := plugins.ParseJamWITA(strings.TrimSpace(atRaw))
 				if err != nil {
-					return "", fmt.Errorf("format jam salah (%v), pakai HH.MM WITA contoh 17.00", err)
+					return "", fmt.Errorf("format jam salah (%v), pakai HH.MM zona waktu bot contoh 17.00", err)
 				}
 				if _, err := plugins.ScheduleCall(mctx.Chat, phone, at); err != nil {
 					return "", fmt.Errorf("gagal menyimpan jadwal: %w", err)
 				}
-				return fmt.Sprintf("Berhasil: panggilan ke %s dijadwalkan pukul %s WITA, tersimpan dan tahan restart. Progresnya tampil di chat ini saat waktunya tiba.", phone, at.Format("15:04")), nil
+				return fmt.Sprintf("Berhasil: panggilan ke %s dijadwalkan pukul %s %s, tersimpan dan tahan restart. Progresnya tampil di chat ini saat waktunya tiba.", phone, at.Format("15:04"), timex.Name()), nil
 			}
 			// Langsung: progres (memanggil → berdering → terhubung →
 			// berakhir/ditolak/tidak dijawab) tampil di SATU bubble chat

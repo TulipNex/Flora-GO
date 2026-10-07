@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"time"
 )
 
 // File ini menyimpan JADWAL PANGGILAN (.call <target>|<jam> dan tool AI
@@ -89,4 +90,19 @@ func (g *GroupDB) CallStatus(ctx context.Context, id int64) (string, error) {
 		return "", err
 	}
 	return status, nil
+}
+
+// PruneOldCalls menghapus permanen baris selesai (done/missed/cancelled)
+// yang jadwalnya lebih dari 24 jam lewat — cermin PruneOldReminders
+// (keputusan owner berlaku untuk call juga). Baris pending tidak tersentuh.
+// Dipanggil saat startup (RestoreScheduledCalls) + tiap eksekusi jadwal.
+func (g *GroupDB) PruneOldCalls(ctx context.Context) (int64, error) {
+	res, err := g.db.ExecContext(ctx, `
+		DELETE FROM scheduled_calls WHERE status != 'pending' AND scheduled_at < ?
+	`, time.Now().Add(-24*time.Hour).Unix())
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }

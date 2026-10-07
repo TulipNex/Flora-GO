@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 )
 
@@ -133,7 +134,7 @@ func PrepareVideoBytes(ctx context.Context, data []byte) ([]byte, error) {
 	}
 	format, vcodec, acodec, err := probeVideo(ctx, in)
 	if err != nil {
-		fmt.Printf("⚠️ videonorm: probe gagal (%v), kirim apa adanya.\n", err)
+		logfmt.Warn("videonorm: probe gagal (%v), kirim apa adanya.\n", err)
 		return data, nil
 	}
 	// TANPA stream video = bukan video (kasus Sep 2026: TS 37MB berisi
@@ -148,7 +149,7 @@ func PrepareVideoBytes(ctx context.Context, data []byte) ([]byte, error) {
 	}
 	out := filepath.Join(dir, "out.mp4")
 	if err := transcodeToMP4(ctx, in, out); err != nil {
-		fmt.Printf("⚠️ videonorm: transcode gagal (%v), kirim apa adanya.\n", err)
+		logfmt.Warn("videonorm: transcode gagal (%v), kirim apa adanya.\n", err)
 		return data, nil
 	}
 	norm, err := os.ReadFile(out)
@@ -158,7 +159,7 @@ func PrepareVideoBytes(ctx context.Context, data []byte) ([]byte, error) {
 	// Validasi output: stream video wajib tetap ada (input bervideo →
 	// output tak bervideo = kirim yang asli, jangan MP4 hitam).
 	if _, ov, _, err := probeVideo(ctx, out); err != nil || ov == "" {
-		fmt.Printf("⚠️ videonorm: output kehilangan video, kirim apa adanya.\n")
+		logfmt.Warn("videonorm: output kehilangan video, kirim apa adanya.\n")
 		return data, nil
 	}
 	fmt.Printf("videonorm: %s/%s/%s -> mp4/h264+aac (%d -> %d byte)\n", format, vcodec, acodec, len(data), len(norm))

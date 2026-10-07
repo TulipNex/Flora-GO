@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"wabot-go/internal/config"
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/messaging"
 	"wabot-go/internal/scraper"
 	"wabot-go/internal/store"
@@ -105,7 +106,7 @@ func handleSmeme(ctx context.Context, mctx *store.MessageContext) error {
 	go func() {
 		bg := context.Background()
 		if err := smemeGenerate(bg, mctx, img, top, bottom); err != nil {
-			fmt.Printf("⚠️ smeme: %v\n", err)
+			logfmt.Warn("smeme: %v\n", err)
 			_ = store.ReplyText(bg, mctx, "Gagal bikin meme: "+err.Error())
 		}
 	}()

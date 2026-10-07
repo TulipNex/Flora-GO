@@ -9,10 +9,11 @@ import (
 )
 
 // IdleTimeout adalah lama waktu tanpa interaksi sebelum sesi dianggap
-// "istirahat" dan histori di-reset otomatis saat dipakai lagi.
-// Fase 2: hardcode 30 menit dulu — bisa dipindah ke config kalau
-// nanti perlu diubah tanpa recompile.
-const IdleTimeout = 30 * time.Minute
+// "selesai": trigger reply/stiker mati, dan penyapu latar meringkas
+// riwayatnya (opsi a yang disetujui owner — selaras dengan definisi sesi
+// "mulai chat s.d. diam 10 menit"). Fase 2: hardcode 30 menit dulu — bisa
+// dipindah ke config kalau nanti perlu diubah tanpa recompile.
+const IdleTimeout = 10 * time.Minute
 
 // historyLoadLimit adalah jumlah entri histori terakhir yang di-re-hydrate
 // dari SQLite saat sesi belum ada di cache in-memory (misal baru setelah
@@ -45,6 +46,9 @@ func BuildSessionKey(isGroup bool, chatJID, senderJID string) string {
 type sessionEntry struct {
 	history      []Content
 	lastActiveAt time.Time
+	// summarizing true selama goroutine peringkas sesi ini berjalan —
+	// mencegah penyapu memicu ganda untuk sesi yang sama.
+	summarizing bool
 }
 
 // SessionStore adalah penyimpanan histori percakapan per key.
@@ -152,10 +156,13 @@ func (s *SessionStore) Append(key string, c Content) {
 }
 
 // Reset menghapus sesi sepenuhnya dari cache DAN dari SQLite
-// (dipakai command ".agent reset").
+// (dipakai command ".agent reset") — termasuk ringkasan FIFO-nya
+// (lupa total = ringkasan ikut hilang).
 func (s *SessionStore) Reset(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	delete(s.sessions, key)
 	_ = store.AI().ClearHistory(context.Background(), key)
+	_ = store.AI().ClearSessionSummaries(context.Background(), key)
 }

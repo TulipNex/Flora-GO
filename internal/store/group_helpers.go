@@ -3,6 +3,10 @@ package store
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
+
+	"wabot-go/internal/logfmt"
 
 	"go.mau.fi/whatsmeow/types"
 )
@@ -12,15 +16,59 @@ func (mctx *MessageContext) IsGroup() bool {
 	return mctx.Chat.Server == types.GroupServer
 }
 
+// groupInfoCache menyimpan hasil GetGroupInfo per grup dengan TTL SINGKAT
+// (10 detik). Satu command admin (kick/promote/tagall/antilink) memanggil
+// GroupInfo 2–3x berurutan — di grup 1000 member tiap panggilan mengunduh
+// daftar penuh. Cache ini memangkasnya jadi 1x per jendela, dan semua
+// pemanggil (IsSenderAdmin, IsBotAdmin, TagAll, dsb) otomatis hemat tanpa
+// diubah. TTL 10 detik dipilih supaya status admin tetap segar (perubahan
+// dari perangkat lain terlihat max 10 detik kemudian) — jauh di bawah risiko
+// basi, jauh di atas durasi satu command. Hanya read; pemanggil tidak boleh
+// memutasi pointer hasil.
+var (
+	groupInfoCacheMu sync.Mutex
+	groupInfoCache   = map[string]groupInfoCacheEntry{}
+)
+
+type groupInfoCacheEntry struct {
+	info *types.GroupInfo
+	at   time.Time
+}
+
+const groupInfoCacheTTL = 10 * time.Second
+
 // GroupInfo mengambil metadata grup terbaru langsung dari WhatsApp
 // (nama, deskripsi, daftar participant + status admin masing-masing, dll).
-// Dipanggil langsung tiap butuh, tidak di-cache, supaya data admin selalu akurat
-// (status admin bisa berubah kapan saja dari perangkat lain).
+// Hasil di-cache 10 detik per grup (lihat groupInfoCache) — pemanggil yang
+// butuh data dijamin-segar (mis. setelah promote) harus menunggu jendela
+// lewat atau memakai GetGroupInfo langsung, tapi tidak ada pemanggil seperti
+// itu saat ini.
 func (mctx *MessageContext) GroupInfo(ctx context.Context) (*types.GroupInfo, error) {
 	if !mctx.IsGroup() {
 		return nil, fmt.Errorf("chat ini bukan grup")
 	}
-	return mctx.Client.GetGroupInfo(ctx, mctx.Chat)
+	key := mctx.Chat.String()
+	groupInfoCacheMu.Lock()
+	if e, ok := groupInfoCache[key]; ok && time.Since(e.at) < groupInfoCacheTTL {
+		groupInfoCacheMu.Unlock()
+		return e.info, nil
+	}
+	groupInfoCacheMu.Unlock()
+	info, err := mctx.Client.GetGroupInfo(ctx, mctx.Chat)
+	if err != nil {
+		return nil, err
+	}
+	groupInfoCacheMu.Lock()
+	groupInfoCache[key] = groupInfoCacheEntry{info: info, at: time.Now()}
+	// Bersihkan entri basi oportunistik supaya map tidak tumbuh tanpa batas
+	// (jumlah grup yang dilayani bot memang terbatas, ini jaring pengaman).
+	for k, e := range groupInfoCache {
+		if time.Since(e.at) > time.Minute {
+			delete(groupInfoCache, k)
+		}
+	}
+	groupInfoCacheMu.Unlock()
+	return info, nil
 }
 
 // ParticipantMatchesJID membandingkan satu participant grup dengan sebuah JID
@@ -98,7 +146,7 @@ func (mctx *MessageContext) IsBotAdmin(ctx context.Context) (bool, error) {
 	// Bot tidak ditemukan sama sekali di daftar participant — biasanya berarti
 	// cache participant grup basi. Bukan error fatal, tapi dicatat supaya
 	// kelihatan di log kalau ini yang jadi penyebab false-negative.
-	fmt.Printf("⚠️  IsBotAdmin: bot (ID=%v, LID=%v) tidak ditemukan di participant grup %s\n", botID, botLID, mctx.Chat)
+	logfmt.Warn("IsBotAdmin: bot (ID=%v, LID=%v) tidak ditemukan di participant grup %s\n", botID, botLID, mctx.Chat)
 	return false, nil
 }
 

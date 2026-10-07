@@ -15,9 +15,24 @@ type GenerateParams struct {
 // Kalau ToolCalls tidak kosong, berarti model minta tool dieksekusi
 // dulu sebelum jawaban final (lihat loop.go). Kalau kosong, Text adalah
 // jawaban final untuk dikirim ke user.
+//
+// Usage/FinishReason/DurationMs/Provider/Model diisi adapter untuk
+// observabilitas (log + hitung token) — kosong bila provider tak memberi.
 type AgentResponse struct {
-	Text      string
-	ToolCalls []ToolCall
+	Text         string
+	ToolCalls    []ToolCall
+	Usage        TokenUsage
+	FinishReason string
+	DurationMs   int64
+	Provider     string
+	Model        string
+}
+
+// TokenUsage adalah pemakaian token satu panggilan Generate.
+type TokenUsage struct {
+	Prompt     int
+	Completion int
+	Total      int
 }
 
 // ToolCall merepresentasikan satu permintaan pemanggilan tool dari model.

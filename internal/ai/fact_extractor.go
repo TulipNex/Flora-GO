@@ -2,9 +2,9 @@ package ai
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 )
 
@@ -61,7 +61,7 @@ func runFactExtraction(provider ProviderAdapter, senderJID string, history []Con
 
 	oldFacts, err := store.AI().GetFacts(ctx, senderJID)
 	if err != nil {
-		fmt.Printf("⚠️  fact-extractor: gagal ambil fakta lama untuk %s: %v\n", senderJID, err)
+		logfmt.Warn("fact-extractor: gagal ambil fakta lama untuk %s: %v\n", senderJID, err)
 		oldFacts = ""
 	}
 
@@ -72,11 +72,11 @@ func runFactExtraction(provider ProviderAdapter, senderJID string, history []Con
 
 	newFacts, err := ExtractFacts(ctx, provider, oldFacts, transcript)
 	if err != nil {
-		fmt.Printf("⚠️  fact-extractor: gagal ekstrak fakta untuk %s: %v\n", senderJID, err)
+		logfmt.Warn("fact-extractor: gagal ekstrak fakta untuk %s: %v\n", senderJID, err)
 		return
 	}
 
 	if err := store.AI().UpsertFacts(ctx, senderJID, newFacts); err != nil {
-		fmt.Printf("⚠️  fact-extractor: gagal simpan fakta untuk %s: %v\n", senderJID, err)
+		logfmt.Warn("fact-extractor: gagal simpan fakta untuk %s: %v\n", senderJID, err)
 	}
 }

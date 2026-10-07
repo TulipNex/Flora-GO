@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"wabot-go/internal/logfmt"
 )
 
 const cioraEndpoint = "https://ciora.id/v1/chat/completions"
@@ -54,23 +56,25 @@ func (c *CioraAdapter) Generate(ctx context.Context, params GenerateParams) (*Ag
 	// tanpa tools (fallback mode chat teks) — pola yang sama dengan
 	// NexaRouterAdapter.
 	tools := toOpenAITools(params.Tools)
+	start := time.Now()
 	parsed, toolsRejected, err := c.postChat(ctx, params, tools)
 	if err != nil {
 		return nil, err
 	}
 	if toolsRejected {
-		fmt.Printf("⚠️ ciora: server menolak field tools — fallback mode teks (tanpa tool).\n")
+		logfmt.Warn("ciora: server menolak field tools — fallback mode teks (tanpa tool).\n")
 		parsed, _, err = c.postChat(ctx, params, nil)
 		if err != nil {
 			return nil, err
 		}
 	}
+	durationMs := time.Since(start).Milliseconds()
 
 	if len(parsed.Choices) == 0 {
 		return nil, fmt.Errorf("ciora: tidak ada choice dalam response")
 	}
 
-	return fromOpenAIMessage(parsed.Choices[0].Message), nil
+	return fillOpenAIResponse(fromOpenAIMessage(parsed.Choices[0].Message), parsed, "ciora", c.Model, durationMs), nil
 }
 
 // postChat mengirim satu request chat ke Ciora AI. toolsRejected bernilai

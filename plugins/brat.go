@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"wabot-go/internal/config"
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/messaging"
 	"wabot-go/internal/scraper"
 	"wabot-go/internal/store"
@@ -105,7 +106,7 @@ func handleBrat(ctx context.Context, mctx *store.MessageContext, v bratVariant) 
 	go func() {
 		bg := context.Background()
 		if err := bratGenerate(bg, mctx, text, v); err != nil {
-			fmt.Printf("⚠️ brat(%s): %v\n", v.kind, err)
+			logfmt.Warn("brat(%s): %v\n", v.kind, err)
 			_ = store.ReplyText(bg, mctx, "Gagal bikin brat: "+err.Error())
 		}
 	}()

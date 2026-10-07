@@ -11,13 +11,21 @@ import (
 // ditulis bebas per plugin, satu salah ketik saja akan melahirkan grup
 // kategori hantu di menu yang isinya cuma satu command.
 const (
-	CategoryUmum  = "Umum"
-	CategoryGrup  = "Grup"
-	CategoryMedia = "Media"
-	CategoryAI    = "AI"
-	CategoryAlat  = "Alat"
-	CategoryGame  = "Game"
-	CategoryOwner = "Owner"
+	CategoryUmum    = "Umum"
+	CategoryGrup    = "Grup"
+	CategoryAbsensi = "Absensi"
+	CategoryMedia   = "Media"
+	CategoryAI      = "AI"
+	CategoryAlat    = "Alat"
+	CategoryGame    = "Game"
+	CategoryOwner   = "Owner"
+	// CategoryHidden sengaja TIDAK masuk CategoryOrder: command berkategori
+	// ini tidak punya rumah tampil di menu. WAJIB dipasangkan dengan
+	// Hidden:true (menu.go melewatkan command hidden sebelum grouping) —
+	// kategori tak-dikenal saja TIDAK cukup karena menu.go justru
+	// menampilkan kategori di luar CategoryOrder "supaya tidak ada yang
+	// tersembunyi".
+	CategoryHidden = "Hidden"
 )
 
 // CategoryOrder mengatur urutan tampil kategori di .menu. Dipisah dari
@@ -29,6 +37,7 @@ const (
 var CategoryOrder = []string{
 	CategoryUmum,
 	CategoryGrup,
+	CategoryAbsensi,
 	CategoryMedia,
 	CategoryAI,
 	CategoryAlat,
@@ -42,6 +51,7 @@ type Command struct {
 	Aliases     []string // nama alternatif, misal []string{"s"} untuk "sticker"
 	Description string   // dipakai di menu bantuan
 	Category    string   // kategori fungsi, wajib diisi salah satu CategoryXxx di atas
+	Hidden      bool     // true = disembunyikan dari SEMUA tampilan .menu (dipakai command privat owner)
 	Handler     func(ctx context.Context, mctx *store.MessageContext) error
 }
 

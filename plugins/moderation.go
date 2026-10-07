@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 
 	"go.mau.fi/whatsmeow"
@@ -28,6 +31,19 @@ const MaxWarns = 3
 // Hanya pola chat.whatsapp.com/<kode> yang ditindak — link lain (instagram,
 // tiktok, dll) BUKAN sasaran fitur ini sesuai permintaan.
 var inviteLinkRe = regexp.MustCompile(`(?i)chat\.whatsapp\.com/([A-Za-z0-9]+)`)
+
+// antilinkWarnCooldown membatasi balasan warn antilink: spammer yang
+// membanjiri 20 link dalam semenit tetap di-revoke SEMUA pesannya (sampah
+// dibersihkan), tapi balasan warn + hitungan hanya 1x per jendela —
+// mencegah 20 balasan beruntun sekaligus mencegah warn-count melambung ke
+// kick instan dari satu ledakan. Key = chat+sender, map dibersihkan
+// oportunistik (entri >1 jam).
+var (
+	antilinkWarnMu   sync.Mutex
+	antilinkWarnLast = map[string]time.Time{}
+)
+
+const antilinkWarnCooldown = time.Minute
 
 // requireModGate adalah gerbang command moderasi: boleh diakses admin grup
 // ATAU owner. Owner yang bukan admin grup tetap lolos (cek sender-admin
@@ -187,7 +203,7 @@ func handleWarnList(ctx context.Context, mctx *store.MessageContext) error {
 func giveWarn(ctx context.Context, client *whatsmeow.Client, chat types.JID, replier types.JID, target types.JID, quoteID string, quoted *waE2E.Message, reason string) error {
 	count, err := store.Groups().AddWarn(ctx, chat.String(), target.String())
 	if err != nil {
-		fmt.Printf("⚠️ Gagal simpan warn %s di %s: %v\n", target, chat, err)
+		logfmt.Warn("Gagal simpan warn %s di %s: %v\n", target, chat, err)
 		return err
 	}
 
@@ -200,7 +216,7 @@ func giveWarn(ctx context.Context, client *whatsmeow.Client, chat types.JID, rep
 		// dipertahankan (jangan reset) supaya warn tidak hilang percuma dan
 		// admin bisa coba tendang manual.
 		if _, err := client.UpdateGroupParticipants(ctx, chat, []types.JID{target}, whatsmeow.ParticipantChangeRemove); err != nil {
-			fmt.Printf("⚠️ Gagal kick %s (warn %d): %v\n", target, count, err)
+			logfmt.Warn("Gagal kick %s (warn %d): %v\n", target, count, err)
 			return sendMentionReply(fmt.Sprintf("@%s mencapai %d/%d warn (%s), tapi gagal dikeluarkan otomatis: %v", target.User, count, MaxWarns, reason, err))
 		}
 		_ = store.Groups().ResetWarn(ctx, chat.String(), target.String())
@@ -221,7 +237,7 @@ func sendModerationReply(ctx context.Context, client *whatsmeow.Client, chat, re
 	}
 	_, err := client.SendMessage(ctx, chat, moderationReplyMessage(replier, quoteID, text, bare, quoted))
 	if err != nil {
-		fmt.Printf("⚠️ Gagal kirim balasan moderasi ke %s: %v\n", chat, err)
+		logfmt.Warn("Gagal kirim balasan moderasi ke %s: %v\n", chat, err)
 		return err
 	}
 	// Balasan moderasi dikirim langsung via client (tanpa mctx), jadi
@@ -264,7 +280,7 @@ func CheckAntilink(client *whatsmeow.Client, evt *events.Message, text string) b
 
 	on, err := store.Groups().IsAntilinkOn(ctx, chat.String())
 	if err != nil {
-		fmt.Printf("⚠️ Gagal cek antilink %s: %v\n", chat, err)
+		logfmt.Warn("Gagal cek antilink %s: %v\n", chat, err)
 		return false
 	}
 	if !on {
@@ -282,7 +298,7 @@ func CheckAntilink(client *whatsmeow.Client, evt *events.Message, text string) b
 	}
 	mctx := &store.MessageContext{Client: client, Chat: chat, Sender: sender, RawEvt: evt}
 	if admin, err := mctx.IsSenderAdmin(ctx); err != nil {
-		fmt.Printf("⚠️ Gagal cek admin untuk antilink %s: %v\n", chat, err)
+		logfmt.Warn("Gagal cek admin untuk antilink %s: %v\n", chat, err)
 		return false
 	} else if admin {
 		return false
@@ -291,11 +307,28 @@ func CheckAntilink(client *whatsmeow.Client, evt *events.Message, text string) b
 	// Hapus pesan pelanggaran — bot harus admin; kalau gagal (bukan admin /
 	// pesan terlalu lama), TETAP lanjut ke warn supaya pelanggar tercatat.
 	if _, err := client.SendMessage(ctx, chat, client.BuildRevoke(chat, sender, evt.Info.ID)); err != nil {
-		fmt.Printf("⚠️ Gagal hapus pesan link dari %s: %v\n", sender, err)
+		logfmt.Warn("Gagal hapus pesan link dari %s: %v\n", sender, err)
 	}
 
-	_ = giveWarn(ctx, client, chat, sender, sender.ToNonAD(), evt.Info.ID, evt.Message,
-		fmt.Sprintf("kirim link grup lain (%d link)", len(codes)))
+	// Cooldown warn: revoke di atas tetap jalan tiap pesan (sampah selalu
+	// dibersihkan), tapi warn + balasannya dibatasi 1x/menit per pelanggar.
+	warnKey := chat.String() + "\x00" + sender.String()
+	antilinkWarnMu.Lock()
+	last, seen := antilinkWarnLast[warnKey]
+	if !seen || time.Since(last) >= antilinkWarnCooldown {
+		antilinkWarnLast[warnKey] = time.Now()
+		for k, t := range antilinkWarnLast {
+			if time.Since(t) > time.Hour {
+				delete(antilinkWarnLast, k)
+			}
+		}
+		antilinkWarnMu.Unlock()
+		_ = giveWarn(ctx, client, chat, sender, sender.ToNonAD(), evt.Info.ID, evt.Message,
+			fmt.Sprintf("kirim link grup lain (%d link)", len(codes)))
+		return true
+	}
+	antilinkWarnMu.Unlock()
+	logfmt.Skip("antilink %s: revoke tanpa warn (cooldown, pelanggar %s).\n", chat, sender)
 	return true
 }
 
@@ -312,7 +345,7 @@ func foreignInviteCodes(ctx context.Context, client *whatsmeow.Client, chat type
 
 	ownLink, err := client.GetGroupInviteLink(ctx, chat, false)
 	if err != nil {
-		fmt.Printf("⚠️ Gagal ambil invite link grup %s untuk antilink: %v\n", chat, err)
+		logfmt.Warn("Gagal ambil invite link grup %s untuk antilink: %v\n", chat, err)
 		return nil
 	}
 	ownCode := strings.TrimSpace(strings.TrimPrefix(ownLink, "https://chat.whatsapp.com/"))

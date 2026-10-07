@@ -80,6 +80,17 @@ func InitGroupDB(path string) error {
 		status       TEXT NOT NULL DEFAULT 'pending',
 		created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 	);
+	CREATE TABLE IF NOT EXISTS reminders (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		chat_jid     TEXT NOT NULL,
+		creator_jid  TEXT NOT NULL,
+		creator_phone TEXT NOT NULL DEFAULT '',
+		message      TEXT NOT NULL,
+		trigger_at   INTEGER NOT NULL,
+		call_after   INTEGER NOT NULL DEFAULT 0,
+		status       TEXT NOT NULL DEFAULT 'pending',
+		created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+	);
 	CREATE TABLE IF NOT EXISTS autodownload (
 		chat_jid   TEXT PRIMARY KEY,
 		enabled    INTEGER NOT NULL DEFAULT 0,

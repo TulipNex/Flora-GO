@@ -31,13 +31,13 @@ func extractMctx(actx *ai.AgentContext) (*store.MessageContext, error) {
 func init() {
 	ai.RegisterTool(ai.ToolDefinition{
 		Name:        "kick_member",
-		Description: "Keluarkan seorang member dari grup WhatsApp ini berdasarkan nomor teleponnya. Hanya bisa dipakai di dalam grup, dan hanya kalau pengirim perintah adalah admin grup serta bot juga admin grup.",
+		Description: "Keluarkan member dari grup ini (perlu di grup; pengirim & bot harus admin).",
 		Parameters: ai.ParameterSchema{
 			Type: "OBJECT",
 			Properties: map[string]ai.PropertySchema{
 				"phone_number": {
 					Type:        "STRING",
-					Description: "Nomor telepon member yang mau dikeluarkan, format internasional tanpa tanda +, contoh: 6281234567890. Kalau identifier yang terlihat berupa LID (mis. dari mention @<angka> di grup), kirimkan angka itu apa adanya.",
+					Description: "Nomor member, format internasional tanpa + cth 6281234567890. LID dari mention (@angka) kirim apa adanya.",
 				},
 			},
 			Required: []string{"phone_number"},
@@ -49,13 +49,13 @@ func init() {
 
 	ai.RegisterTool(ai.ToolDefinition{
 		Name:        "promote_member",
-		Description: "Jadikan seorang member sebagai admin grup WhatsApp ini berdasarkan nomor teleponnya. Hanya bisa dipakai di dalam grup, dan hanya kalau pengirim perintah adalah admin grup serta bot juga admin grup.",
+		Description: "Jadikan member sebagai admin grup ini (perlu di grup; pengirim & bot harus admin).",
 		Parameters: ai.ParameterSchema{
 			Type: "OBJECT",
 			Properties: map[string]ai.PropertySchema{
 				"phone_number": {
 					Type:        "STRING",
-					Description: "Nomor telepon member yang mau dijadikan admin, format internasional tanpa tanda +, contoh: 6281234567890. Kalau identifier yang terlihat berupa LID (mis. dari mention @<angka> di grup), kirimkan angka itu apa adanya.",
+					Description: "Nomor member, format internasional tanpa + cth 6281234567890. LID dari mention (@angka) kirim apa adanya.",
 				},
 			},
 			Required: []string{"phone_number"},
@@ -67,13 +67,13 @@ func init() {
 
 	ai.RegisterTool(ai.ToolDefinition{
 		Name:        "demote_member",
-		Description: "Turunkan seorang admin grup WhatsApp ini jadi member biasa berdasarkan nomor teleponnya. Hanya bisa dipakai di dalam grup, dan hanya kalau pengirim perintah adalah admin grup serta bot juga admin grup.",
+		Description: "Turunkan admin grup ini jadi member biasa (perlu di grup; pengirim & bot harus admin).",
 		Parameters: ai.ParameterSchema{
 			Type: "OBJECT",
 			Properties: map[string]ai.PropertySchema{
 				"phone_number": {
 					Type:        "STRING",
-					Description: "Nomor telepon admin yang mau diturunkan, format internasional tanpa tanda +, contoh: 6281234567890. Kalau identifier yang terlihat berupa LID (mis. dari mention @<angka> di grup), kirimkan angka itu apa adanya.",
+					Description: "Nomor admin, format internasional tanpa + cth 6281234567890. LID dari mention (@angka) kirim apa adanya.",
 				},
 			},
 			Required: []string{"phone_number"},

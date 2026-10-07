@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 )
 
@@ -68,7 +69,7 @@ func handleLeave(ctx context.Context, mctx *store.MessageContext) error {
 		return err
 	}
 	if err := mctx.Client.LeaveGroup(ctx, mctx.Chat); err != nil {
-		fmt.Printf("⚠️ Gagal keluar dari grup %s: %v\n", mctx.Chat, err)
+		logfmt.Warn("Gagal keluar dari grup %s: %v\n", mctx.Chat, err)
 	}
 	return nil
 }

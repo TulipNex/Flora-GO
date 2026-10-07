@@ -1,6 +1,13 @@
 ﻿# deploy.ps1
 # Build wabot-go untuk Linux, lalu sync binary-nya ke panel Pterodactyl via SFTP (rclone).
 # Jalankan dari root folder project (tempat main.go berada).
+#
+# Konfirmasi: sebelum build, script menanyakan apakah bot di panel sudah
+# di-STOP (upload menimpa binary yang sedang jalan berisiko). Lewati dengan
+# switch -y bila dijalankan otomatis:  .\deploy.ps1 -y
+param(
+    [switch]$y
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -57,12 +64,41 @@ function Format-Size {
 }
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
+$startTime = Get-Date
 
-# ---------- Build ----------
+# ---------- Konfirmasi pra-deploy ----------
+# Binary ditimpa saat bot jalan berisiko (file terkunci/eksekusi korup),
+# dan rclone-SFTP tidak bisa mengecek status server panel — jadi tanya
+# manual. Jawaban selain Y membatalkan (fail-safe, bukan lanjut diam-diam).
 
 Write-Host ""
 Write-Banner
 Write-Header "DEPLOY SCRIPT"
+
+if (-not $y) {
+    Write-Host "  PENTING: stop dulu bot di panel Pterodactyl sebelum deploy." -ForegroundColor Red
+    Write-Host "  Upload menimpa binary yang sedang berjalan bisa merusaknya." -ForegroundColor DarkYellow
+    Write-Host ""
+    $confirmed = $false
+    while ($true) {
+        $answer = (Read-Host "  Apakah bot di panel sudah di-STOP? (Y/N)").Trim().ToUpper()
+        if ($answer -eq "Y") {
+            $confirmed = $true
+            break
+        } elseif ($answer -eq "N") {
+            break
+        }
+        Write-Host "  Jawab Y untuk lanjut, N untuk batal." -ForegroundColor DarkGray
+    }
+    if (-not $confirmed) {
+        Write-Err "Deploy dibatalkan — stop dulu bot di panel, lalu jalankan lagi."
+        exit 1
+    }
+    Write-Host ""
+}
+
+# ---------- Build ----------
+
 Write-Step "Building $BinaryName (linux/amd64)..."
 
 $env:GOOS = "linux"
@@ -272,6 +308,8 @@ Write-Ok "Verifikasi lolos ($sizeText)"
 
 $sw.Stop()
 $elapsed = "{0:mm\:ss}" -f $sw.Elapsed
+$finishTime = Get-Date -Format "dd-MM-yyyy HH:mm:ss"
+$startText = $startTime.ToString("dd-MM-yyyy HH:mm:ss")
 
 Write-Ok "Sync selesai"
 Write-Host ""
@@ -280,6 +318,8 @@ Write-Host "  Binary   : $BinaryName" -ForegroundColor White
 Write-Host "  Ukuran   : $sizeText" -ForegroundColor White
 Write-Host "  Target   : $RemotePath$BinaryName" -ForegroundColor White
 Write-Host "  Durasi   : $elapsed" -ForegroundColor White
+Write-Host "  Mulai    : $startText" -ForegroundColor White
+Write-Host "  Selesai  : $finishTime" -ForegroundColor White
 Write-Divider
 Write-Host "  Deploy sukses ✔" -ForegroundColor Green
 Write-Divider

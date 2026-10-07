@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"wabot-go/internal/config"
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/messaging"
 	"wabot-go/internal/scraper"
 	"wabot-go/internal/store"
@@ -247,7 +248,7 @@ func downloadAndSend(ctx context.Context, mctx *store.MessageContext, rawURL str
 	}
 	res, err := fetchScraper(ctx, p, rawURL, audioOnly)
 	if err != nil {
-		fmt.Printf("⚠️ downloader: semua scraper gagal (%v)\n", err)
+		logfmt.Warn("downloader: semua scraper gagal (%v)\n", err)
 		return err
 	}
 	return sendScrapeResult(ctx, mctx, res, status)
@@ -313,7 +314,7 @@ func sendScrapeResult(ctx context.Context, mctx *store.MessageContext, res *scra
 	for i, item := range items {
 		data, err := scraper.DownloadBytes(ctx, item.URL)
 		if err != nil {
-			fmt.Printf("⚠️ downloader: unduh item %d gagal (%v)\n", i+1, err)
+			logfmt.Warn("downloader: unduh item %d gagal (%v)\n", i+1, err)
 			failed++
 			continue
 		}
@@ -331,7 +332,7 @@ func sendScrapeResult(ctx context.Context, mctx *store.MessageContext, res *scra
 			serr = sendDlBytesVideo(ctx, mctx, data, cap)
 		}
 		if serr != nil {
-			fmt.Printf("⚠️ downloader: kirim item %d gagal (%v)\n", i+1, serr)
+			logfmt.Warn("downloader: kirim item %d gagal (%v)\n", i+1, serr)
 			failed++
 			continue
 		}
@@ -374,13 +375,13 @@ func sendScrapeAlbum(ctx context.Context, mctx *store.MessageContext, items []sc
 	for i, item := range items {
 		data, err := scraper.DownloadBytes(ctx, item.URL)
 		if err != nil {
-			fmt.Printf("⚠️ downloader: unduh item %d gagal (%v)\n", i+1, err)
+			logfmt.Warn("downloader: unduh item %d gagal (%v)\n", i+1, err)
 			failed++
 			continue
 		}
 		if item.Kind == scraper.KindAudio {
 			if serr := sendDlBytesAudio(ctx, mctx, data, labelFromURL(item.URL)); serr != nil {
-				fmt.Printf("⚠️ downloader: kirim item %d gagal (%v)\n", i+1, serr)
+				logfmt.Warn("downloader: kirim item %d gagal (%v)\n", i+1, serr)
 				failed++
 				continue
 			}
@@ -401,7 +402,7 @@ func sendScrapeAlbum(ctx context.Context, mctx *store.MessageContext, items []sc
 				label = labelFromURL(item.URL)
 			}
 			if serr := sendWebPAsSticker(ctx, mctx, out, label); serr != nil {
-				fmt.Printf("⚠️ downloader: kirim stiker item %d gagal (%v)\n", i+1, serr)
+				logfmt.Warn("downloader: kirim stiker item %d gagal (%v)\n", i+1, serr)
 				failed++
 				continue
 			}
@@ -444,7 +445,7 @@ func sendAlbumMedia(ctx context.Context, mctx *store.MessageContext, media []alb
 	parentID := whatsmeow.GenerateMessageID()
 	parentKey := messaging.AlbumParentKey(mctx.Chat, parentID)
 	if err := messaging.SendAlbumParent(ctx, mctx, parentID, nImg, nVid); err != nil {
-		fmt.Printf("⚠️ downloader: induk album gagal (%v), fallback satuan.\n", err)
+		logfmt.Warn("downloader: induk album gagal (%v), fallback satuan.\n", err)
 		return sendAlbumSingles(ctx, mctx, media, caption)
 	}
 	assoc := messaging.AlbumAssociation(parentKey)
@@ -461,7 +462,7 @@ func sendAlbumMedia(ctx context.Context, mctx *store.MessageContext, media []alb
 			serr = sendDlBytesImageAlbum(ctx, mctx, m.data, cap, childID, assoc)
 		}
 		if serr != nil {
-			fmt.Printf("⚠️ downloader: kirim anak album %d gagal (%v)\n", i+1, serr)
+			logfmt.Warn("downloader: kirim anak album %d gagal (%v)\n", i+1, serr)
 			failed++
 			continue
 		}
@@ -485,7 +486,7 @@ func sendAlbumSingles(ctx context.Context, mctx *store.MessageContext, media []a
 			serr = sendDlBytesImage(ctx, mctx, m.data, cap)
 		}
 		if serr != nil {
-			fmt.Printf("⚠️ downloader: kirim media gagal (%v)\n", serr)
+			logfmt.Warn("downloader: kirim media gagal (%v)\n", serr)
 			failed++
 			continue
 		}
@@ -1003,13 +1004,13 @@ func normalizePhotoBytes(ctx context.Context, data []byte) (out []byte, isVideo,
 		if mp4, err := convertWebPToMP4(ctx, data); err == nil && len(mp4) > 0 {
 			return mp4, true, false
 		}
-		fmt.Printf("⚠️ downloader: webp animasi gagal jadi mp4, fallback stiker.\n")
+		logfmt.Warn("downloader: webp animasi gagal jadi mp4, fallback stiker.\n")
 		return data, false, true
 	}
 	if jpg, err := convertWebPToJPEG(ctx, data); err == nil && len(jpg) > 0 {
 		return jpg, false, false
 	}
-	fmt.Printf("⚠️ downloader: webp gagal jadi jpeg, fallback stiker.\n")
+	logfmt.Warn("downloader: webp gagal jadi jpeg, fallback stiker.\n")
 	return data, false, true
 }
 
@@ -1039,7 +1040,7 @@ func sendWebPAsSticker(ctx context.Context, mctx *store.MessageContext, data []b
 	if ex, err := store.WriteStickerExif(data, config.StickerPackname, config.StickerAuthor); err == nil {
 		webp = ex
 	} else {
-		fmt.Printf("⚠️ downloader: EXIF stiker gagal (%v), kirim mentah.\n", err)
+		logfmt.Warn("downloader: EXIF stiker gagal (%v), kirim mentah.\n", err)
 	}
 	return sendStickerWebp(ctx, mctx, webp, "dl-sticker", label)
 }
@@ -1073,7 +1074,7 @@ func CheckAutodownload(client *whatsmeow.Client, evt *events.Message, text strin
 	chatJID := evt.Info.Chat.String()
 	on, err := store.Groups().IsAutodownloadOn(ctx, chatJID)
 	if err != nil {
-		fmt.Printf("⚠️ Gagal cek autodownload %s: %v\n", chatJID, err)
+		logfmt.Warn("Gagal cek autodownload %s: %v\n", chatJID, err)
 		return
 	}
 	if !on {
@@ -1109,7 +1110,7 @@ func CheckAutodownload(client *whatsmeow.Client, evt *events.Message, text strin
 		}
 		status, serr := sendDlStatus(bg, mctx, "Mengunduh, tunggu sebentar...")
 		if serr != nil {
-			fmt.Printf("⚠️ Autodownload: gagal kirim status ke %s: %v\n", chatJID, serr)
+			logfmt.Warn("Autodownload: gagal kirim status ke %s: %v\n", chatJID, serr)
 			return
 		}
 		if rerr := downloadAndSend(bg, mctx, rawURL, p, p.audio, status); rerr != nil {

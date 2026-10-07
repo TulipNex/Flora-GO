@@ -85,6 +85,10 @@ func ExtractFacts(ctx context.Context, provider ProviderAdapter, oldFactsJSON, t
 	if err != nil {
 		return "", fmt.Errorf("gagal panggil provider untuk ekstraksi fakta: %w", err)
 	}
+	LogSide("fact", []AIField{
+		{"transkrip", fmt.Sprintf("%d kar", len([]rune(prompt)))},
+		{"hasil", fmt.Sprintf("%d kar", len([]rune(result.Text)))},
+	}, result.Text)
 
 	// Karena Tools tidak dikirim, model seharusnya tidak pernah minta tool
 	// call. Kalau tetap terjadi (model "nyasar"), anggap gagal daripada

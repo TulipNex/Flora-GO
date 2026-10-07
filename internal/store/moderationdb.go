@@ -144,10 +144,11 @@ type Greeting struct {
 }
 
 // GetGreeting membaca pengaturan sambutan/perpisahan grup. Grup yang belum
-// pernah di-set mendapat default: welcome ON, bye ON, template kosong
-// (artinya pakai default di plugins/welcome.go).
+// pernah di-set mendapat default: welcome OFF, bye OFF (opt-in — admin
+// menyalakan via .welcome on/.bye on). Template kosong artinya pakai
+// default di plugins/welcome.go.
 func (g *GroupDB) GetGreeting(ctx context.Context, chatJID string) (Greeting, error) {
-	gr := Greeting{WelcomeOn: true, ByeOn: true}
+	gr := Greeting{WelcomeOn: false, ByeOn: false}
 	var welcome, bye int
 	err := g.db.QueryRowContext(ctx, `
 		SELECT welcome, bye, welcome_msg, bye_msg FROM group_greetings WHERE chat_jid = ?

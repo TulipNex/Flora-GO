@@ -13,14 +13,16 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/jpeg"
-	_ "image/png"
+	"image/png"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 
 	"go.mau.fi/whatsmeow"
@@ -164,6 +166,15 @@ func getCachedThumb(ctx context.Context, mctx *store.MessageContext, thumbURL st
 
 	thumbCacheMu.Lock()
 	thumbCache[thumbURL] = &cachedThumb{small: small, uploaded: *up, width: width, height: height, ts: time.Now()}
+	// Sapu oportunistik (audit T6): entri kedaluwarsa (>TTL) dibuang tiap
+	// ada simpan baru — tanpa ini map tumbuh tanpa batas seumur proses
+	// (TTL selama ini hanya memengaruhi baca, bukan membersihkan).
+	now := time.Now()
+	for k, e := range thumbCache {
+		if now.Sub(e.ts) > thumbCacheTTL {
+			delete(thumbCache, k)
+		}
+	}
 	thumbCacheMu.Unlock()
 	return small, up, width, height, nil
 }
@@ -174,7 +185,7 @@ func getCachedThumb(ctx context.Context, mctx *store.MessageContext, thumbURL st
 func attachThumbnail(ctx context.Context, mctx *store.MessageContext, ext *waE2E.ExtendedTextMessage, thumbURL string) {
 	small, uploaded, width, height, err := getCachedThumb(ctx, mctx, thumbURL)
 	if err != nil {
-		fmt.Printf("⚠️ linkcard: thumbnail dilewati (%v)\n", err)
+		logfmt.Warn("linkcard: thumbnail dilewati (%v)\n", err)
 		return
 	}
 	ext.JPEGThumbnail = small
@@ -197,7 +208,7 @@ const maxFaviconDim = 96
 func fetchFavicon(ctx context.Context, mctx *store.MessageContext, faviconURL string) *waE2E.MMSThumbnailMetadata {
 	_, uploaded, width, height, err := getCachedThumb(ctx, mctx, faviconURL)
 	if err != nil {
-		fmt.Printf("⚠️ linkcard: favicon dilewati (%v)\n", err)
+		logfmt.Warn("linkcard: favicon dilewati (%v)\n", err)
 		return nil
 	}
 	if width > maxFaviconDim {
@@ -217,9 +228,21 @@ func fetchFavicon(ctx context.Context, mctx *store.MessageContext, faviconURL st
 	}
 }
 
-// normalizeThumb mengubah byte gambar sumber jadi baseline JPEG standar.
-// Mengembalikan versi FULL (dimensi asli, untuk di-upload) dan versi SMALL
-// (max 320px, untuk ditempel inline) + dimensi asli. Langkah ini WAJIB
+// thumbAlphaPNG adalah SAKLAR EKSPERIMEN (keputusan owner): true =
+// sumber ber-alpha dikirim sebagai PNG (full) dengan harapan klien WA
+// me-render transparansinya; false = perilaku lama (semua jadi JPEG).
+// Catatan: field INLINE tetap JPEG (wajib formatnya) — yang diuji adalah
+// gambar FULL yang diambil klien via direct path.
+// Hasil observasi panel menentukan permanen/revert (1 baris ini saja).
+const thumbAlphaPNG = true
+
+// maxAlphaPNGBytes membatasi PNG full agar kartu ikon raksasa tidak
+// membengkak (melebihi ini → downscale ≤1024px dulu, alpha tetap utuh).
+const maxAlphaPNGBytes = 512 << 10
+
+// normalizeThumb mengubah byte gambar sumber jadi thumbnail siap kirim.
+// Mengembalikan versi FULL (untuk di-upload) dan versi SMALL (max 320px,
+// untuk ditempel inline) + dimensi asli. Langkah ini WAJIB
 // untuk sumber progressive JPEG (marker SOF2) — decoder thumbnail di klien
 // WhatsApp tidak menanganinya sehingga preview tampil HITAM walau ukuran
 // dan hash semuanya benar. jpeg.Encode stdlib selalu menghasilkan baseline
@@ -240,6 +263,35 @@ func normalizeThumb(raw []byte) (full, small []byte, width, height uint32) {
 	}
 	bounds := img.Bounds()
 	w, h := uint32(bounds.Dx()), uint32(bounds.Dy())
+
+	// Jalur eksperimen alpha: sumber TIDAK opaque (ada channel alpha,
+	// mis. PNG transparan) → FULL dikirim sebagai PNG supaya alpha
+	// berkesempatan hidup sampai ke klien. Inline small tetap JPEG
+	// (placeholder, wajib formatnya). Opaque → jalur JPEG lama persis.
+	if thumbAlphaPNG && imageHasAlpha(img) {
+		pngFull := raw
+		if len(raw) > maxAlphaPNGBytes || w > 1024 || h > 1024 {
+			scaled := img
+			if w > 1024 || h > 1024 {
+				scaled = downscaleBilinear(img, 1024)
+			}
+			var pngBuf bytes.Buffer
+			if err := png.Encode(&pngBuf, scaled); err != nil {
+				return fallback()
+			}
+			pngFull = pngBuf.Bytes()
+		}
+		smallImg := img
+		if w > maxInlineDim || h > maxInlineDim {
+			smallImg = downscaleBilinear(img, maxInlineDim)
+		}
+		var smallBuf bytes.Buffer
+		if err := jpeg.Encode(&smallBuf, flattenWhite(smallImg), &jpeg.Options{Quality: 70}); err != nil {
+			return pngFull, pngFull, w, h
+		}
+		return pngFull, smallBuf.Bytes(), w, h
+	}
+
 	var fullBuf bytes.Buffer
 	if err := jpeg.Encode(&fullBuf, img, &jpeg.Options{Quality: 85}); err != nil {
 		return fallback()
@@ -253,6 +305,46 @@ func normalizeThumb(raw []byte) (full, small []byte, width, height uint32) {
 		return fullBuf.Bytes(), fullBuf.Bytes(), w, h
 	}
 	return fullBuf.Bytes(), smallBuf.Bytes(), w, h
+}
+
+// imageHasAlpha true kalau gambar membawa channel alpha yang BERISI
+// transparansi (bukan sekadar bertipe alpha). Dipakai untuk memilih jalur
+// PNG vs JPEG. Opaque() hanya ada di tipe konkret (bukan interface
+// image.Image), jadi dicek per tipe: decoder stdlib menghasilkan YCbCr
+// (JPEG), RGBA/NRGBA (PNG), Paletted (GIF/PNG-8) atau Gray.
+func imageHasAlpha(img image.Image) bool {
+	switch m := img.(type) {
+	case *image.NRGBA:
+		return !m.Opaque()
+	case *image.NRGBA64:
+		return !m.Opaque()
+	case *image.RGBA:
+		return !m.Opaque()
+	case *image.RGBA64:
+		return !m.Opaque()
+	case *image.Paletted:
+		return !m.Opaque()
+	case *image.Alpha, *image.Alpha16, *image.NYCbCrA:
+		return true
+	default:
+		return false
+	}
+}
+
+// flattenWhite menimpa gambar ber-alpha ke atas putih, menghasilkan
+// gambar opaque untuk encode JPEG. HANYA dipakai untuk thumbnail INLINE
+// (placeholder kecil yang formatnya wajib JPEG) — gambar FULL jalur alpha
+// tetap PNG utuh. Putih di sini murni keterbatasan format placeholder,
+// bukan matte hasil akhir.
+func flattenWhite(img image.Image) image.Image {
+	if !imageHasAlpha(img) {
+		return img
+	}
+	b := img.Bounds()
+	dst := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	draw.Draw(dst, dst.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+	draw.Draw(dst, dst.Bounds(), img, b.Min, draw.Over)
+	return dst
 }
 
 // downscaleBilinear mengecilkan gambar supaya sisi terpanjang = maxDim,

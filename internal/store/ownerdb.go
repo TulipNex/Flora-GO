@@ -194,6 +194,63 @@ func (g *GroupDB) SetAILock(ctx context.Context, locked bool) error {
 	return err
 }
 
+// Kunci bot_settings untuk tampilan kartu .menu (di-set via .thumbnail /
+// .favicon, prioritas di atas .env — lihat menu.go).
+const (
+	menuThumbKey   = "menu_thumb_url"
+	menuFaviconKey = "menu_favicon_url"
+)
+
+// GetMenuThumbURL membaca thumbnail kustom kartu .menu ("" = belum di-set,
+// pakai .env). Fail-soft seperti GetBotMode: DB error selain no-rows
+// diteruskan, no-rows = string kosong.
+func (g *GroupDB) GetMenuThumbURL(ctx context.Context) (string, error) {
+	var v string
+	err := g.db.QueryRowContext(ctx, `SELECT value FROM bot_settings WHERE key = ?`, menuThumbKey).Scan(&v)
+	if err != nil {
+		if strings.Contains(err.Error(), "no rows") {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(v), nil
+}
+
+// SetMenuThumbURL menyimpan thumbnail kustom (string kosong = reset ke .env).
+func (g *GroupDB) SetMenuThumbURL(ctx context.Context, url string) error {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		_, err := g.db.ExecContext(ctx, `DELETE FROM bot_settings WHERE key = ?`, menuThumbKey)
+		return err
+	}
+	_, err := g.db.ExecContext(ctx, `INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)`, menuThumbKey, url)
+	return err
+}
+
+// GetMenuFaviconURL membaca favicon kustom kartu .menu ("" = pakai .env).
+func (g *GroupDB) GetMenuFaviconURL(ctx context.Context) (string, error) {
+	var v string
+	err := g.db.QueryRowContext(ctx, `SELECT value FROM bot_settings WHERE key = ?`, menuFaviconKey).Scan(&v)
+	if err != nil {
+		if strings.Contains(err.Error(), "no rows") {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(v), nil
+}
+
+// SetMenuFaviconURL menyimpan favicon kustom (string kosong = reset ke .env).
+func (g *GroupDB) SetMenuFaviconURL(ctx context.Context, url string) error {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		_, err := g.db.ExecContext(ctx, `DELETE FROM bot_settings WHERE key = ?`, menuFaviconKey)
+		return err
+	}
+	_, err := g.db.ExecContext(ctx, `INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)`, menuFaviconKey, url)
+	return err
+}
+
 // TrustUser menambahkan JID (sudah dinormalisasi ToNonAD oleh pemanggil)
 // ke daftar user yang dipercaya mengakses Flora. Pola penyimpanan identik
 // dengan ban (lihat BanUser/IsUserBanned): user_part disimpan terpisah

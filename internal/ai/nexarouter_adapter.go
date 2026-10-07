@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"wabot-go/internal/logfmt"
 )
 
 const nexaRouterEndpoint = "https://router.nexaworks.web.id/v1/chat/completions"
@@ -57,23 +59,25 @@ func (n *NexaRouterAdapter) Generate(ctx context.Context, params GenerateParams)
 	// perilaku lama). Jadi skenario terburuknya sama seperti sebelum
 	// perubahan ini, tidak ada regresi.
 	tools := toOpenAITools(params.Tools)
+	start := time.Now()
 	parsed, toolsRejected, err := n.postChat(ctx, params, tools)
 	if err != nil {
 		return nil, err
 	}
 	if toolsRejected {
-		fmt.Printf("⚠️ nexarouter: server menolak field tools — fallback mode teks (tanpa tool).\n")
+		logfmt.Warn("nexarouter: server menolak field tools — fallback mode teks (tanpa tool).\n")
 		parsed, _, err = n.postChat(ctx, params, nil)
 		if err != nil {
 			return nil, err
 		}
 	}
+	durationMs := time.Since(start).Milliseconds()
 
 	if len(parsed.Choices) == 0 {
 		return nil, fmt.Errorf("nexarouter: tidak ada choice dalam response")
 	}
 
-	return fromOpenAIMessage(parsed.Choices[0].Message), nil
+	return fillOpenAIResponse(fromOpenAIMessage(parsed.Choices[0].Message), parsed, "nexarouter", n.Model, durationMs), nil
 }
 
 // postChat mengirim satu request chat ke NexaRouter. toolsRejected bernilai
