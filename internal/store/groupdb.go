@@ -55,6 +55,7 @@ func InitGroupDB(path string) error {
 	CREATE TABLE IF NOT EXISTS group_moderation (
 		chat_jid   TEXT PRIMARY KEY,
 		antilink   INTEGER NOT NULL DEFAULT 0,
+		antistatus INTEGER NOT NULL DEFAULT 0,
 		updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 	);
 	CREATE TABLE IF NOT EXISTS user_warnings (
@@ -114,9 +115,10 @@ func InitGroupDB(path string) error {
 		`ALTER TABLE group_greetings ADD COLUMN bye INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE group_greetings ADD COLUMN welcome_msg TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE group_greetings ADD COLUMN bye_msg TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE group_moderation ADD COLUMN antistatus INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.Exec(alter); err != nil && !isDuplicateColumnError(err) {
-			return fmt.Errorf("gagal migrasi group_greetings: %w", err)
+			return fmt.Errorf("gagal migrasi group.db: %w", err)
 		}
 	}
 

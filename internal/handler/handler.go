@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"wabot-go/internal/ai"
 	"wabot-go/internal/ai/tools/bridge"
@@ -19,17 +20,24 @@ import (
 // Prefix command bot, misal ".ping" atau "!ping". Ubah sesuai selera.
 const CommandPrefix = "."
 
+// staleGrace adalah toleransi umur pesan: pesan ber-timestamp server lebih
+// tua dari (boot − grace) dianggap sisa antrean offline (dikirim saat bot
+// mati) dan dibuang diam-diam — menoleransi skew jam + pesan yang transit
+// tepat saat boot.
+const staleGrace = 2 * time.Minute
+
 // NewEventHandler mengembalikan fungsi handler yang didaftarkan ke whatsmeow.
 // Ini dipisah dari main.go supaya main.go tetap ringkas (cuma bootstrap).
 func NewEventHandler(client *whatsmeow.Client) func(interface{}) {
 	// Registry semua plugin/command didaftarkan sekali di sini.
 	registry := plugins.NewRegistry()
 	plugins.RegisterAll(registry)
+	bootTime := time.Now()
 
 	return func(rawEvt interface{}) {
 		switch evt := rawEvt.(type) {
 		case *events.Message:
-			handleMessage(client, registry, evt)
+			handleMessage(client, registry, evt, bootTime)
 		case *events.GroupInfo:
 			// Perubahan info grup: sambutan (join) & perpisahan (leave)
 			// ditangani di plugins/welcome.go.
@@ -47,9 +55,18 @@ func NewEventHandler(client *whatsmeow.Client) func(interface{}) {
 // handleMessage memproses tiap pesan masuk, mengekstrak teks & command,
 // lalu memanggil plugin yang cocok. Pesan yang BUKAN command diteruskan
 // ke pengecekan trigger AI (lihat handleAITrigger).
-func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *events.Message) {
+func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *events.Message, bootTime time.Time) {
 	// Abaikan pesan dari bot sendiri untuk mencegah loop
 	if evt.Info.IsFromMe {
+		return
+	}
+
+	// Buang pesan basi: dikirim sebelum bot hidup (luapan antrean offline
+	// server saat reconnect) — jangan eksekusi command/vote/AI susulan.
+	// Drop diam-diam + satu baris log (tanpa balasan chat).
+	if !evt.Info.Timestamp.IsZero() && evt.Info.Timestamp.Before(bootTime.Add(-staleGrace)) {
+		logfmt.Plain("Abaikan pesan basi %s dari %s (umur %s)\n",
+			evt.Info.ID, evt.Info.Sender.String(), time.Since(evt.Info.Timestamp).Round(time.Second))
 		return
 	}
 
@@ -98,24 +115,32 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 	// "diabaikan total". Fail-soft di dalam (DB mati = no-op).
 	plugins.ArchiveIncoming(client, evt)
 
-	// Vote polling: PollUpdateMessage tidak mengandung teks — catat ke tally
-	// polling bot lalu setop (jangan ke moderasi/AI). Ditaruh setelah
-	// gerbang ban + stempel DM supaya vote dari user/grup yang di-ban tetap
-	// diabaikan total, konsisten dengan pesan biasa.
-	if plugins.RecordPollVote(client, evt) {
-		return
-	}
-
 	// Check-in absensi: share live location di grup bersesi aktif dicatat
 	// otomatis (observasi murni, fail-soft di dalam). Setelah gerbang ban
 	// supaya konsisten; sebelum AI (lokasi tak ber-teks, tak mengganggu AI).
 	plugins.CheckAbsensiCheckin(client, evt)
+
+	// Wizard .absen setup: menelan reply angka/nilai/kembali saat setup
+	// pending (true = setop alur). Command (./$/\) selalu lolos. Setelah
+	// gerbang ban; sebelum antilink/AI supaya input setup tak bocor.
+	if plugins.CheckAbsensiSetup(client, evt) {
+		return
+	}
 
 	// Moderasi antilink otomatis — hanya pesan grup NON-command. Kalau pesan
 	// ditindak (link asing dihapus + warn), setop di sini supaya tidak
 	// diteruskan ke trigger AI.
 	if evt.Info.IsGroup && text != "" && !strings.HasPrefix(text, CommandPrefix) {
 		if plugins.CheckAntilink(client, evt, text) {
+			return
+		}
+	}
+
+	// Antistatus otomatis — SWGC orang di grup yang toggle-nya aktif dicoba
+	// revoke. Tanpa syarat teks (status media acap tanpa caption); fungsi
+	// ini yang memutuskan false bila tak relevan.
+	if evt.Info.IsGroup && !strings.HasPrefix(text, CommandPrefix) {
+		if plugins.CheckAntistatus(client, evt) {
 			return
 		}
 	}
@@ -159,6 +184,43 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 	// dulu (angka polos tictactoe): kalau dikonsumsi game, setop di sini
 	// supaya tidak bocor ke trigger AI. Bukan input game = lanjut normal.
 	if text != "" && plugins.CheckGameInput(client, evt, text) {
+		return
+	}
+
+	// Pilihan angka hasil pencarian Spotify (.sp <judul> → balas 1-5).
+	// Sejajar CheckGameInput: ditelan di sini supaya tidak bocor ke AI.
+	if text != "" && plugins.CheckSpotifyPick(client, evt, text) {
+		return
+	}
+
+	// Pilihan angka hasil pencarian lirik (.lrc <judul> → balas 1-5).
+	// Setelah Spotify; semuanya punya guard resensi silang (terbaru menang).
+	if text != "" && plugins.CheckLrcPick(client, evt, text) {
+		return
+	}
+
+	// Pilihan angka hasil pencarian Shazam (.shazam search → balas 1-5).
+	if text != "" && plugins.CheckShazamPick(client, evt, text) {
+		return
+	}
+
+	// Kata "unduh" setelah kartu hasil Shazam (download lagu pending).
+	if text != "" && plugins.CheckShazamDownload(client, evt, text) {
+		return
+	}
+
+	// Tap tombol native uji (.btntest). Tanpa syarat teks (tap tak berteks).
+	if plugins.CheckButtonTestTap(client, evt, text) {
+		return
+	}
+
+	// Lokasi masuk saat sesi uji tombol aktif (verifikasi send_location).
+	if plugins.CheckButtonTestLocation(client, evt) {
+		return
+	}
+
+	// Kontak masuk saat sesi uji tombol aktif (verifikasi request nomor).
+	if plugins.CheckButtonTestContact(client, evt) {
 		return
 	}
 

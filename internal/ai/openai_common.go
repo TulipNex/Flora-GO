@@ -1,48 +1,17 @@
 package ai
 
+// Konversi bersama format internal Content/Part (universal) <-> format
+// OpenAI (messages/tool_calls) untuk semua provider OpenAI-compatible
+// (NexaRouter, Ciora). Dipindah dari openrouter_adapter.go saat provider
+// google/openrouter dihapus — logika konversi tidak berubah.
+
 import (
-	"bytes"
-	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
 	"strings"
-	"time"
 )
 
-const openRouterEndpoint = "https://openrouter.ai/api/v1/chat/completions"
-
-// OpenRouterAdapter adalah implementasi ProviderAdapter untuk OpenRouter,
-// yang API-nya OpenAI-compatible (endpoint /chat/completions, format
-// messages/tool_calls ala OpenAI) — BERBEDA dari format Gemini
-// (contents/parts) yang dipakai GeminiAdapter.
-//
-// Karena struct internal Content/Part (types.go) sudah dirancang meniru
-// bentuk Gemini sejak Fase 1, adapter ini bertugas mengKONVERSI dua arah:
-// Content/Part (universal, dipakai loop.go) <-> format OpenAI (dipakai
-// saat komunikasi HTTP ke OpenRouter). Konversi terjadi HANYA di file
-// ini — loop.go, plugins/ai.go, dan kode lain tidak perlu tahu bedanya.
-type OpenRouterAdapter struct {
-	APIKey     string
-	Model      string
-	HTTPClient *http.Client
-}
-
-// NewOpenRouterAdapter membuat adapter dengan timeout default 60 detik,
-// sama seperti NewGeminiAdapter.
-func NewOpenRouterAdapter(apiKey, model string) *OpenRouterAdapter {
-	return &OpenRouterAdapter{
-		APIKey: apiKey,
-		Model:  model,
-		HTTPClient: &http.Client{
-			Timeout: 60 * time.Second,
-		},
-	}
-}
-
-// --- Struct request/response format OpenAI (khusus dipakai adapter ini) ---
+// --- Struct request/response format OpenAI (khusus dipakai adapter OpenAI-compatible) ---
 
 type openAIRequest struct {
 	Model    string          `json:"model"`
@@ -152,9 +121,8 @@ type openAIError struct {
 // toolCallID mengembalikan ID asli sebuah FunctionCall/FunctionResponse
 // kalau ada, fallback ke Name kalau ID kosong. Fallback ini HANYA jaring
 // pengaman untuk histori lama yang tersimpan sebelum field ID ditambahkan
-// (baris SQLite lama, atau Part yang datang dari GeminiAdapter yang
-// memang tidak pernah mengisi ID) — untuk tool_call BARU dari OpenRouter/
-// NexaRouter, ID asli selalu ada dan dipakai apa adanya.
+// (baris SQLite lama) — untuk tool_call baru, ID asli selalu ada dan
+// dipakai apa adanya.
 func toolCallID(id, name string) string {
 	if id != "" {
 		return id
@@ -163,8 +131,7 @@ func toolCallID(id, name string) string {
 }
 
 // toOpenAIMessages mengkonversi []Content (format internal universal, dan
-// systemPrompt terpisah) menjadi []openAIMessage ala OpenAI. Ini kebalikan
-// dari GenerateRequest.SystemInstruction milik Gemini — OpenAI menaruh
+// systemPrompt terpisah) menjadi []openAIMessage ala OpenAI. OpenAI menaruh
 // system prompt sebagai message pertama berrole "system", bukan field
 // terpisah.
 func toOpenAIMessages(systemPrompt string, history []Content) []openAIMessage {
@@ -201,8 +168,7 @@ func toOpenAIMessages(systemPrompt string, history []Content) []openAIMessage {
 				}
 			}
 			if len(images) == 0 {
-				// Jalur lama tanpa gambar: content string polos, wire-nya
-				// identik seperti sebelum fitur vision ada.
+				// Jalur tanpa gambar: content string polos.
 				if text != "" {
 					messages = append(messages, openAIMessage{Role: "user", Content: text})
 				}
@@ -261,8 +227,8 @@ func toOpenAIMessages(systemPrompt string, history []Content) []openAIMessage {
 	return messages
 }
 
-// toOpenAITools mengkonversi []FunctionDecl (format internal, dipakai
-// bersama oleh Gemini & OpenRouter) menjadi []openAITool ala OpenAI.
+// toOpenAITools mengkonversi []FunctionDecl (format internal) menjadi
+// []openAITool ala OpenAI.
 func toOpenAITools(decls []FunctionDecl) []openAITool {
 	if len(decls) == 0 {
 		return nil
@@ -285,13 +251,9 @@ func toOpenAITools(decls []FunctionDecl) []openAITool {
 // menjadi AgentResponse (format internal universal yang dipahami loop.go).
 //
 // ID tool_call asli (tc.ID, mis. "call_xyz...") disimpan apa adanya ke
-// ToolCall.ID — TIDAK lagi dibuang/diganti Name seperti sebelumnya. ID ini
-// nanti di-echo balik oleh loop.go saat menyusun ulang history (lewat
-// FunctionCall.ID dan FunctionResponse.ID), lalu dibaca lagi oleh
-// toOpenAIMessages di atas via toolCallID(). Ini memperbaiki potensi
-// tool_call_id mismatch/HTTP 400 kalau suatu saat model minta tool yang
-// sama 2x dengan argumen berbeda dalam satu giliran (dulu keduanya akan
-// dapat ID = Name yang identik dan ambigu bagi provider).
+// ToolCall.ID — nanti di-echo balik oleh loop.go saat menyusun ulang
+// history (lewat FunctionCall.ID dan FunctionResponse.ID), lalu dibaca
+// lagi oleh toOpenAIMessages di atas via toolCallID().
 func fromOpenAIMessage(msg openAIMessage) *AgentResponse {
 	var toolCalls []ToolCall
 	for _, tc := range msg.ToolCalls {
@@ -301,8 +263,6 @@ func fromOpenAIMessage(msg openAIMessage) *AgentResponse {
 			ID:   tc.ID,
 			Name: tc.Function.Name,
 			Args: args,
-			// ThoughtSignature sengaja dibiarkan kosong — OpenAI-compatible
-			// API tidak punya konsep ini, hanya relevan untuk Gemini.
 		})
 	}
 	return &AgentResponse{
@@ -328,63 +288,4 @@ func fillOpenAIResponse(resp *AgentResponse, parsed *openAIResponse, provider, m
 	resp.Provider = provider
 	resp.Model = model
 	return resp
-}
-
-func (o *OpenRouterAdapter) Generate(ctx context.Context, params GenerateParams) (*AgentResponse, error) {
-	if o.APIKey == "" {
-		return nil, fmt.Errorf("openrouter: API key kosong")
-	}
-	if o.Model == "" {
-		return nil, fmt.Errorf("openrouter: model kosong")
-	}
-
-	reqBody := openAIRequest{
-		Model:    o.Model,
-		Messages: toOpenAIMessages(params.SystemPrompt, params.History),
-		Tools:    toOpenAITools(params.Tools),
-	}
-
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("openrouter: gagal marshal request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, openRouterEndpoint, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("openrouter: gagal bangun request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+o.APIKey)
-
-	start := time.Now()
-	resp, err := o.HTTPClient.Do(httpReq)
-	durationMs := time.Since(start).Milliseconds()
-	if err != nil {
-		return nil, fmt.Errorf("openrouter: request gagal: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("openrouter: gagal baca response: %w", err)
-	}
-
-	var parsed openAIResponse
-	if err := json.Unmarshal(respBytes, &parsed); err != nil {
-		return nil, fmt.Errorf("openrouter: gagal parse response (status %d): %w", resp.StatusCode, err)
-	}
-
-	if parsed.Error != nil {
-		return nil, fmt.Errorf("openrouter: API error (%v): %s", parsed.Error.Code, parsed.Error.Message)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("openrouter: status HTTP %d, body: %s", resp.StatusCode, string(respBytes))
-	}
-
-	if len(parsed.Choices) == 0 {
-		return nil, fmt.Errorf("openrouter: tidak ada choice dalam response")
-	}
-
-	return fillOpenAIResponse(fromOpenAIMessage(parsed.Choices[0].Message), &parsed, "openrouter", o.Model, durationMs), nil
 }

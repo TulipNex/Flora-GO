@@ -17,15 +17,13 @@ func InitAISettingsDB() error {
 	}
 
 	// Langkah 1: buat tabel kalau BENAR-BENAR belum ada sama sekali
-	// (deployment baru dari nol). Skema di sini sudah termasuk
-	// model_nexarouter & model_ciora — untuk deployment BARU ini cukup,
-	// tidak perlu migrasi apapun.
+	// (deployment baru dari nol). Skema hanya berisi provider yang didukung
+	// (nexarouter & ciora) — kolom model_google/model_openrouter peninggalan
+	// provider lama sengaja tidak ada di skema baru.
 	createSchema := `
 	CREATE TABLE IF NOT EXISTS ai_settings (
 		id                INTEGER PRIMARY KEY CHECK (id = 1),
-		active_provider   TEXT NOT NULL DEFAULT 'google',
-		model_google      TEXT NOT NULL DEFAULT '',
-		model_openrouter  TEXT NOT NULL DEFAULT '',
+		active_provider   TEXT NOT NULL DEFAULT 'ciora',
 		model_nexarouter  TEXT NOT NULL DEFAULT '',
 		model_ciora       TEXT NOT NULL DEFAULT '',
 		voice_reply       INTEGER NOT NULL DEFAULT 0
@@ -35,14 +33,14 @@ func InitAISettingsDB() error {
 		return fmt.Errorf("gagal membuat schema ai_settings: %w", err)
 	}
 
-	// Langkah 2: migrasi ringan untuk deployment LAMA yang tabelnya sudah
-	// ada TANPA kolom model_nexarouter / model_ciora (dibuat sebelum provider
-	// ini ditambahkan). HARUS dijalankan SEBELUM langkah 3 (INSERT) di bawah —
-	// kalau tidak, INSERT yang menyebut kolom baru akan gagal duluan pada
-	// deployment lama karena kolomnya belum ada. SQLite tidak punya
-	// "ADD COLUMN IF NOT EXISTS" bawaan, jadi errornya ditangani manual:
-	// kalau errornya "duplicate column" (tabel BARU yang kolomnya memang
-	// sudah ada dari langkah 1), abaikan; error lain tetap dilaporkan.
+	// Langkah 2: migrasi ringan untuk deployment LAMA.
+	// (a) Kolom model_nexarouter / model_ciora / voice_reply belum ada di
+	// tabel yang dibuat sebelum provider ini ditambahkan — tambahkan bila
+	// belum ada. SQLite tidak punya "ADD COLUMN IF NOT EXISTS" bawaan, jadi
+	// errornya ditangani manual: kalau errornya "duplicate column", abaikan.
+	// (b) Baris yang masih memakai provider lama (google/openrouter) yang
+	// sudah dihapus dipindahkan ke ciora (provider utama) supaya bot tidak
+	// error "provider tidak dikenal" saat start berikutnya.
 	for _, alter := range []string{
 		`ALTER TABLE ai_settings ADD COLUMN model_nexarouter TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE ai_settings ADD COLUMN model_ciora TEXT NOT NULL DEFAULT ''`,
@@ -53,12 +51,16 @@ func InitAISettingsDB() error {
 		}
 	}
 
+	if _, err := aiDB.db.Exec(`UPDATE ai_settings SET active_provider = 'ciora' WHERE active_provider IN ('google', 'openrouter')`); err != nil {
+		return fmt.Errorf("gagal migrasi provider lama ke ciora: %w", err)
+	}
+
 	// Langkah 3: pastikan baris setting (id=1) ada, BARU SEKARANG aman
 	// menyebut kolom baru karena langkah 1+2 di atas menjamin kolomnya sudah
 	// pasti ada di titik ini, baik deployment baru maupun lama.
 	insertDefault := `
-	INSERT OR IGNORE INTO ai_settings (id, active_provider, model_google, model_openrouter, model_nexarouter, model_ciora, voice_reply)
-	VALUES (1, 'google', '', '', '', '', 0);
+	INSERT OR IGNORE INTO ai_settings (id, active_provider, model_nexarouter, model_ciora, voice_reply)
+	VALUES (1, 'ciora', '', '', 0);
 	`
 	if _, err := aiDB.db.Exec(insertDefault); err != nil {
 		return fmt.Errorf("gagal insert default ai_settings: %w", err)
@@ -87,10 +89,10 @@ func contains(s, substr string) bool {
 }
 
 // AISettings adalah snapshot pengaturan provider/model aktif saat ini.
+// Kolom model_google/model_openrouter peninggalan provider yang dihapus
+// sengaja tidak dibaca lagi — bila masih ada di DB lama, diabaikan.
 type AISettings struct {
 	ActiveProvider  string
-	ModelGoogle     string
-	ModelOpenRouter string
 	ModelNexaRouter string
 	ModelCiora      string
 	VoiceReply      bool
@@ -102,8 +104,8 @@ func (a *AIDB) GetAISettings(ctx context.Context) (AISettings, error) {
 	var s AISettings
 	var voiceReply int
 	err := a.db.QueryRowContext(ctx, `
-		SELECT active_provider, model_google, model_openrouter, model_nexarouter, model_ciora, voice_reply FROM ai_settings WHERE id = 1
-	`).Scan(&s.ActiveProvider, &s.ModelGoogle, &s.ModelOpenRouter, &s.ModelNexaRouter, &s.ModelCiora, &voiceReply)
+		SELECT active_provider, model_nexarouter, model_ciora, voice_reply FROM ai_settings WHERE id = 1
+	`).Scan(&s.ActiveProvider, &s.ModelNexaRouter, &s.ModelCiora, &voiceReply)
 	if err != nil {
 		return s, err
 	}
@@ -111,7 +113,7 @@ func (a *AIDB) GetAISettings(ctx context.Context) (AISettings, error) {
 	return s, nil
 }
 
-// SetActiveProvider mengganti provider aktif (mis. "google" -> "openrouter").
+// SetActiveProvider mengganti provider aktif (mis. "nexarouter" -> "ciora").
 // Tidak menyentuh model tersimpan tiap provider — supaya ganti provider
 // bolak-balik tidak mereset pilihan model yang sudah diatur sebelumnya.
 func (a *AIDB) SetActiveProvider(ctx context.Context, provider string) error {
@@ -142,10 +144,6 @@ func (a *AIDB) SetVoiceReply(ctx context.Context, on bool) error {
 func (a *AIDB) SetModelForProvider(ctx context.Context, provider, model string) error {
 	var err error
 	switch provider {
-	case "google":
-		_, err = a.db.ExecContext(ctx, `UPDATE ai_settings SET model_google = ? WHERE id = 1`, model)
-	case "openrouter":
-		_, err = a.db.ExecContext(ctx, `UPDATE ai_settings SET model_openrouter = ? WHERE id = 1`, model)
 	case "nexarouter":
 		_, err = a.db.ExecContext(ctx, `UPDATE ai_settings SET model_nexarouter = ? WHERE id = 1`, model)
 	case "ciora":

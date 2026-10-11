@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 )
 
 // File ini berisi penyimpanan moderasi grup: saklar antilink per grup dan
@@ -31,6 +32,38 @@ func (g *GroupDB) SetAntilink(ctx context.Context, chatJID string, on bool) erro
 	_, err := g.db.ExecContext(ctx, `
 		INSERT INTO group_moderation (chat_jid, antilink) VALUES (?, ?)
 		ON CONFLICT(chat_jid) DO UPDATE SET antilink = excluded.antilink, updated_at = strftime('%s','now')
+	`, chatJID, val)
+	return err
+}
+
+// IsAntistatusOn true kalau auto-hapus status grup orang aktif untuk grup
+// ini (default mati). Kolom antistatus dibuat via migrasi di groupdb.go
+// (database lama tidak punya kolom ini — SELECT gagal = anggap mati,
+// JANGAN error supaya bot lama tetap jalan).
+func (g *GroupDB) IsAntistatusOn(ctx context.Context, chatJID string) (bool, error) {
+	var val int
+	err := g.db.QueryRowContext(ctx, `SELECT antistatus FROM group_moderation WHERE chat_jid = ?`, chatJID).Scan(&val)
+	if err != nil {
+		if isNoRowsError(err) {
+			return false, nil
+		}
+		if isNoSuchColumnError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return val == 1, nil
+}
+
+// SetAntistatus menyalakan/mematikan auto-hapus status grup untuk grup ini.
+func (g *GroupDB) SetAntistatus(ctx context.Context, chatJID string, on bool) error {
+	val := 0
+	if on {
+		val = 1
+	}
+	_, err := g.db.ExecContext(ctx, `
+		INSERT INTO group_moderation (chat_jid, antistatus) VALUES (?, ?)
+		ON CONFLICT(chat_jid) DO UPDATE SET antistatus = excluded.antistatus, updated_at = strftime('%s','now')
 	`, chatJID, val)
 	return err
 }
@@ -194,6 +227,16 @@ func (g *GroupDB) SetByeMsg(ctx context.Context, chatJID, tmpl string) error {
 		ON CONFLICT(chat_jid) DO UPDATE SET bye_msg = excluded.bye_msg, updated_at = strftime('%s','now')
 	`, chatJID, tmpl)
 	return err
+}
+
+// isNoSuchColumnError mengecek error "no such column" (database lama yang
+// migrasinya belum jalan / gagal sebagian) — pemanggil menganggap fitur
+// mati, bukan error fatal.
+func isNoSuchColumnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "no such column")
 }
 
 // isNoRowsError mengecek error "no rows in result set" dari database/sql

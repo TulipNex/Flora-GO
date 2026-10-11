@@ -47,18 +47,23 @@ type AbsensiSchedule struct {
 	Enabled  bool
 }
 
-// AbsensiConfig adalah titik patokan + radius satu chat.
+// AbsensiConfig adalah titik patokan + radius + durasi default satu chat.
 type AbsensiConfig struct {
-	Chat    string
-	Lat     float64
-	Long    float64
-	Name    string
-	RadiusM float64
+	Chat          string
+	Lat           float64
+	Long          float64
+	Name          string
+	RadiusM       float64
+	DefaultDurasi int
 }
 
 // DefaultAbsensiRadiusM adalah radius bawaan (meter) untuk patokan baru —
 // sama dengan keputusan awal sebelum ada command .absen radius.
 const DefaultAbsensiRadiusM = 20.0
+
+// DefaultAbsensiDurasi adalah durasi sesi default (menit) untuk baris
+// patokan baru dan fallback bila nilai korup.
+const DefaultAbsensiDurasi = 60
 
 // AbsensiDB membungkus koneksi SQLite arsip absensi (data/absensi.db).
 type AbsensiDB struct {
@@ -87,6 +92,7 @@ func InitAbsensiDB(path string) error {
 		long REAL NOT NULL,
 		name TEXT NOT NULL DEFAULT '',
 		radius_m REAL NOT NULL DEFAULT 20,
+		default_durasi_min INTEGER NOT NULL DEFAULT 60,
 		updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 	);
 	CREATE TABLE IF NOT EXISTS absensi_sessions (
@@ -123,11 +129,14 @@ func InitAbsensiDB(path string) error {
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("gagal migrasi absensi.db: %w", err)
 	}
-	// Migrasi DB lama (dibuat sebelum kolom radius_m ada): SQLite tak punya
-	// ADD COLUMN IF NOT EXISTS — toleransi error duplicate column (pola
-	// aisettingsdb.go).
+	// Migrasi DB lama (dibuat sebelum kolom radius_m / default_durasi_min
+	// ada): SQLite tak punya ADD COLUMN IF NOT EXISTS — toleransi error
+	// duplicate column (pola aisettingsdb.go).
 	if _, err := db.Exec(`ALTER TABLE absensi_config ADD COLUMN radius_m REAL NOT NULL DEFAULT 20`); err != nil && !isDuplicateColumnError(err) {
 		return fmt.Errorf("gagal migrasi radius absensi.db: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE absensi_config ADD COLUMN default_durasi_min INTEGER NOT NULL DEFAULT 60`); err != nil && !isDuplicateColumnError(err) {
+		return fmt.Errorf("gagal migrasi durasi absensi.db: %w", err)
 	}
 	absensiDB = &AbsensiDB{db: db}
 	return nil
@@ -145,8 +154,8 @@ func (a *AbsensiDB) GetConfig(chat string) (*AbsensiConfig, error) {
 	}
 	var c AbsensiConfig
 	err := a.db.QueryRow(
-		`SELECT chat, lat, long, name, radius_m FROM absensi_config WHERE chat = ?`, chat,
-	).Scan(&c.Chat, &c.Lat, &c.Long, &c.Name, &c.RadiusM)
+		`SELECT chat, lat, long, name, radius_m, default_durasi_min FROM absensi_config WHERE chat = ?`, chat,
+	).Scan(&c.Chat, &c.Lat, &c.Long, &c.Name, &c.RadiusM, &c.DefaultDurasi)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -155,6 +164,9 @@ func (a *AbsensiDB) GetConfig(chat string) (*AbsensiConfig, error) {
 	}
 	if c.RadiusM <= 0 {
 		c.RadiusM = DefaultAbsensiRadiusM
+	}
+	if c.DefaultDurasi <= 0 {
+		c.DefaultDurasi = DefaultAbsensiDurasi
 	}
 	return &c, nil
 }
@@ -188,6 +200,47 @@ func (a *AbsensiDB) SetRadius(chat string, radius float64) error {
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("belum ada patokan")
+	}
+	return nil
+}
+
+// SetDefaultDurasi mengubah durasi sesi default (menit) patokan chat.
+// Patokan harus sudah ada (aturan yang sama dengan SetRadius).
+func (a *AbsensiDB) SetDefaultDurasi(chat string, minutes int) error {
+	if a == nil || a.db == nil || chat == "" {
+		return fmt.Errorf("absensi mati")
+	}
+	res, err := a.db.Exec(
+		`UPDATE absensi_config SET default_durasi_min = ?, updated_at = strftime('%s','now') WHERE chat = ?`,
+		minutes, chat)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("belum ada patokan")
+	}
+	return nil
+}
+
+// SetScheduleEnabled menyalakan/mematikan jadwal dengan MEMPERTAHANKAN
+// barisnya (re-enable tanpa isi ulang). Beda dari ClearSchedule yang
+// menghapus (dipakai bila benar-benar ingin membuang jadwal).
+func (a *AbsensiDB) SetScheduleEnabled(chat string, enabled bool) error {
+	if a == nil || a.db == nil || chat == "" {
+		return fmt.Errorf("absensi mati")
+	}
+	val := 0
+	if enabled {
+		val = 1
+	}
+	res, err := a.db.Exec(
+		`UPDATE absensi_schedules SET enabled = ?, updated_at = strftime('%s','now') WHERE chat = ?`,
+		val, chat)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("belum ada jadwal")
 	}
 	return nil
 }

@@ -14,7 +14,7 @@ import (
 const MaxRetries = 3
 
 // isTransientError menebak apakah sebuah error dari provider layak dicoba
-// ulang. Ini heuristik sederhana berbasis pesan error (provider Gemini kita
+// ulang. Ini heuristik sederhana berbasis pesan error (provider kita
 // belum mengembalikan kode error terstruktur ke level ini) — cukup untuk
 // membedakan "coba lagi mungkin berhasil" vs "tidak akan pernah berhasil".
 func isTransientError(err error) bool {

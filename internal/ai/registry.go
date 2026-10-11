@@ -42,7 +42,7 @@ func RegisterTool(def ToolDefinition) {
 }
 
 // GetToolDeclarations mengembalikan skema semua tool terdaftar, dalam
-// format yang siap dikirim ke Gemini sebagai GenerateParams.Tools.
+// format internal yang siap dikirim ke provider sebagai GenerateParams.Tools.
 func GetToolDeclarations() []FunctionDecl {
 	registryMu.Lock()
 	defer registryMu.Unlock()

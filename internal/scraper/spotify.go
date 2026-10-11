@@ -38,6 +38,10 @@ func FetchSpotify(ctx context.Context, pageURL string) (*ScrapeResult, error) {
 
 var spotifyIDRe = regexp.MustCompile(`track/([a-zA-Z0-9]+)`)
 
+// SpotifyIDFromURL mengekstrak ID track dari URL Spotify (dipakai plugins
+// untuk resolve meta sebelum kirim cover+caption).
+func SpotifyIDFromURL(pageURL string) string { return extractSpotifyID(pageURL) }
+
 func extractSpotifyID(pageURL string) string {
 	if m := spotifyIDRe.FindStringSubmatch(pageURL); m != nil {
 		return m[1]

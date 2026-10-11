@@ -16,14 +16,13 @@ import (
 const cioraEndpoint = "https://ciora.id/v1/chat/completions"
 
 // CioraAdapter adalah implementasi ProviderAdapter untuk Ciora AI
-// (https://ciora.id), provider keempat di samping Google, OpenRouter &
-// NexaRouter. API-nya OpenAI-compatible (endpoint /v1/chat/completions,
-// format messages/tool_calls ala OpenAI, auth "Authorization: Bearer <key>")
-// dan dokumentasinya menyatakan mendukung tool calling standar OpenAI —
-// jadi adapter ini REUSE seluruh struct & fungsi konversi milik OpenRouter
-// (openAIRequest, openAIMessage, toOpenAIMessages, toOpenAITools,
-// fromOpenAIMessage — semua di openrouter_adapter.go), sama seperti yang
-// dilakukan NexaRouterAdapter.
+// (https://ciora.id), provider utama Flora. API-nya OpenAI-compatible
+// (endpoint /v1/chat/completions, format messages/tool_calls ala OpenAI,
+// auth "Authorization: Bearer <key>") dan dokumentasinya menyatakan
+// mendukung tool calling standar OpenAI — jadi adapter ini REUSE seluruh
+// struct & fungsi konversi bersama (openAIRequest, openAIMessage,
+// toOpenAIMessages, toOpenAITools, fromOpenAIMessage — semua di
+// openai_common.go), sama seperti yang dilakukan NexaRouterAdapter.
 type CioraAdapter struct {
 	APIKey     string
 	Model      string

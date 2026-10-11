@@ -87,27 +87,16 @@ const (
 // Konfigurasi AI Agent
 // ==========================
 // Dipakai oleh plugin .agent dan seluruh isi internal/ai/.
-// AIApiKey rahasia & per-environment sehingga tetap dibaca dari .env
+// API key rahasia & per-environment sehingga tetap dibaca dari .env
 // (pola sama seperti LOGIN_METHOD/PHONE_NUMBER di main.go), sedangkan
-// AIModelDefault & AISystemPromptBase statis/compile-time sehingga
+// AISystemPromptBase statis/compile-time sehingga
 // ditulis langsung di sini seperti konfigurasi lain di file ini.
 var (
-	// AIApiKey dibaca dari .env (AI_API_KEY=...). Diisi lewat var+os.Getenv,
-	// bukan const, karena Go tidak mengizinkan const diisi dari os.Getenv.
-	AIApiKey = os.Getenv("AI_API_KEY")
-
-	// OpenRouterAPIKey dibaca dari .env (OPENROUTER_API_KEY=...). Provider
-	// kedua sejak fitur multi-provider — kredensial tetap dari .env,
-	// terpisah dari pemilihan provider/model aktif yang tersimpan di SQLite
-	// (lihat internal/ai/providers.go).
-	OpenRouterAPIKey = os.Getenv("OPENROUTER_API_KEY")
-
-	// NexaRouterAPIKey dibaca dari .env (NEXAROUTER_API_KEY=...). Provider
-	// ketiga (https://router.nexaworks.web.id), API-nya OpenAI-compatible
-	// sama seperti OpenRouter.
+	// NexaRouterAPIKey dibaca dari .env (NEXAROUTER_API_KEY=...).
+	// (https://router.nexaworks.web.id), API-nya OpenAI-compatible.
 	NexaRouterAPIKey = os.Getenv("NEXAROUTER_API_KEY")
 
-	// CioraAPIKey dibaca dari .env (CIORA_API_KEY=...). Provider keempat
+	// CioraAPIKey dibaca dari .env (CIORA_API_KEY=...). Provider utama Flora
 	// (https://ciora.id), API-nya OpenAI-compatible dan dokumentasinya
 	// menyatakan mendukung tool calling standar OpenAI.
 	CioraAPIKey = os.Getenv("CIORA_API_KEY")
@@ -127,11 +116,6 @@ var (
 )
 
 const (
-	// AIModelDefault adalah model Gemini yang dipakai command .agent.
-	// gemini-2.5-flash sudah dimatikan Google (404) per akhir 2026,
-	// diganti ke gemini-3.6-flash (GA, generasi 3.x, harga masih di kelas "flash").
-	AIModelDefault = "gemini-3.6-flash"
-
 	// AISystemPromptBase adalah persona utama Flora GO.
 	//
 	// Fase 6: direfine dari versi minimal Fase 1 — sekarang berisi identitas
@@ -158,7 +142,7 @@ const (
 // - Konfigurasi statis/compile-time (identitas bot & owner) digabung di sini
 //   (config.go), menggantikan owner.go dan bot.go yang sebelumnya terpisah.
 // - Konfigurasi yang sifatnya rahasia atau berubah per-environment
-//   (LOGIN_METHOD, PHONE_NUMBER untuk pairing/QR, AI_API_KEY) TETAP dibaca
-//   dari .env lewat os.Getenv — untuk AIApiKey dibaca langsung di file ini
-//   (bukan main.go) supaya seluruh plugin AI cukup import config, konsisten
-//   dengan cara plugin lain mengakses OwnerName/BotName dkk.
+//   (LOGIN_METHOD, PHONE_NUMBER untuk pairing/QR, NEXAROUTER_API_KEY,
+//   CIORA_API_KEY) TETAP dibaca dari .env lewat os.Getenv — dibaca langsung
+//   di file ini (bukan main.go) supaya seluruh plugin AI cukup import config,
+//   konsisten dengan cara plugin lain mengakses OwnerName/BotName dkk.

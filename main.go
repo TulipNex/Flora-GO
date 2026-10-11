@@ -139,7 +139,7 @@ func main() {
 
 	// ==========================================================
 	// 0e. Siapkan tabel setting provider/model AI aktif (fitur
-	//     multi-provider Gemini/OpenRouter). Reuse koneksi ai.db yang sama.
+	//     multi-provider NexaRouter/Ciora). Reuse koneksi ai.db yang sama.
 	// ==========================================================
 	if err := store.InitAISettingsDB(); err != nil {
 		panic(fmt.Sprintf("gagal inisialisasi AI settings DB: %v", err))

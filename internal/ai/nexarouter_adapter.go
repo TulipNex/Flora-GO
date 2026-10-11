@@ -16,14 +16,12 @@ import (
 const nexaRouterEndpoint = "https://router.nexaworks.web.id/v1/chat/completions"
 
 // NexaRouterAdapter adalah implementasi ProviderAdapter untuk NexaRouter
-// (https://router.nexaworks.web.id), provider ketiga di samping Gemini &
-// OpenRouter. API-nya JUGA OpenAI-compatible persis seperti OpenRouter
+// (https://router.nexaworks.web.id). API-nya OpenAI-compatible
 // (endpoint /v1/chat/completions, format messages/tool_calls ala OpenAI,
-// auth "Authorization: Bearer <key>") — HANYA beda endpoint URL, sehingga
-// adapter ini REUSE seluruh struct & fungsi konversi yang sudah ditulis
-// untuk OpenRouter (openAIRequest, openAIMessage, toOpenAIMessages,
-// toOpenAITools, fromOpenAIMessage — semua di openrouter_adapter.go),
-// tidak menduplikasi logic konversi Content/Part <-> format OpenAI.
+// auth "Authorization: Bearer <key>"), sehingga adapter ini REUSE seluruh
+// struct & fungsi konversi bersama (openAIRequest, openAIMessage,
+// toOpenAIMessages, toOpenAITools, fromOpenAIMessage — semua di
+// openai_common.go), tidak menduplikasi logic konversi Content/Part <-> format OpenAI.
 type NexaRouterAdapter struct {
 	APIKey     string
 	Model      string
@@ -50,7 +48,7 @@ func (n *NexaRouterAdapter) Generate(ctx context.Context, params GenerateParams)
 		return nil, fmt.Errorf("nexarouter: model kosong")
 	}
 
-	// Field "tools" DIKIRIM seperti adapter OpenRouter — dokumentasi resmi
+	// Field "tools" DIKIRIM — dokumentasi resmi
 	// NexaRouter menyebut "tools" sebagai parameter yang dikenal (lihat tabel
 	// error 400-nya) dan wire Anthropic-nya mendukung tools, jadi ada peluang
 	// endpoint OpenAI-compatible-nya juga mendukung. Kalau ternyata server

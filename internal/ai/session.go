@@ -18,7 +18,7 @@ const IdleTimeout = 10 * time.Minute
 // historyLoadLimit adalah jumlah entri histori terakhir yang di-re-hydrate
 // dari SQLite saat sesi belum ada di cache in-memory (misal baru setelah
 // bot restart). Dibatasi supaya tidak mengirim histori tak terbatas ke
-// Gemini tiap request (boros token).
+// provider tiap request (boros token).
 const historyLoadLimit = 20
 
 // BuildSessionKey membangun kunci sesi percakapan AI yang membedakan

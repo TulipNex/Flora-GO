@@ -160,7 +160,7 @@ func handleCRM(ctx context.Context, mctx *store.MessageContext) error {
 		// Decode/marshal gagal (baris corrupt): metadata tetap berguna.
 		return store.ReplyText(ctx, mctx, meta+"\n\n(raw: gagal decode)")
 	}
-	return crmSendDoc(ctx, mctx, fmt.Sprintf("crm-%s-%d.json", tipe, row.Rowid), string(payload), meta)
+	return crmSendDoc(ctx, mctx, fmt.Sprintf("crm-%s-%d.json", tipe, row.Rowid), "application/json", string(payload), meta)
 }
 
 func handleInsp(ctx context.Context, mctx *store.MessageContext) error {
@@ -186,7 +186,7 @@ func handleInsp(ctx context.Context, mctx *store.MessageContext) error {
 	// kebesaran → dokumen + caption ringkas.
 	if len(payload) > 20000 {
 		tipe, _ := store.DescribeMessage(decoded)
-		return crmSendDoc(ctx, mctx, fmt.Sprintf("insp-%s-%d.json", tipe, row.Rowid),
+		return crmSendDoc(ctx, mctx, fmt.Sprintf("insp-%s-%d.json", tipe, row.Rowid), "application/json",
 			string(payload), fmt.Sprintf("Raw %s (%s, %d bytes — kebesaran untuk bubble)", src, tipe, len(payload)))
 	}
 	return store.ReplyText(ctx, mctx, string(payload))
@@ -273,10 +273,12 @@ func truncateCRMLine(s string, max int) string {
 	return s
 }
 
-// crmSendDoc mengupload + mengirim byte sebagai dokumen .json dengan
-// caption. Varian bytes dari pola sendDlDocument downloader (file-based)
-// — arsip tak pernah menyentuh disk untuk ekspor.
-func crmSendDoc(ctx context.Context, mctx *store.MessageContext, filename, content, caption string) error {
+// crmSendDoc mengupload + mengirim byte sebagai dokumen dengan caption.
+// Varian bytes dari pola sendDlDocument downloader (file-based) — arsip
+// tak pernah menyentuh disk untuk ekspor. Mime WAJIB sesuai isi (json vs
+// xlsx): klien WA menampilkan tipe dari label ini, bukan dari ekstensi
+// nama file — salah label = file xlsx terbaca sebagai JSON.
+func crmSendDoc(ctx context.Context, mctx *store.MessageContext, filename, mime, content, caption string) error {
 	data := []byte(content)
 	uploaded, err := mctx.Client.Upload(ctx, data, whatsmeow.MediaDocument)
 	if err != nil {
@@ -287,7 +289,7 @@ func crmSendDoc(ctx context.Context, mctx *store.MessageContext, filename, conte
 			URL:           proto.String(uploaded.URL),
 			DirectPath:    proto.String(uploaded.DirectPath),
 			MediaKey:      uploaded.MediaKey,
-			Mimetype:      proto.String("application/json"),
+			Mimetype:      proto.String(mime),
 			FileEncSHA256: uploaded.FileEncSHA256,
 			FileSHA256:    uploaded.FileSHA256,
 			FileLength:    proto.Uint64(uploaded.FileLength),
@@ -332,26 +334,6 @@ func handleRun(ctx context.Context, mctx *store.MessageContext) error {
 	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, out)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal kirim ulang (%s): %v", tipe, err))
-	}
-	// Polling hasil .run didaftarkan ke tally (seperti .vote) supaya
-	// .voteresult langsung jalan — secret-nya fresh dari sanitize.
-	if poll := out.GetPollCreationMessage(); poll != nil {
-		opts := make([]string, 0, len(poll.GetOptions()))
-		for _, o := range poll.GetOptions() {
-			if name := strings.TrimSpace(o.GetOptionName()); name != "" {
-				opts = append(opts, name)
-			}
-		}
-		if len(opts) >= 2 {
-			pollTallies.Lock()
-			pollTallies.m[string(resp.ID)] = &pollTally{
-				Question: poll.GetName(),
-				Options:  opts,
-				Counts:   make([]int, len(opts)),
-				Voters:   make(map[string][]int),
-			}
-			pollTallies.Unlock()
-		}
 	}
 	store.LogOutgoing(mctx, "run", tipe)
 	store.TrackBotMessageID(string(resp.ID), "run: "+tipe)

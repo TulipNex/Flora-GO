@@ -62,7 +62,7 @@ func FormatTranscript(history []Content) string {
 	return sb.String()
 }
 
-// ExtractFacts memanggil provider (Gemini) SEKALI dengan prompt ekstraksi
+// ExtractFacts memanggil provider SEKALI dengan prompt ekstraksi
 // murni (tanpa tool, tanpa system prompt persona bot) untuk menghasilkan
 // JSON fakta gabungan. Dipanggil lewat goroutine terpisah oleh
 // TriggerFactExtraction — fungsi ini sendiri sinkron & tidak tahu-menahu

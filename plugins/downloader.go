@@ -80,7 +80,7 @@ var dlPlatforms = []dlPlatform{
 	{command: "twitter", aliases: []string{"x", "tw"}, desc: "Download video X/Twitter (.twitter <url>)", hosts: []string{"x.com", "twitter.com"}},
 	{command: "facebook", aliases: []string{"fb"}, desc: "Download video Facebook (.facebook <url>)", hosts: []string{"facebook.com", "fb.watch"}},
 	{command: "pinterest", aliases: []string{"pin"}, desc: "Download pin Pinterest (.pinterest <url>)", hosts: []string{"pinterest.com", "pin.it"}},
-	{command: "spotify", aliases: []string{"sp"}, desc: "Download audio Spotify (.spotify <url>)", hosts: []string{"open.spotify.com", "spotify.link"}, audio: true},
+	{command: "spotify", aliases: []string{"sp"}, desc: "Download audio Spotify (.spotify <url/judul>)", hosts: []string{"open.spotify.com", "spotify.link"}, audio: true},
 }
 
 // matchDlPlatform mencocokkan host (sudah lowercase, tanpa port) ke salah
@@ -159,7 +159,28 @@ func handleAutodownload(ctx context.Context, mctx *store.MessageContext) error {
 
 func handleDownload(ctx context.Context, mctx *store.MessageContext, p dlPlatform) error {
 	if len(mctx.Args) == 0 {
+		if p.command == "spotify" {
+			return store.ReplyText(ctx, mctx, "Sertakan URL atau judul lagu. Contoh: .sp https://open.spotify.com/... atau .sp about you")
+		}
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Sertakan URL. Contoh: .%s https://... (%s)", p.command, strings.Join(p.hosts, ", ")))
+	}
+	// Spotify: tiga jalur — pilih angka pending, URL langsung, atau pencarian judul.
+	if p.command == "spotify" {
+		if len(mctx.Args) == 1 {
+			if handled, msg := trySpotifyNumberPick(mctx, mctx.Args[0]); handled {
+				if msg != "" {
+					return store.ReplyText(ctx, mctx, msg)
+				}
+				return nil
+			}
+		}
+		if !isSpotifyURLArg(mctx.Args[0]) {
+			query := strings.TrimSpace(mctx.RawArgs)
+			if query == "" {
+				query = strings.Join(mctx.Args, " ")
+			}
+			return handleSpotifySearch(ctx, mctx, query)
+		}
 	}
 	rawURL := mctx.Args[0]
 	if err := validateDlURL(ctx, rawURL, p.hosts); err != nil {
@@ -245,6 +266,12 @@ func downloadAndSend(ctx context.Context, mctx *store.MessageContext, rawURL str
 		// YouTube HANYA via yt-dlp (keputusan owner — tanpa fallback
 		// scraper). Gagal = error langsung dibalas ke user oleh pemanggil.
 		return downloadViaYtdlp(ctx, mctx, rawURL, audioOnly, status)
+	}
+	if p.command == "spotify" {
+		// Spotify: cover art + caption DULU, audio KEMUDIAN (lihat
+		// downloadSpotifyAndSend di spotify_search.go). hint nil = meta
+		// resolve dari URL; gagal meta/cover = audio-only diam-diam.
+		return downloadSpotifyAndSend(ctx, mctx, rawURL, p, audioOnly, status, nil)
 	}
 	res, err := fetchScraper(ctx, p, rawURL, audioOnly)
 	if err != nil {

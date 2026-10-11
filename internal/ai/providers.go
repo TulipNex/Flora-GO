@@ -14,29 +14,16 @@ import (
 // AvailableProviders adalah daftar nama provider yang valid untuk command
 // ".agent provider <nama>". Ditulis eksplisit (bukan diturunkan dari map lain)
 // supaya urutan tampil di pesan bantuan selalu konsisten.
-var AvailableProviders = []string{"google", "openrouter", "nexarouter", "ciora"}
+var AvailableProviders = []string{"nexarouter", "ciora"}
 
 // AvailableModels adalah daftar model yang bisa dipilih per provider lewat
 // ".agent model <model>", HARDCODE (bukan fetch live dari API) sesuai
 // keputusan desain — gampang dipastikan valid, tidak nambah panggilan API
 // hanya untuk menampilkan daftar.
 //
-// Model default (dipakai kalau user belum pernah set lewat command) tetap
-// config.AIModelDefault untuk Google, dan entri pertama di sini untuk
-// OpenRouter/NexaRouter/Ciora.
+// Model default (dipakai kalau user belum pernah set lewat command) adalah
+// entri pertama di sini untuk tiap provider.
 var AvailableModels = map[string][]string{
-	"google": {
-		"gemini-3.6-flash",
-		"gemini-3.6-pro",
-		"gemini-2.5-flash",
-	},
-	"openrouter": {
-		"openai/gpt-4o-mini",
-		"openai/gpt-4o",
-		"anthropic/claude-3.5-sonnet",
-		"deepseek/deepseek-chat",
-		"meta-llama/llama-3.3-70b-instruct",
-	},
 	"nexarouter": {
 		"deepseek-v4-flash",
 		"deepseek-v4-flash-vision-exp",
@@ -92,15 +79,10 @@ var AvailableModels = map[string][]string{
 
 // defaultModelFor mengembalikan model default untuk sebuah provider kalau
 // belum pernah di-set lewat command ".agent model" (kolom masih string kosong
-// di SQLite).
+// di SQLite): entri pertama AvailableModels.
 func defaultModelFor(provider string) string {
-	switch provider {
-	case "google":
-		return config.AIModelDefault
-	case "openrouter", "nexarouter", "ciora":
-		if models := AvailableModels[provider]; len(models) > 0 {
-			return models[0]
-		}
+	if models := AvailableModels[provider]; len(models) > 0 {
+		return models[0]
 	}
 	return ""
 }
@@ -164,14 +146,17 @@ func invalidateSettingsCache() {
 }
 
 // GetActiveProviderName mengembalikan nama provider aktif saat ini
-// ("google" / "openrouter"), dibaca dari cache/SQLite. Fail-soft ke
-// "google" kalau DB bermasalah — supaya chat tetap bisa jalan dengan
-// provider default daripada bot berhenti total gara-gara setting gagal
+// ("nexarouter" / "ciora"), dibaca dari cache/SQLite. Fail-soft ke
+// "ciora" kalau DB bermasalah — supaya chat tetap bisa jalan dengan
+// provider utama daripada bot berhenti total gara-gara setting gagal
 // dibaca.
 func GetActiveProviderName(ctx context.Context) string {
 	s, err := getSettingsCached(ctx)
 	if err != nil || s.ActiveProvider == "" {
-		return "google"
+		return "ciora"
+	}
+	if !IsValidProvider(s.ActiveProvider) {
+		return "ciora"
 	}
 	return s.ActiveProvider
 }
@@ -181,17 +166,13 @@ func GetActiveProviderName(ctx context.Context) string {
 // DB), fallback ke defaultModelFor(provider).
 func GetActiveModelName(ctx context.Context) string {
 	s, err := getSettingsCached(ctx)
-	provider := "google"
-	if err == nil && s.ActiveProvider != "" {
+	provider := "ciora"
+	if err == nil && IsValidProvider(s.ActiveProvider) {
 		provider = s.ActiveProvider
 	}
 
 	var model string
 	switch provider {
-	case "google":
-		model = s.ModelGoogle
-	case "openrouter":
-		model = s.ModelOpenRouter
 	case "nexarouter":
 		model = s.ModelNexaRouter
 	case "ciora":
@@ -208,9 +189,9 @@ func GetActiveModelName(ctx context.Context) string {
 // oleh plugins/ai.go SETIAP giliran chat, menggantikan variabel
 // geminiAdapter global yang statis pada desain sebelum fitur multi-provider.
 //
-// API key tiap provider tetap dari config (AIApiKey untuk Google,
-// OpenRouterAPIKey untuk OpenRouter) — hanya PILIHAN provider & model yang
-// dinamis/tersimpan di DB, kredensialnya tetap dari .env seperti biasa.
+// API key tiap provider tetap dari config (NexaRouterAPIKey/CioraAPIKey)
+// — hanya PILIHAN provider & model yang dinamis/tersimpan di DB,
+// kredensialnya tetap dari .env seperti biasa.
 func GetActiveProvider(ctx context.Context) (ProviderAdapter, error) {
 	provider := GetActiveProviderName(ctx)
 	model := GetActiveModelName(ctx)
@@ -221,16 +202,6 @@ func GetActiveProvider(ctx context.Context) (ProviderAdapter, error) {
 	// request gagal dengan "net/http: invalid header field value" sebelum
 	// sempat terkirim ke provider.
 	switch provider {
-	case "google":
-		if strings.TrimSpace(config.AIApiKey) == "" {
-			return nil, fmt.Errorf("provider google aktif tapi AI_API_KEY kosong di .env")
-		}
-		return NewGeminiAdapter(strings.TrimSpace(config.AIApiKey), model), nil
-	case "openrouter":
-		if strings.TrimSpace(config.OpenRouterAPIKey) == "" {
-			return nil, fmt.Errorf("provider openrouter aktif tapi OPENROUTER_API_KEY kosong di .env")
-		}
-		return NewOpenRouterAdapter(strings.TrimSpace(config.OpenRouterAPIKey), model), nil
 	case "nexarouter":
 		if strings.TrimSpace(config.NexaRouterAPIKey) == "" {
 			return nil, fmt.Errorf("provider nexarouter aktif tapi NEXAROUTER_API_KEY kosong di .env")

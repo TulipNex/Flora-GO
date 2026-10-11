@@ -459,7 +459,7 @@ var agentToolExample = map[string]string{
 	"group_link":      "Flora, minta link grup ini",
 	"group_close":     "Flora, tutup grup",
 	"group_open":      "Flora, buka grup",
-	"make_call":       "Flora, telepon 081234567890",
+	"make_call":       "Flora, telepon saya / telepon 081234567890",
 	"make_sticker":    "Flora, jadiin stiker (kirim/quote gambar)",
 	"bot_mode":        "Flora, ganti mode ke public",
 	"system_info":     "Flora, info server",
@@ -683,7 +683,7 @@ func processAITurn(ctx context.Context, mctx *store.MessageContext, sessionKey, 
 	// model yang mendukung vision bisa "melihat"-nya. Byte gambar HANYA
 	// hidup di slice history lokal ini (ephemeral) — baris yang disimpan
 	// ke sesi/DB di bawah tetap teks murni, jadi tidak membengkakkan
-	// memori maupun database. Provider non-vision (Gemini) mengabaikan
+	// memori maupun database. Provider non-vision mengabaikan
 	// field gambar secara diam-diam.
 	userPart := ai.Part{Text: text}
 	if imgBytes, imgMime, imgNote := extractTriggerImage(ctx, mctx); len(imgBytes) > 0 {
@@ -697,7 +697,7 @@ func processAITurn(ctx context.Context, mctx *store.MessageContext, sessionKey, 
 	// Dokumen: kalau pesan pemicu membawa file (PDF/DOCX/XLSX/teks —
 	// lampiran langsung atau yang di-reply), ekstrak teksnya dan tempel ke
 	// pesan user. Tidak seperti gambar vision, ini murni teks sehingga
-	// SEMUA provider bisa membacanya (termasuk Gemini) dan aman disimpan
+	// SEMUA provider bisa membacanya dan aman disimpan
 	// ke histori. Dokumen pendek (<= maxDocChars) ditempel utuh;
 	// dokumen panjang dibaca bertahap via summarizeLongDocument supaya
 	// tidak ada isi yang hilang (bukan dipotong seperti dulu).
@@ -781,10 +781,9 @@ func processAITurn(ctx context.Context, mctx *store.MessageContext, sessionKey, 
 	ai.GlobalSession.Append(sessionKey, newTurn[1])
 
 	// Fase 5: pemicu fact extractor fire-and-forget, memakai PROVIDER AKTIF
-	// yang sama (bukan selalu Gemini) — kalau OpenRouter sedang aktif,
-	// ekstraksi fakta ikut lewat OpenRouter juga, supaya tidak diam-diam
-	// tetap memanggil Gemini di belakang layar meski user sudah pindah
-	// provider.
+	// yang sama — ekstraksi fakta ikut lewat provider yang sedang aktif,
+	// supaya tidak diam-diam tetap memanggil provider lain di belakang layar
+	// meski user sudah pindah provider.
 	//
 	// SENGAJA memakai mctx.Sender.String() murni (bukan sessionKey yang
 	// sudah digabung dengan chatJID untuk grup) — fakta jangka panjang

@@ -1,6 +1,6 @@
 # Flora GO
 
-Bot WhatsApp modular berbasis Go, memakai library [whatsmeow](https://github.com/tulir/whatsmeow). Dilengkapi downloader 7 platform (scraper-first + album media), command grup & owner lengkap, dan **AI agent Flora multi-provider** (Gemini / OpenRouter / NexaRouter / Ciora) yang owner-only dengan sistem trust, tool-calling, sesi percakapan, dan ingatan jangka panjang per user.
+Bot WhatsApp modular berbasis Go, memakai library [whatsmeow](https://github.com/tulir/whatsmeow). Dilengkapi downloader 7 platform (scraper-first + album media), command grup & owner lengkap, dan **AI agent Flora multi-provider** (NexaRouter / Ciora, default Ciora) yang owner-only dengan sistem trust, tool-calling, sesi percakapan, dan ingatan jangka panjang per user.
 
 ## Struktur Folder
 
@@ -16,10 +16,9 @@ wabot-go/
 │   │   ├── types.go               # Content/Part/FunctionCall (format universal internal)
 │   │   ├── provider_types.go      # interface ProviderAdapter, GenerateParams, ToolCall
 │   │   ├── providers.go           # daftar provider/model, GetActiveProvider (baca dari SQLite + cache)
-│   │   ├── gemini_adapter.go      # adapter Gemini API (function-calling native)
-│   │   ├── openrouter_adapter.go  # adapter OpenRouter (OpenAI-compatible)
+│   │   ├── openai_common.go       # konversi bersama Content/Part <-> format OpenAI
 │   │   ├── nexarouter_adapter.go  # adapter NexaRouter (OpenAI-compatible, tools + fallback teks)
-│   │   ├── ciora_adapter.go       # adapter Ciora AI (OpenAI-compatible, tools + fallback teks)
+│   │   ├── ciora_adapter.go       # adapter Ciora AI (OpenAI-compatible, tools + fallback teks, provider utama)
 │   │   ├── loop.go                # agent loop: generate -> eksekusi tool -> ulang (max 8 putaran)
 │   │   ├── registry.go            # registry tool AI + AgentContext
 │   │   ├── reliability.go         # retry error transient + notifikasi owner saat gagal
@@ -217,10 +216,8 @@ Diset lewat file `.env` di root panel (`run.sh` sudah otomatis `source .env` di 
 |------------------------|----------------------------------------------------------------------------|
 | `LOGIN_METHOD`         | `qr` atau `pairing`                                                        |
 | `PHONE_NUMBER`         | Nomor HP bot untuk pairing (format `62812xxxxxxx`)                         |
-| `AI_API_KEY`           | API key Google Gemini (provider `google`)                                  |
-| `OPENROUTER_API_KEY`   | API key OpenRouter (provider `openrouter`)                                 |
 | `NEXAROUTER_API_KEY`   | API key NexaRouter (provider `nexarouter`, https://router.nexaworks.web.id) |
-| `CIORA_API_KEY`        | API key Ciora AI (provider `ciora`, https://ciora.id) |
+| `CIORA_API_KEY`        | API key Ciora AI (provider utama `ciora`, https://ciora.id) |
 | `MENU_LINK`            | Link kartu `.menu` (default: wa.me nomor bot)                              |
 | `MENU_TITLE`           | Judul kartu `.menu` (default: nama + versi bot)                            |
 | `MENU_DESC`            | Deskripsi kartu `.menu` (default: jumlah command)                          |
@@ -301,12 +298,10 @@ Bot merespons pesan **natural** (tanpa prefix) lewat trigger berikut — **hanya
 
 ### Multi-Provider
 
-Empat provider tersedia, bisa diganti kapan saja lewat `.agent provider` (khusus owner):
+Dua provider tersedia, bisa diganti kapan saja lewat `.agent provider` (khusus owner, default `ciora`):
 
 | Provider | Endpoint | Tool-calling | Default Model |
 |---|---|---|---|
-| `google` | generativelanguage.googleapis.com | ✅ | `gemini-3.6-flash` |
-| `openrouter` | openrouter.ai | ✅ | `openai/gpt-4o-mini` |
 | `nexarouter` | router.nexaworks.web.id | fallback teks* | `deepseek-v4-flash` |
 | `ciora` | ciora.id | ✅ | `deepseek/deepseek-v4.1-flash` |
 
@@ -322,11 +317,11 @@ Model bisa diganti per provider lewat `.agent model <nama>` (daftar model hardco
 - **Multi-bubble**: balasan panjang dipecah jadi beberapa bubble dengan delay ketik simulasi + status "mengetik...".
 - **Mood detection**: deteksi mood user dari teks (sedih/stres/senang) menyesuaikan nada balasan.
 - **Konteks reply**: jika user reply bubble bot, teks bubble tersebut disertakan sebagai konteks.
-- **Vision**: gambar/stiker di pesan pemicu (lampiran langsung atau reply) diteruskan ke model yang mendukung (provider OpenAI-compatible) sebagai `image_url` base64; Flora dituntun merespons isi yang dilihatnya, bukan mendeskripsikannya. Provider Gemini mengabaikannya. Batas 4MB, histori tersimpan tetap teks.
+- **Vision**: gambar/stiker di pesan pemicu (lampiran langsung atau reply) diteruskan ke model sebagai `image_url` base64; Flora dituntun merespons isi yang dilihatnya, bukan mendeskripsikannya. Batas 4MB, histori tersimpan tetap teks.
 - **Baca dokumen**: file di pesan pemicu (lampiran langsung atau reply) diekstrak teksnya dan ditempel ke pesan — PDF (`ledongthuc/pdf`), Word `.docx`, Excel `.xlsx` (`excelize`), dan teks polos (TXT/CSV/Markdown). Dokumen sampai 12000 karakter ditempel utuh; selebihnya dibaca bertahap (map-reduce: potongan 8000 karakter diringkas paralel lalu digabung, maks 8 bagian). Batas file 8MB; format lain (termasuk `.doc`/`.xls` lawas) ditolak dengan catatan jujur.
 - **Reliability**: retry otomatis untuk error transient (timeout/429/5xx), notifikasi ke owner via WhatsApp jika gagal total.
 
-> Pemilihan provider & model juga menentukan jalannya fact extractor — kalau OpenRouter sedang aktif, ekstraksi fakta ikut lewat OpenRouter (bukan selalu Gemini).
+> Pemilihan provider & model juga menentukan jalannya fact extractor — ekstraksi fakta ikut lewat provider yang sedang aktif.
 
 ## Catatan Penting
 
