@@ -107,7 +107,7 @@ func RegisterShazam(r *Registry) {
 		Name:        "shazam",
 		Aliases:     []string{"find", "findmusic"},
 		Description: "Kenali lagu (.shazam + reply VN/audio)",
-		Category:    CategoryAlat,
+		Category:    CategoryInternet,
 		Handler:     handleShazam,
 	})
 }

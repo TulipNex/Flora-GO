@@ -38,21 +38,21 @@ func RegisterToMedia(r *Registry) {
 		Name:        "toimg",
 		Aliases:     []string{"toimage"},
 		Description: "Ubah stiker jadi foto (reply stiker)",
-		Category:    CategoryAlat,
+		Category:    CategoryMedia,
 		Handler:     handleToImg,
 	})
 	r.Register(Command{
 		Name:        "togif",
 		Aliases:     []string{"tovid", "tovideo"},
 		Description: "Ubah stiker bergerak jadi GIF (reply stiker animasi)",
-		Category:    CategoryAlat,
+		Category:    CategoryMedia,
 		Handler:     handleToGif,
 	})
 	r.Register(Command{
 		Name:        "tomp3",
 		Aliases:     []string{"toaudio"},
 		Description: "Ekstrak audio video jadi MP3 (reply/kirim video)",
-		Category:    CategoryAlat,
+		Category:    CategoryMedia,
 		Handler:     handleToMp3,
 	})
 }

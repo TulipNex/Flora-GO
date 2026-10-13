@@ -28,7 +28,7 @@ func RegisterHET(r *Registry) {
 	r.Register(Command{
 		Name:        "het",
 		Description: "Harga pangan Sultra 7 hari (.het)",
-		Category:    CategoryAlat,
+		Category:    CategoryInternet,
 		Handler:     handleHET,
 	})
 }

@@ -72,7 +72,7 @@ func RegisterTTS(r *Registry) {
 		Name:        "tts",
 		Aliases:     []string{"vn"},
 		Description: "Ubah teks jadi voice note (.tts <teks> [| ardi])",
-		Category:    CategoryAlat,
+		Category:    CategoryMedia,
 		Handler:     handleTTS,
 	})
 }

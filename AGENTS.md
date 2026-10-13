@@ -22,7 +22,7 @@ Same pattern, different registry: put pure tools in `internal/ai/tools/native/`,
 
 - Temp files: always `store.BotTempDir()` / `MustBotTempDir()` (`<workdir>/wabot-tmp`). Never `os.MkdirTemp`/`os.TempDir()` — panel `/tmp` is a 100 MB tmpfs, videos >~50 MB die with Errno 28.
 - `data/` = session (`session.db`) + SQLite state (group/ai/facts/settings/finance/crm/absensi). Never delete, never commit (gitignored with `.env`, `wabot-go-linux`, `wabot-tmp/`). `push.ps1` warns on sensitive paths — heed it. `test-env.ps1` holds real secrets, stays uncommitted.
-- Identity (owner name, bot name/version) is **compile-time** in `internal/config/config.go` — changing it needs rebuild + redeploy. Provider/model choice is **runtime** in SQLite (`.agent` commands, no redeploy).
+- Identity (owner name, bot name) is **compile-time** in `internal/config/config.go` — changing it needs rebuild + redeploy. `BotVersion` is a `var` injected at build time from the `VERSION` file via `-ldflags -X wabot-go/internal/config.BotVersion=...` (fallback = default in config.go); `deploy.ps1` auto-bumps it from changed files via `version-bump.ps1` (new .go = minor, deleted command/tool or Go upgrade = major, other edits = patch, docs/data only = none; snapshot in gitignored `.last-deploy-state`). Provider/model choice is **runtime** in SQLite (`.agent` commands, no redeploy).
 - WhatsApp identity is dual-format (LID vs phone number): never compare JIDs by raw string — use `store.ParticipantMatchesJID` / `IsSenderAdmin` / `IsBotAdmin`.
 - README claims `run.sh` sources `.env`, but current `run.sh` does not — trust the script, not the prose; ensure env reaches the process via the panel environment.
 

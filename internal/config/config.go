@@ -58,16 +58,24 @@ func PrimaryOwnerNumber() string {
 // Identitas Bot
 // ==========================
 // Dipakai bersama oleh plugin manapun yang perlu menampilkan
-// info bot (misal plugin .info, .menu, atau pesan startup di main.go).
+// info bot (misal plugin .menu atau pesan startup di main.go).
 const (
 	// BotName adalah nama bot.
 	BotName = "Flora GO"
 
-	// BotVersion mengikuti versi rilis bot ini.
-	BotVersion = "v1.1.0"
-
 	// BotDescription adalah deskripsi singkat bot ini.
-	BotDescription = "Bot WhatsApp multifungsi yang dibangun dengan bahasa pemrograman Golang menggunakan library whatsmeow"
+	BotDescription = "Sistem otomatis (Bot WhatsApp) yang dapat membantu melakukan sesuatu, mencari dan mendapatkan data/informasi hanya melalui WhatsApp"
+)
+
+var (
+	// BotVersion mengikuti versi rilis bot ini.
+	//
+	// Nilai di bawah adalah fallback untuk build manual (mis. `go run .`).
+	// Build resmi via deploy.ps1 / version-bump.ps1 menyuntik versi aktif
+	// dari file VERSION lewat linker flag:
+	//   go build -ldflags "-X wabot-go/internal/config.BotVersion=vX.Y.Z" .
+	// sehingga const sengaja dijadikan var agar bisa di-override saat build.
+	BotVersion = "v5.1.1"
 )
 
 // ==========================
@@ -80,7 +88,7 @@ const (
 	StickerPackname = "Flora GO"
 
 	// StickerAuthor adalah nama author/publisher default yang muncul di stiker.
-	StickerAuthor = "Mitra"
+	StickerAuthor = "By Mitra"
 )
 
 // ==========================

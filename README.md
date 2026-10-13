@@ -73,7 +73,11 @@ wabot-go/
 │   ├── registry.go                # Registry generik + slice registrars, RegisterAll jalankan semua otomatis
 │   ├── ping.go                    # .ping (dengan hitung latensi ms)
 │   ├── menu.go                    # .menu berkartu (kategori/all/spesifik + sapaan mention + bold)
-│   ├── info.go                    # .info (uptime, versi Go, OS/arch, jumlah command, dsb)
+│   ├── serverinfo.go            # .server (alias .serverinfo/.si, owner): hardware, memori sistem, runtime + versi library
+│   ├── serverinfo_sys_linux.go    # syscall khusus Linux (kernel release, memori)
+│   ├── serverinfo_sys_other.go    # stub non-Linux (fail-soft "-")
+│   ├── osinfo.go                  # .os (owner): OS + jaringan server (IP/ISP/lokasi via ip-api.com)
+│   ├── rssinfo.go                 # .rss (owner): memori proses (RSS + heap)
 │   ├── downloader.go              # .tiktok/.youtube/.instagram/.twitter/.facebook/.pinterest/.spotify + album + WebP + batas ukuran/durasi
 │   ├── ai.go                      # .agent (admin Flora: model/provider/status/trust/reset) + HandleAIMessage
 │   ├── sticker.go                 # .sticker / .s (gambar/video -> stiker webp via ffmpeg)
@@ -182,7 +186,7 @@ Source code hanya hidup di laptop. Panel hanya menerima **hasil compile** (binar
 
 1. Edit kode di laptop (folder project, disarankan lewat VS Code dengan terminal bawaan PowerShell).
 2. Stop bot lewat panel (web).
-3. Jalankan `.\deploy.ps1` — script ini build Go lalu `rclone copyto` binary ke root panel.
+3. Jalankan `.\deploy.ps1` — script ini menentukan **versi otomatis** dari file yang berubah sejak deploy terakhir (`version-bump.ps1`: file Go baru = minor, hapus command/tool atau naik Go = major, edit lain = patch, hanya README/data = tetap; snapshot di `.last-deploy-state`), menulisnya ke `VERSION`, menyuntik ke binary via ldflags, lalu build + `rclone copyto` binary ke root panel.
 4. Start bot lagi lewat panel (web).
 
 **Setup rclone (sekali saja):**
@@ -236,7 +240,7 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 | `.ping` | Cek bot hidup + latensi (ms) |
 | `.menu` / `.menu all` / `.menu <kategori>` | Daftar command berkartu link + sapaan mention pengirim (bold) |
 | `.testthumb` | Demo developer untuk kartu link preview (bukan fitur user) |
-| `.info` / `.owner` | Info bot / vCard kontak owner |
+| `.owner` | vCard kontak owner |
 | `.autodownload on/off` | Download otomatis link medsos di chat ini, per chat |
 
 ### Media (downloader)
@@ -278,6 +282,7 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 ### Owner
 | Command | Keterangan |
 |---|---|
+| `.server` / `.si`, `.os`, `.rss` | Info server, OS + jaringan, memori proses (khusus owner) |
 | `.call <target>[\|<jam>]` | Panggilan WhatsApp keluar / terjadwal WITA (tersimpan di SQLite, tahan restart) |
 | `.ban` / `.unban` / `.mode` / `.join` / `.leave` | Ban user & grup, mode self/public, keluar-masuk grup via link |
 | `$ <perintah>` | Eksekusi shell di server (async, timeout 120 dtk, output dipotong) |

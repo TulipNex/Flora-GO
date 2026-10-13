@@ -5,8 +5,14 @@
 # Konfirmasi: sebelum build, script menanyakan apakah bot di panel sudah
 # di-STOP (upload menimpa binary yang sedang jalan berisiko). Lewati dengan
 # switch -y bila dijalankan otomatis:  .\deploy.ps1 -y
+#
+# Versi: OTOMATIS ditentukan dari file yang berubah sejak deploy terakhir
+# (version-bump.ps1, tanpa flag). -Bump hanya override manual darurat
+# (auto|major|minor|patch|none, default auto).
 param(
-    [switch]$y
+    [switch]$y,
+    [ValidateSet("auto", "major", "minor", "patch", "none")]
+    [string]$Bump = "auto"
 )
 
 $ErrorActionPreference = "Stop"
@@ -97,14 +103,35 @@ if (-not $y) {
     Write-Host ""
 }
 
+# ---------- Versi otomatis ----------
+# Tentukan bump dari file yang berubah sejak deploy terakhir (VERSION ditulis
+# + snapshot .last-deploy-state diperbarui di sini, SEBELUM build, supaya
+# retry setelah sync gagal tidak menaikkan versi dua kali).
+
+Write-Step "Menentukan versi otomatis..."
+. "$PSScriptRoot\version-bump.ps1"
+try {
+    $ver = Invoke-VersionBump -Override $Bump
+} catch {
+    Write-Err "Gagal menentukan versi: $($_.Exception.Message)"
+    exit 1
+}
+$BotVersion = $ver.NewVersion
+if ($ver.Level -eq "none") {
+    Write-Ok "Versi tetap $($ver.OldVersion) (tidak ada perubahan kode)"
+} else {
+    Write-Ok "Versi $($ver.OldVersion) -> $($ver.NewVersion) [$($ver.Level)]"
+    Write-Host "  Alasan: $($ver.Reason)" -ForegroundColor DarkGray
+}
+
 # ---------- Build ----------
 
-Write-Step "Building $BinaryName (linux/amd64)..."
+Write-Step "Building $BinaryName (linux/amd64) [$BotVersion]..."
 
 $env:GOOS = "linux"
 $env:GOARCH = "amd64"
 
-go build -o $BinaryName .
+go build -ldflags "-X wabot-go/internal/config.BotVersion=$BotVersion" -o $BinaryName .
 
 if ($LASTEXITCODE -ne 0) {
     Write-Err "Build gagal. Sync dibatalkan."
@@ -315,6 +342,7 @@ Write-Ok "Sync selesai"
 Write-Host ""
 Write-Divider
 Write-Host "  Binary   : $BinaryName" -ForegroundColor White
+Write-Host "  Versi    : $BotVersion" -ForegroundColor White
 Write-Host "  Ukuran   : $sizeText" -ForegroundColor White
 Write-Host "  Target   : $RemotePath$BinaryName" -ForegroundColor White
 Write-Host "  Durasi   : $elapsed" -ForegroundColor White

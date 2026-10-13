@@ -92,10 +92,23 @@ func klasemenMarker(zone string) string {
 func RegisterKlasemen(r *Registry) {
 	r.Register(Command{
 		Name:        "klasemen",
-		Description: "Klasemen liga top Eropa (.klasemen [liga])",
-		Category:    CategoryAlat,
+		Aliases:     []string{"liga"},
+		Description: "Klasemen liga top Eropa (.klasemen/.liga [liga])",
+		Category:    CategoryInternet,
 		Handler:     handleKlasemen,
 	})
+}
+
+// formatKlasemenList menyusun daftar liga (tanpa prefix command, pemisah
+// "_atau_") + satu baris contoh. Dipakai saat argumen kosong maupun salah.
+func formatKlasemenList(title string) string {
+	var sb strings.Builder
+	sb.WriteString(title + "\n")
+	for _, l := range klasemenLeagues {
+		fmt.Fprintf(&sb, "• %s _atau_ %s\n", l.aliases[0], l.name)
+	}
+	sb.WriteString("\nContoh: .liga inggris")
+	return sb.String()
 }
 
 func formatKlasemen(t *scraper.LeagueTable) string {
@@ -127,14 +140,13 @@ func formatKlasemen(t *scraper.LeagueTable) string {
 }
 
 func handleKlasemen(ctx context.Context, mctx *store.MessageContext) error {
-	code, _ := resolveKlasemenLiga(strings.Join(mctx.Args, " "))
+	raw := strings.TrimSpace(strings.Join(mctx.Args, " "))
+	if raw == "" {
+		return store.ReplyText(ctx, mctx, formatKlasemenList("Pilih liga:"))
+	}
+	code, _ := resolveKlasemenLiga(raw)
 	if code == "" {
-		var sb strings.Builder
-		sb.WriteString("Liga tidak dikenali. Pilihan:\n")
-		for _, l := range klasemenLeagues {
-			fmt.Fprintf(&sb, "• .klasemen %s — %s\n", l.aliases[0], l.name)
-		}
-		return store.ReplyText(ctx, mctx, strings.TrimRight(sb.String(), "\n"))
+		return store.ReplyText(ctx, mctx, formatKlasemenList("Liga tidak dikenali. Pilihan:"))
 	}
 	if err := store.ReplyText(ctx, mctx, "Mengambil klasemen, tunggu sebentar..."); err != nil {
 		return err

@@ -194,6 +194,31 @@ func (g *GroupDB) SetAILock(ctx context.Context, locked bool) error {
 	return err
 }
 
+// IsSelfCommandEnabled true kalau saklar .selfcmd sedang ON: bot boleh
+// mengeksekusi command yang dikirim dari akunnya sendiri. Default false
+// (OFF) kalau belum pernah di-set — fail-closed mengikuti pola ai_lock.
+func (g *GroupDB) IsSelfCommandEnabled(ctx context.Context) (bool, error) {
+	var val string
+	err := g.db.QueryRowContext(ctx, `SELECT value FROM bot_settings WHERE key = 'selfcmd'`).Scan(&val)
+	if err != nil {
+		if strings.Contains(err.Error(), "no rows") {
+			return false, nil
+		}
+		return false, err
+	}
+	return val == "1", nil
+}
+
+// SetSelfCommand menyalakan/mematikan saklar .selfcmd (global).
+func (g *GroupDB) SetSelfCommand(ctx context.Context, on bool) error {
+	val := "0"
+	if on {
+		val = "1"
+	}
+	_, err := g.db.ExecContext(ctx, `INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('selfcmd', ?)`, val)
+	return err
+}
+
 // Kunci bot_settings untuk tampilan kartu .menu (di-set via .thumbnail /
 // .favicon, prioritas di atas .env — lihat menu.go).
 const (

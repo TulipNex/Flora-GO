@@ -3,6 +3,7 @@ package plugins
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"go.mau.fi/whatsmeow"
+	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
@@ -78,31 +80,161 @@ func pdfStageKey(sender types.JID) string {
 }
 
 func handlePDFMerge(ctx context.Context, mctx *store.MessageContext) error {
-	if len(mctx.Args) == 0 {
-		return store.ReplyText(ctx, mctx,
-			"*TOOL MERGE PDF*\n"+
-				"\n"+
-				"Daftar perintah tanpa prefix :\n"+
-				"*Mulai/Start*\n"+
-				"> buka sesi upload\n"+
-				"*Daftar/List*\n"+
-				"> lihat urutan file\n"+
-				"*Nama/Name* _<nama file>_\n"+
-				"> nama file output (opsional)\n"+
-				"*Gabung/Merge*\n"+
-				"> gabungkan sesuai urutan\n"+
-				"*Batal/Cancel*\n"+
-				"> buang sesi\n"+
-				"\n"+
-				"Setelah mulai, kirim PDF ke chat ini, maksimal 15 dokumen.")
-	}
-	return store.ReplyText(ctx, mctx, "Ketik salah satu kata: mulai, daftar, gabung, batal, nama <nama file>.")
+	return pdfSendMenu(ctx, mctx)
 }
 
-// pdfWord adalah kata tunggal + alias Inggrisnya.
+// pdfButton adalah satu tombol quick_reply (id ber-prefix "pdfmerge:").
+type pdfButton struct {
+	id      string
+	display string
+}
+
+// pdfMenuButtons adalah tombol menu utama (Mulai/Batal).
+func pdfMenuButtons() []pdfButton {
+	return []pdfButton{
+		{id: "pdfmerge:mulai", display: "Mulai"},
+		{id: "pdfmerge:batal", display: "Batal"},
+	}
+}
+
+// pdfUploadButtons adalah tombol mode upload aktif (Urutan/Batal).
+func pdfUploadButtons() []pdfButton {
+	return []pdfButton{
+		{id: "pdfmerge:urutan", display: "Urutan"},
+		{id: "pdfmerge:batal", display: "Batal"},
+	}
+}
+
+// pdfListButtons adalah tombol daftar urutan (Urutan/Gabung/Nama/Batal).
+func pdfListButtons() []pdfButton {
+	return []pdfButton{
+		{id: "pdfmerge:urutan", display: "Urutan"},
+		{id: "pdfmerge:gabung", display: "Gabung"},
+		{id: "pdfmerge:nama", display: "Nama"},
+		{id: "pdfmerge:batal", display: "Batal"},
+	}
+}
+
+// pdfSendMenu mengirim bubble menu utama (.pdfmerge).
+func pdfSendMenu(ctx context.Context, mctx *store.MessageContext) error {
+	return pdfSendButtons(ctx, mctx, "*Tool Merge PDF*",
+		"Klik *Mulai* lalu kirim file PDF yang ingin anda gabungkan. Maksimal dokumen yang bisa ditangani adalah 15 dokumen.",
+		pdfMenuButtons())
+}
+
+// pdfSendButtons mengirim bubble interactive + tombol quick_reply.
+// Pola sama seperti buttontest.go (biz AdditionalNodes) yang terbukti tampil.
+func pdfSendButtons(ctx context.Context, mctx *store.MessageContext, title, body string, buttons []pdfButton) error {
+	btns := make([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, 0, len(buttons))
+	for _, b := range buttons {
+		params, _ := json.Marshal(map[string]string{"display_text": b.display, "id": b.id})
+		btns = append(btns, &waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
+			Name:             proto.String("quick_reply"),
+			ButtonParamsJSON: proto.String(string(params)),
+		})
+	}
+	msg := &waE2E.Message{
+		InteractiveMessage: &waE2E.InteractiveMessage{
+			Header: &waE2E.InteractiveMessage_Header{
+				Title: proto.String(title),
+			},
+			Body:   &waE2E.InteractiveMessage_Body{Text: proto.String(body)},
+			Footer: &waE2E.InteractiveMessage_Footer{Text: proto.String("Flora Go • PDFMerge")},
+			InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+				NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+					Buttons: btns,
+				},
+			},
+		},
+	}
+	nodes := &[]waBinary.Node{{
+		Tag: "biz",
+		Content: []waBinary.Node{{
+			Tag:   "interactive",
+			Attrs: waBinary.Attrs{"type": "native_flow", "v": "1"},
+			Content: []waBinary.Node{{
+				Tag:   "native_flow",
+				Attrs: waBinary.Attrs{"v": "9", "name": "mixed"},
+			}},
+		}},
+	}}
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, msg,
+		whatsmeow.SendRequestExtra{ID: whatsmeow.GenerateMessageID(), AdditionalNodes: nodes})
+	if err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal kirim menu tombol: %v", err))
+	}
+	store.LogOutgoing(mctx, "pdfmerge-menu", title)
+	store.TrackBotMessageID(resp.ID, "pdfmerge: "+title)
+	return nil
+}
+
+// pdfTapID mengekstrak ID tombol dari tap. Fakta live: tap quick_reply
+// pada bubble native_flow kembali sebagai TemplateButtonReplyMessage
+// (selectedID utuh); jalur InteractiveResponseMessage/paramsJson
+// dipertahankan sebagai fallback (single_select).
+func pdfTapID(evt *events.Message) (string, bool) {
+	unwrapped := store.UnwrapMessage(evt.Message)
+	if unwrapped == nil {
+		return "", false
+	}
+	if tr := unwrapped.GetTemplateButtonReplyMessage(); tr != nil {
+		if id := strings.TrimSpace(tr.GetSelectedID()); id != "" {
+			return id, true
+		}
+		return "", false
+	}
+	resp := unwrapped.GetInteractiveResponseMessage()
+	if resp == nil {
+		return "", false
+	}
+	nf := resp.GetNativeFlowResponseMessage()
+	if nf == nil {
+		return "", false
+	}
+	var p struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(nf.GetParamsJSON()), &p); err != nil || p.ID == "" {
+		return "", false
+	}
+	return p.ID, true
+}
+
+// CheckPDFButtonTap mencegat tap tombol pdfmerge (prefix "pdfmerge:") lalu
+// menjalankan kata yang sama seperti diketik. true = ditangani (setop,
+// jangan ke AI). Jalur teks lama tetap jalan sebagai fallback.
+func CheckPDFButtonTap(client *whatsmeow.Client, evt *events.Message) bool {
+	id, ok := pdfTapID(evt)
+	if !ok || !strings.HasPrefix(id, "pdfmerge:") {
+		return false
+	}
+	word := strings.TrimPrefix(id, "pdfmerge:")
+	ctx := context.Background()
+	mctx := &store.MessageContext{Client: client, Chat: evt.Info.Chat, Sender: evt.Info.Sender, RawEvt: evt}
+	key := pdfStageKey(evt.Info.Sender)
+	if word == "nama" {
+		_ = store.ReplyText(ctx, mctx, "Format: nama <nama file>, contoh: nama rekap bulanan")
+		return true
+	}
+	canon, hit := pdfWords[word]
+	if !hit {
+		return false
+	}
+	pdfStagesMu.Lock()
+	st, ok := pdfStages[key]
+	pdfStagesMu.Unlock()
+	if !ok && canon != "mulai" {
+		_ = store.ReplyText(ctx, mctx, "Belum ada sesi upload aktif. Ketuk Mulai dulu.")
+		return true
+	}
+	return pdfStageWord(ctx, mctx, key, st, ok, canon)
+}
+
+// pdfWord adalah kata tunggal + alias Inggrisnya. "urutan" adalah kata
+// primer tombol (daftar/list dipertahankan sebagai alias teks).
 var pdfWords = map[string]string{
 	"mulai": "mulai", "start": "mulai",
-	"daftar": "daftar", "list": "daftar",
+	"daftar": "daftar", "list": "daftar", "urutan": "daftar",
 	"gabung": "gabung", "merge": "gabung",
 	"batal": "batal", "cancel": "batal",
 }
@@ -174,26 +306,25 @@ func pdfStageWord(ctx context.Context, mctx *store.MessageContext, key string, s
 		pdfStages[key] = &pdfStage{}
 		pdfStagesMu.Unlock()
 		pdfStageTouch(key)
-		_ = store.ReplyText(ctx, mctx,
-			"Mode upload PDF *AKTIF*. Kirim file PDF ke chat ini.\n"+
+		_ = pdfSendButtons(ctx, mctx, "*Mode Upload Aktif*",
+			"Kirim file PDF anda ke chat ini.\n"+
 				"\n"+
-				"*Daftar/List*\n"+
-				"> lihat urutan file\n"+
-				"*Nama/Name* _<nama file>_\n"+
-				"> nama file output (opsional)\n"+
-				"*Gabung/Merge*\n"+
-				"> gabungkan sesuai urutan\n"+
-				"*Batal/Cancel*\n"+
-				"> buang sesi")
+				"Untuk melihat urutan dokumen, klik tombol *Urutan*.",
+			pdfUploadButtons())
 		return true
 	case "daftar":
 		if !ok {
 			return false
 		}
 		pdfStagesMu.Lock()
+		empty := len(st.files) == 0
 		list := pdfStageList(st)
 		pdfStagesMu.Unlock()
-		_ = store.ReplyText(ctx, mctx, list)
+		if empty {
+			_ = store.ReplyText(ctx, mctx, "Belum ada file. Kirim PDF dulu.")
+			return true
+		}
+		_ = pdfSendButtons(ctx, mctx, "*Urutan File Merge*", list, pdfListButtons())
 		return true
 	case "gabung":
 		if !ok {
@@ -349,18 +480,16 @@ func pdfStageReorder(ctx context.Context, mctx *store.MessageContext, key string
 	return true
 }
 
-// pdfStageList menyusun daftar sesuai format owner (verbatim): header,
-// bernomor, lalu panduan + perintah. Tanpa hitungan n/15.
+// pdfStageList menyusun body bubble urutan: daftar bernomor + instruksi
+// gabung/reorder/nama sesuai spec owner.
 func pdfStageList(st *pdfStage) string {
 	var sb strings.Builder
-	sb.WriteString("*Urutan merger :*\n")
 	for i, f := range st.files {
 		fmt.Fprintf(&sb, "%d. %s\n", i+1, f.name)
 	}
-	sb.WriteString("\nReply dokumen dengan angka untuk ubah urutan.\n")
-	sb.WriteString("\n*Nama/Name* _<nama file>_\n> nama file output (opsional)\n")
-	sb.WriteString("*Gabung/Merge*\n> gabung sesuai urutan\n")
-	sb.WriteString("*Batal/Cancel*\n> buang sesi")
+	sb.WriteString("\nKlik *Gabung* untuk gabungkan semua file berdasarkan urutan ini. ")
+	sb.WriteString("Untuk mengganti urutan file, reply dokumen dengan nomor urut yang anda inginkan. ")
+	sb.WriteString("Anda juga dapat mengubah atau menentukan nama file outputnya dengan ketik nama <nama file>.")
 	return sb.String()
 }
 

@@ -98,7 +98,7 @@ func RegisterLrclib(r *Registry) {
 		Name:        "lrclib",
 		Aliases:     []string{"lrc"},
 		Description: "Cari lirik plain (.lrclib <judul>)",
-		Category:    CategoryAlat,
+		Category:    CategoryInternet,
 		Handler:     handleLrclibPlain,
 	})
 }
@@ -110,7 +110,7 @@ func RegisterLrclibSynced(r *Registry) {
 		Name:        "lrclibs",
 		Aliases:     []string{"lrcs"},
 		Description: "Cari lirik synced (.lrclibs <judul>)",
-		Category:    CategoryAlat,
+		Category:    CategoryInternet,
 		Handler:     handleLrclibSynced,
 	})
 }

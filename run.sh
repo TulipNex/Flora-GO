@@ -6,6 +6,15 @@
 
 mkdir -p data
 
+# Versi dari file VERSION (disuntik via ldflags; fallback: default di config.go).
+LDFLAGS=""
+if [ -f "./VERSION" ]; then
+    VER="$(tr -d ' \r\n\t' < ./VERSION)"
+    if [ -n "$VER" ]; then
+        LDFLAGS="-X wabot-go/internal/config.BotVersion=$VER"
+    fi
+fi
+
 if [ -f "./wabot-go-linux" ]; then
     echo "▶️  Menjalankan binary precompiled..."
     chmod +x ./wabot-go-linux
@@ -13,7 +22,7 @@ if [ -f "./wabot-go-linux" ]; then
 elif command -v go >/dev/null 2>&1; then
     echo "▶️  Binary tidak ditemukan, build dari source menggunakan Go di container..."
     go mod tidy
-    go build -o wabot-go-linux .
+    go build -ldflags "$LDFLAGS" -o wabot-go-linux .
     chmod +x ./wabot-go-linux
     ./wabot-go-linux
 else

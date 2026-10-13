@@ -58,10 +58,84 @@ func handleButtonTest(ctx context.Context, mctx *store.MessageContext) error {
 	switch sub {
 	case "phone":
 		return btnTestSend(ctx, mctx, btnTestPhoneBubble(), whatsmeow.SendRequestExtra{ID: whatsmeow.GenerateMessageID()}, "minta nomor")
+	case "signup":
+		return btnTestSend(ctx, mctx, btnTestNativeWithExtra(
+			btnTestNativeFlowButton("inapp_signup", "{}"),
+		), btnTestBizExtra(), "bubble signup")
+	case "widget":
+		return btnTestSend(ctx, mctx, btnTestWidgetBubble(), btnTestBizExtra(), "bubble widget")
 	case "", "native", "flow":
 		return btnTestSendNative(ctx, mctx)
 	default:
-		return store.ReplyText(ctx, mctx, "Varian: .btntest [native|phone]")
+		return store.ReplyText(ctx, mctx, "Varian: .btntest [native|phone|signup|widget]")
+	}
+}
+
+// btnTestBizExtra mengembalikan AdditionalNodes biz standar (wajib agar
+// klien me-render interactiveMessage).
+func btnTestBizExtra() whatsmeow.SendRequestExtra {
+	return whatsmeow.SendRequestExtra{ID: whatsmeow.GenerateMessageID(), AdditionalNodes: &[]waBinary.Node{{
+		Tag: "biz",
+		Content: []waBinary.Node{{
+			Tag:   "interactive",
+			Attrs: waBinary.Attrs{"type": "native_flow", "v": "1"},
+			Content: []waBinary.Node{{
+				Tag:   "native_flow",
+				Attrs: waBinary.Attrs{"v": "9", "name": "mixed"},
+			}},
+		}},
+	}}}
+}
+
+// btnTestNativeWithExtra membangun bubble native_flow dari daftar tombol
+// tambahan (dipakai eksperimen tombol tunggal).
+func btnTestNativeWithExtra(buttons ...*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton) *waE2E.Message {
+	return &waE2E.Message{
+		InteractiveMessage: &waE2E.InteractiveMessage{
+			Header: &waE2E.InteractiveMessage_Header{
+				Title:    proto.String("Uji Tombol Eksperimen"),
+				Subtitle: proto.String("Satu tombol khusus di bawah"),
+			},
+			Body:   &waE2E.InteractiveMessage_Body{Text: proto.String("Ketuk tombolnya, laporkan apa yang terjadi di HP.")},
+			Footer: &waE2E.InteractiveMessage_Footer{Text: proto.String("wabot-go • btntest eksperimen")},
+			InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+				NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+					Buttons: buttons,
+				},
+			},
+		},
+	}
+}
+
+// btnTestWidgetBubble = EKSPERIMEN BloksWidget: widget UI mini (judul +
+// teks) mengikuti pola paste nixellv2 (uuid + data JSON a2ui + type).
+// Prediksi: tampil sebagai kartu UI kaya, atau diabaikan klien.
+func btnTestWidgetBubble() *waE2E.Message {
+	data, _ := json.Marshal(map[string]any{
+		"version": "v0.9",
+		"createSurface": map[string]any{
+			"surfaceId": "starcore-widget=wabot-go-test",
+			"catalogId": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json",
+			"components": []any{
+				map[string]any{"id": "root", "component": "Column", "children": []string{"judul", "isi"}},
+				map[string]any{"id": "judul", "component": "Text", "text": "Widget Uji wabot-go", "variant": "h1"},
+				map[string]any{"id": "isi", "component": "Text", "text": "Jika kartu ini tampil, BloksWidget hidup dari akun biasa.", "variant": "body"},
+			},
+		},
+	})
+	return &waE2E.Message{
+		InteractiveMessage: &waE2E.InteractiveMessage{
+			Header: &waE2E.InteractiveMessage_Header{
+				HasMediaAttachment: proto.Bool(false),
+			},
+			Body:   &waE2E.InteractiveMessage_Body{Text: proto.String("Widget uji (fallback bila widget tak tampil).")},
+			Footer: &waE2E.InteractiveMessage_Footer{Text: proto.String("wabot-go • btntest widget")},
+			BloksWidget: &waE2E.InteractiveMessage_BloksWidget{
+				Uuid: proto.String("wabot-go-test-0001"),
+				Data: proto.String(string(data)),
+				Type: proto.String("im_a2ui"),
+			},
+		},
 	}
 }
 
@@ -143,6 +217,20 @@ func btnTestSendNative(ctx context.Context, mctx *store.MessageContext) error {
 	})
 	// send_location: tanpa params (klien menampilkan pemilih lokasi).
 	locBtn, _ := json.Marshal(map[string]string{})
+	// EKSPERIMEN form (WhatsApp Flows): tombol galaxy_message + flow dummy.
+	// Prediksi (issue whatsmeow #1144): penerima "message not compatible".
+	flowParams := func(cta string) string {
+		b, _ := json.Marshal(map[string]any{
+			"mode":                 "published",
+			"flow_message_version": "3",
+			"flow_token":           "TEST_DUMMY_TOKEN",
+			"flow_id":              "000000000000000",
+			"flow_cta":             cta,
+			"flow_action":          "navigate",
+			"flow_action_payload":  map[string]any{"screen": "WELCOME"},
+		})
+		return string(b)
+	}
 	msg := &waE2E.Message{
 		InteractiveMessage: &waE2E.InteractiveMessage{
 			Header: &waE2E.InteractiveMessage_Header{
@@ -150,7 +238,7 @@ func btnTestSendNative(ctx context.Context, mctx *store.MessageContext) error {
 				Subtitle: proto.String("Ketuk salah satu tombol di bawah"),
 			},
 			Body:   &waE2E.InteractiveMessage_Body{Text: proto.String("Ketuk: daftar/copy/link/balas-cepat/call/lokasi. URL & call tak membalas (wajar); lokasi terkirim sebagai pesan lokasi.")},
-			Footer: &waE2E.InteractiveMessage_Footer{Text: proto.String("wabot-go • btntest round-2")},
+			Footer: &waE2E.InteractiveMessage_Footer{Text: proto.String("wabot-go • btntest round-2 + form")},
 			InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
 				NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
 					Buttons: []*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
@@ -161,6 +249,8 @@ func btnTestSendNative(ctx context.Context, mctx *store.MessageContext) error {
 						btnTestNativeFlowButton("quick_reply", string(qr2)),
 						btnTestNativeFlowButton("cta_call", string(callBtn)),
 						btnTestNativeFlowButton("send_location", string(locBtn)),
+						btnTestNativeFlowButton("galaxy_message", flowParams("Buka Form (Uji)")),
+						btnTestNativeFlowButton("flow", flowParams("Buka Form 2 (Uji)")),
 					},
 				},
 			},
@@ -308,20 +398,27 @@ func CheckButtonTestContact(client *whatsmeow.Client, evt *events.Message) bool 
 	return true
 }
 
-// CheckButtonTestTap mencegat tap tombol. Urutan aman: pastikan dulu ini
-// tap (jangan telan pesan biasa), baru cek pending. true = ditangani.
+// CheckButtonTestTap mencegat tap tombol MILIK btntest saja (prefix
+// "btntest_" atau fallback params/teks dari bubble-nya sendiri). Tap milik
+// plugin lain (mis. "pdfmerge:*") TIDAK disentuh agar jatuh ke interceptor
+// masing-masing. true = ditangani.
 func CheckButtonTestTap(client *whatsmeow.Client, evt *events.Message, text string) bool {
 	_ = text
 	id, ok := btnTestPayloadID(evt)
 	if !ok {
 		return false
 	}
-	mctx := &store.MessageContext{Client: client, Chat: evt.Info.Chat, Sender: evt.Info.Sender, RawEvt: evt}
+	if !strings.HasPrefix(id, "btntest_") &&
+		!strings.HasPrefix(id, "params: ") &&
+		!strings.HasPrefix(id, "teks: ") &&
+		!strings.HasPrefix(id, "judul: ") {
+		return false
+	}
 	if !btnTestPeek(evt.Info.Chat.String(), evt.Info.Sender.String()) {
-		_ = store.ReplyText(context.Background(), mctx, fmt.Sprintf("Tap tombol terdeteksi (di luar sesi uji): %s", id))
-		return true
+		return false
 	}
 	btnTestConsume(evt.Info.Chat.String(), evt.Info.Sender.String())
+	mctx := &store.MessageContext{Client: client, Chat: evt.Info.Chat, Sender: evt.Info.Sender, RawEvt: evt}
 	if err := store.ReplyText(context.Background(), mctx, fmt.Sprintf("Tap diterima! ID tombol: %s", id)); err != nil {
 		logfmt.Warn("btntest: balas tap gagal (%v)\n", err)
 	}

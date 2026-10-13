@@ -7,4 +7,6 @@ wabot-go-linux
 wabot-go.md
 .env
 test-env.ps1
+test-env-build.ps1
 wabot-tmp/
+.last-deploy-state

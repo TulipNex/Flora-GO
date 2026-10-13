@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -16,19 +17,19 @@ func init() {
 	registerPlugin(RegisterServerInfo)
 }
 
-// RegisterServerInfo mendaftarkan command `.serverinfo` (alias `.sysinfo`)
-// KHUSUS owner: menampilkan info server (hardware, memori, OS, runtime,
-// memori proses) dengan format referensi owner. Sumber data semuanya stdlib
-// (runtime, /proc, syscall) — tanpa dependensi baru.
+// RegisterServerInfo mendaftarkan command `.server` (alias `.serverinfo`,
+// `.si`) KHUSUS owner: ringkasan server (hardware, memori sistem, runtime).
+// Detail OS ada di `.os`, detail memori proses ada di `.rss` — pembagian
+// disengaja supaya tidak ada baris yang tampil dobel antar command.
 //
 // Semua pembacaan spesifik-Linux di-gate runtime.GOOS: di panel Linux
 // lengkap, di laptop Windows field terkait jadi "-" (fail-soft per field,
 // command tidak pernah gagal total gara-gara 1 sumber hilang).
 func RegisterServerInfo(r *Registry) {
 	r.Register(Command{
-		Name:        "serverinfo",
-		Aliases:     []string{"sysinfo"},
-		Description: "Info server (CPU, RAM, OS, runtime)",
+		Name:        "server",
+		Aliases:     []string{"serverinfo", "si"},
+		Description: "Ringkasan server (CPU, RAM, runtime)",
 		Category:    CategoryOwner,
 		Handler:     handleServerInfo,
 	})
@@ -43,31 +44,14 @@ func handleServerInfo(ctx context.Context, mctx *store.MessageContext) error {
 
 	cpuModel, cpuClock := linuxCPUInfo()
 	memTotal, memFree := linuxMemInfo()
-	distro := linuxDistro()
-	kernel := linuxKernelRelease()
-	hostname, _ := os.Hostname()
-	hostUptime, hostUptimeOK := linuxUptime()
-	rss := processRSS()
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
 
-	mb := func(b uint64) string {
-		return fmt.Sprintf("%.2f MB", float64(b)/(1<<20))
-	}
-	dash := func(s string) string {
-		if strings.TrimSpace(s) == "" {
-			return "-"
-		}
-		return s
-	}
-
-	heapLimit := os.Getenv("GOMEMLIMIT")
-	if strings.TrimSpace(heapLimit) == "" {
-		heapLimit = "-"
-	}
 	var memUsed uint64
 	if memTotal >= memFree {
 		memUsed = memTotal - memFree
+	}
+	heapLimit := os.Getenv("GOMEMLIMIT")
+	if strings.TrimSpace(heapLimit) == "" {
+		heapLimit = "-"
 	}
 
 	msg := fmt.Sprintf(
@@ -82,43 +66,75 @@ func handleServerInfo(ctx context.Context, mctx *store.MessageContext) error {
 			"• Total : %s\n"+
 			"• Used : %s\n"+
 			"• Free : %s\n"+
-			"\n*Operating System*\n"+
-			"• Distro : %s\n"+
-			"• Platform : %s\n"+
-			"• Type : %s\n"+
-			"• Release : %s\n"+
-			"• Hostname : %s\n"+
-			"• Uptime : %s\n"+
 			"\n*Runtime*\n"+
 			"• Go : %s\n"+
 			"• Engine : gc\n"+
 			"• PID : %d\n"+
-			"• Process Uptime : %s\n"+
 			"• Heap Limit : %s\n"+
-			"\n*Process Memory*\n"+
-			"• RSS : %s\n"+
-			"• Heap Used : %s\n"+
-			"• Heap Total : %s\n"+
-			"• External : %s",
-		dash(cpuModel),
+			"• Library : %s\n"+
+			"\nDetail: .os | .rss",
+		dashStr(cpuModel),
 		runtime.NumCPU(),
-		dash(cpuClock),
+		dashStr(cpuClock),
 		goArchDisplay(),
 		goEndianness(),
 		gbOrDash(memTotal), gbOrDash(memUsed), gbOrDash(memFree),
-		dash(distro),
-		runtime.GOOS,
-		"Linux",
-		dash(kernel),
-		dash(hostname),
-		durationOrDash(hostUptime, hostUptimeOK),
 		runtime.Version(),
 		os.Getpid(),
-		formatDuration(time.Since(startTime).Round(time.Second)),
 		heapLimit,
-		mb(rss), mb(uint64(mem.HeapAlloc)), mb(uint64(mem.HeapSys)), mb(uint64(mem.OtherSys)+uint64(mem.GCSys)),
+		whatsmeowVersion(),
 	)
 	return store.ReplyText(ctx, mctx, msg)
+}
+
+// mbStr memformat byte jadi MB 2 desimal. Dipakai .server dan .rss.
+func mbStr(b uint64) string {
+	return fmt.Sprintf("%.2f MB", float64(b)/(1<<20))
+}
+
+// dashStr mengembalikan "-" untuk string kosong. Dipakai .server dan .os.
+func dashStr(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "-"
+	}
+	return s
+}
+
+// whatsmeowVersion membaca versi modul go.mau.fi/whatsmeow dari build info
+// (stdlib runtime/debug, tanpa dependensi). Pseudo-version panjang
+// (v0.0.0-20250928140511-35f522c88ce3) dipadatkan jadi v0.0.0-20250928 agar
+// enak dibaca; "whatsmeow" polos bila tak terbaca.
+func whatsmeowVersion() string {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		for _, dep := range bi.Deps {
+			if dep.Path == "go.mau.fi/whatsmeow" {
+				v := dep.Version
+				if i := strings.Index(v, "-"); i > 0 && len(v) > i+9 {
+					return "whatsmeow " + v[:i] + "-" + v[i+1:i+9]
+				}
+				return "whatsmeow " + v
+			}
+		}
+	}
+	return "whatsmeow"
+}
+
+// formatDuration mengubah durasi jadi format "1h 23m 45s" yang lebih enak dibaca
+// dibanding format default Go (misal "1h23m45.123s").
+// Pindahan dari plugins/info.go yang dihapus — dipakai serverinfo.go,
+// osinfo.go (lewat durationOrDash), dan call.go.
+func formatDuration(d time.Duration) string {
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+
+	if h > 0 {
+		return fmt.Sprintf("%dh %dm %ds", h, m, s)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
 }
 
 // gbOrDash memformat byte jadi GB, "-" kalau nol (sumber gagal dibaca).

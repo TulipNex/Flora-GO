@@ -106,7 +106,7 @@ func RegisterDownloader(r *Registry) {
 			Name:        p.command,
 			Aliases:     p.aliases,
 			Description: p.desc,
-			Category:    CategoryMedia,
+			Category:    CategoryUnduh,
 			Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 				return handleDownload(ctx, mctx, p)
 			},

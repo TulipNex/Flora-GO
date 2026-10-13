@@ -22,6 +22,11 @@ func init() {
 // SenderAlt ikut dicek karena di grup mode LID pengirim bisa muncul sebagai
 // @lid sementara nomor owner tersimpan sebagai PN — tanpa cek alt ini owner
 // justru terkunci di luar command miliknya sendiri.
+// Saklar .selfcmd (lihat selfcmd.go): pengirim dari akun bot sendiri
+// dianggap owner bila ia lolos isSelfSender DAN (toggle ON atau pesannya
+// saklar itu sendiri — cerminan guard handler, karena MessageContext tak
+// membawa teks untuk dicek di sini, saklar-when-OFF ditangani gerbang
+// khusus di handleSelfCmd).
 func IsOwner(mctx *store.MessageContext) bool {
 	if isJIDOwner(mctx.Sender) {
 		return true
@@ -29,7 +34,7 @@ func IsOwner(mctx *store.MessageContext) bool {
 	if mctx.RawEvt != nil && isJIDOwner(mctx.RawEvt.Info.SenderAlt) {
 		return true
 	}
-	return false
+	return isSelfSender(mctx) && SelfCommandEnabled()
 }
 
 // IsOwnerEvent versi berbasis events.Message mentah, dipakai handler untuk

@@ -11,14 +11,16 @@ import (
 // ditulis bebas per plugin, satu salah ketik saja akan melahirkan grup
 // kategori hantu di menu yang isinya cuma satu command.
 const (
-	CategoryUmum    = "Umum"
-	CategoryGrup    = "Grup"
-	CategoryAbsensi = "Absensi"
-	CategoryMedia   = "Media"
-	CategoryAI      = "AI"
-	CategoryAlat    = "Alat"
-	CategoryGame    = "Game"
-	CategoryOwner   = "Owner"
+	CategoryUmum     = "Umum"
+	CategoryGrup     = "Grup"
+	CategoryAbsensi  = "Absensi"
+	CategoryMedia    = "Media"
+	CategoryUnduh    = "Unduh"
+	CategoryAI       = "AI"
+	CategoryAlat     = "Alat"
+	CategoryInternet = "Internet"
+	CategoryGame     = "Game"
+	CategoryOwner    = "Owner"
 	// CategoryHidden sengaja TIDAK masuk CategoryOrder: command berkategori
 	// ini tidak punya rumah tampil di menu. WAJIB dipasangkan dengan
 	// Hidden:true (menu.go melewatkan command hidden sebelum grouping) —
@@ -39,8 +41,10 @@ var CategoryOrder = []string{
 	CategoryGrup,
 	CategoryAbsensi,
 	CategoryMedia,
+	CategoryUnduh,
 	CategoryAI,
 	CategoryAlat,
+	CategoryInternet,
 	CategoryGame,
 	CategoryOwner,
 }
