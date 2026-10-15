@@ -22,7 +22,9 @@ func init() {
 	registerPlugin(RegisterButtonTest)
 }
 
-// Uji coba tombol + elemen interaktif whatsmeow.
+// RegisterButtonTest mendaftarkan `.btntest`: uji coba tombol + elemen
+// interaktif whatsmeow (kategori Hidden + Hidden:true — command uji, tidak
+// untuk menu publik; konsisten dgn .bk). Jadi main-only (cloneBlockedCategories).
 // .btntest = bubble native_flow (7 tombol) · phone = minta nomor.
 // CATATAN live: ButtonsMessage/ListMessage lawas DITOLAK server (405),
 // TemplateMessage terhidrasi terkirim tapi tak dirender klien (butuh
@@ -32,7 +34,8 @@ func RegisterButtonTest(r *Registry) {
 	r.Register(Command{
 		Name:        "btntest",
 		Description: "Uji tombol (native/phone)",
-		Category:    CategoryAlat,
+		Category:    CategoryHidden,
+		Hidden:      true,
 		Handler:     handleButtonTest,
 	})
 }

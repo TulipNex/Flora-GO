@@ -1,6 +1,8 @@
 // Package scraper mengambil media langsung dari platform sosial via API
-// scraper pihak ketiga (port dari koleksi D:\scrape). yt-dlp SUDAH DIHAPUS
-// total (keputusan owner) — tidak ada fallback exec lagi.
+// scraper pihak ketiga (port dari koleksi D:\scrape). Paket ini TIDAK lagi
+// meng-exec yt-dlp — YouTube di sini murni via API scraper. (Catatan: plugin
+// `plugins/downloader.go` justru memakai yt-dlp sebagai PRIMER untuk YouTube,
+// dengan scraper sebagai fallback; itu jalur di luar paket ini.)
 //
 // PENTING: API-API ini tidak resmi, tanpa SLA, bisa mati/berubah kapan
 // saja — makanya tiap platform punya RANTAI fallback berjenjang (meniru
