@@ -112,7 +112,7 @@ func RegisterCall(r *Registry) {
 			// Ada "|<jam>" -> jadwalkan PERSISTEN (tahan restart, lihat
 			// ScheduleCall). Konfirmasi ke peminta, progres menyusul di
 			// chat ini saat waktunya tiba.
-			at, err := ParseJamWITA(strings.TrimSpace(parts[1]))
+			at, err := ParseJam(strings.TrimSpace(parts[1]))
 			if err != nil {
 				return store.ReplyText(ctx, mctx, fmt.Sprintf("Format jam salah (%v). Contoh: .call 628123456789|12.50", err))
 			}
@@ -216,11 +216,14 @@ func IsBotPhoneTarget(client *whatsmeow.Client, phone string) bool {
 	return normPhoneDigits(id.ToNonAD().User) == want
 }
 
-// ParseJamWITA mem-parsing format "HH.MM" (mis. "12.50") menjadi waktu absolut
-// dalam zona aktif timex. Kalau jam itu sudah lewat hari ini, dijadwalkan untuk besok.
+// ParseJam mem-parsing format "HH.MM" (mis. "12.50") menjadi waktu absolut
+// dalam zona aktif timex (WIB/WITA/WIT via env BOT_TIMEZONE). Kalau jam itu
+// sudah lewat hari ini, dijadwalkan untuk besok.
 // Di-export supaya tool AI make_call memakai aturan jadwal yang SAMA PERSIS
 // dengan command .call (tidak ada duplikasi parsing jam).
-func ParseJamWITA(jamStr string) (time.Time, error) {
+// (Dahulu bernama ParseJamWITA — nama lama menyesatkan karena zona tidak
+// lagi terpaku WITA.)
+func ParseJam(jamStr string) (time.Time, error) {
 	hm := strings.SplitN(jamStr, ".", 2)
 	if len(hm) != 2 {
 		return time.Time{}, fmt.Errorf("gunakan format HH.MM, contoh 12.50")
@@ -512,7 +515,7 @@ func handleCallList(ctx context.Context, mctx *store.MessageContext) error {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca jadwal: %v", err))
 	}
 	if len(pending) == 0 {
-		return store.ReplyText(ctx, mctx, "Tidak ada jadwal panggilan. Buat via `.call <target>|<jam>` (WITA).")
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Tidak ada jadwal panggilan. Buat via `.call <target>|<jam>` (%s).", timex.Name()))
 	}
 	var sb strings.Builder
 	sb.WriteString("Jadwal panggilan:\n")

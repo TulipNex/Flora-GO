@@ -306,11 +306,9 @@ func describeMessage(msg *waE2E.Message) (string, string) {
 
 // DescribeMessage mengekspor describeMessage untuk dipakai fitur arsip
 // (.lastchat/.crm): tipe Indonesia + ringkasan satu baris dari sebuah
-// pesan protobuf. Nil-guard karena baris arsip bisa corrupt.
+// pesan protobuf. Nil-guard sudah ditangani describeMessage, jadi cukup
+// delegasi (baris arsip bisa corrupt / msg nil).
 func DescribeMessage(msg *waE2E.Message) (string, string) {
-	if msg == nil {
-		return "lainnya", "-"
-	}
 	return describeMessage(msg)
 }
 

@@ -9,6 +9,7 @@ import (
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 
+	whatsmeow "github.com/polymorfa/hypermeow"
 	"github.com/polymorfa/hypermeow/types"
 	"github.com/polymorfa/hypermeow/types/events"
 )
@@ -91,12 +92,15 @@ func IsOwnerOrTrusted(ctx context.Context, mctx *store.MessageContext) bool {
 
 // IsOwnerOrTrustedEvent adalah versi berbasis events.Message mentah (untuk
 // handler, sebelum MessageContext dibangun). IsOwnerEvent sudah mencakup
-// SenderAlt; untuk trust keduanya diteruskan ke IsUserTrusted.
-func IsOwnerOrTrustedEvent(ctx context.Context, evt *events.Message) bool {
+// SenderAlt; untuk trust keduanya diteruskan ke IsUserTrusted. Client
+// diteruskan supaya trust dibaca dari DB milik client yang sama dengan
+// jalur command (store.GroupsFor) — di bot utama keduanya menunjuk group.db
+// yang sama, tapi di klon harus konsisten per-DB.
+func IsOwnerOrTrustedEvent(ctx context.Context, client *whatsmeow.Client, evt *events.Message) bool {
 	if IsOwnerEvent(evt) {
 		return true
 	}
-	ok, err := store.Groups().IsUserTrusted(ctx, evt.Info.Sender, evt.Info.SenderAlt)
+	ok, err := store.GroupsFor(client).IsUserTrusted(ctx, evt.Info.Sender, evt.Info.SenderAlt)
 	if err != nil {
 		logfmt.Error("Gagal cek trust Flora untuk %s: %v\n", evt.Info.Sender.String(), err)
 		return false

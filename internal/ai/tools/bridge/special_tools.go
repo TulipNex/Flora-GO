@@ -127,14 +127,16 @@ func init() {
 			// diketik eksplisit diperlakukan sama dengan "telepon saya");
 			// telepon ORANG LAIN khusus owner.
 			if isSelfCall(ctx, mctx, phone) {
-				if !plugins.IsOwner(mctx) && !plugins.IsOwnerOrTrusted(ctx, mctx) {
+				// IsOwnerOrTrusted sudah mencakup owner (IsOwner di dalamnya),
+				// jadi cukup satu gerbang — tidak perlu cek IsOwner terpisah.
+				if !plugins.IsOwnerOrTrusted(ctx, mctx) {
 					return "", fmt.Errorf("hanya owner dan user terpercaya yang boleh memakai aksi ini")
 				}
 			} else if err := requireOwnerTool(mctx); err != nil {
 				return "", err
 			}
 			if atRaw, _ := args["at"].(string); strings.TrimSpace(atRaw) != "" {
-				at, err := plugins.ParseJamWITA(strings.TrimSpace(atRaw))
+				at, err := plugins.ParseJam(strings.TrimSpace(atRaw))
 				if err != nil {
 					return "", fmt.Errorf("format jam salah (%v), pakai HH.MM zona waktu bot contoh 17.00", err)
 				}

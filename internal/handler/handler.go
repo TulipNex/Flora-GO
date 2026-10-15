@@ -466,7 +466,7 @@ func handleAITrigger(client *whatsmeow.Client, evt *events.Message, text string)
 	// Gerbang trust Flora: trigger natural hanya melayani owner + user
 	// terpercaya (lihat store.GroupDB.TrustUser). Non-trusted diabaikan
 	// diam-diam — tanpa bocoran bahwa Flora terkunci untuk mereka.
-	if !plugins.IsOwnerOrTrustedEvent(context.Background(), evt) {
+	if !plugins.IsOwnerOrTrustedEvent(context.Background(), client, evt) {
 		return
 	}
 

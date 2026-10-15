@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
+	"wabot-go/internal/timex"
 )
 
 func init() {
@@ -248,17 +249,16 @@ func shortJID(jid string) string {
 	return jid
 }
 
-// formatCRMTime menulis epoch ke "HH:MM:SS" zona Asia/Jakarta (fallback
-// Local) — konsisten dengan formatTimestamp FIORA (id-ID, WIB).
+// formatCRMTime menulis epoch ke "HH:MM:SS" zona aktif bot (WIB/WITA/WIT
+// via env BOT_TIMEZONE, lihat internal/timex) — konsisten dengan jam
+// penjadwalan .call dan label zona lain di bot. Sebelumnya fungsi ini
+// mengunci Asia/Jakarta (WIB) sehingga arsip .lastchat/.crm/.insp
+// menyimpang saat bot diset WITA/WIT.
 func formatCRMTime(ts int64) string {
 	if ts <= 0 {
 		return "--:--:--"
 	}
-	loc, err := time.LoadLocation("Asia/Jakarta")
-	if err != nil {
-		loc = time.Local
-	}
-	return time.Unix(ts, 0).In(loc).Format("15:04:05")
+	return time.Unix(ts, 0).In(timex.Zone()).Format("15:04:05")
 }
 
 // truncateCRMLine melipat preview multi-baris jadi satu baris pendek.

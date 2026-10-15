@@ -56,13 +56,13 @@ func handleFaviconCmd(ctx context.Context, mctx *store.MessageContext) error {
 // kunci dan label yang beda.
 func handleMenuAssetCmd(ctx context.Context, mctx *store.MessageContext, kind string) error {
 	label := "Thumbnail"
-	getter := store.Groups().GetMenuThumbURL
-	setter := store.Groups().SetMenuThumbURL
+	getter := store.GroupsFor(mctx.Client).GetMenuThumbURL
+	setter := store.GroupsFor(mctx.Client).SetMenuThumbURL
 	fallback := strings.TrimSpace(config.MenuThumbURL)
 	if kind == "favicon" {
 		label = "Favicon"
-		getter = store.Groups().GetMenuFaviconURL
-		setter = store.Groups().SetMenuFaviconURL
+		getter = store.GroupsFor(mctx.Client).GetMenuFaviconURL
+		setter = store.GroupsFor(mctx.Client).SetMenuFaviconURL
 		fallback = strings.TrimSpace(config.MenuFaviconURL)
 	}
 

@@ -353,12 +353,12 @@ func parseBoolArg(raw interface{}) bool {
 var relTimeRe = regexp.MustCompile(`(?i)^\s*(\d+)\s*(detik|menit|jam|hari)\b`)
 
 // colonTimeRe mengenali "17:00" (kebiasaan Indonesia) untuk dinormalisasi
-// jadi "17.00" sebelum ParseJamWITA (audit M3).
+// jadi "17.00" sebelum ParseJam (audit M3).
 var colonTimeRe = regexp.MustCompile(`^(\d{1,2}):(\d{2})$`)
 
 // parseReminderTime mengubah teks waktu jadi time.Time absolut (zona aktif
 // timex untuk format jam): "HH.MM"/"HH:MM" (hari ini, atau besok bila lewat
-// — reuse plugins.ParseJamWITA) atau relatif "N menit/jam/hari [lagi]".
+// — reuse plugins.ParseJam) atau relatif "N menit/jam/hari [lagi]".
 func parseReminderTime(raw string) (time.Time, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -385,7 +385,7 @@ func parseReminderTime(raw string) (time.Time, error) {
 		}
 		return time.Now().Add(d), nil
 	}
-	return plugins.ParseJamWITA(raw)
+	return plugins.ParseJam(raw)
 }
 
 // resolveOwnerPhone memetakan JID kreator jadi nomor HP (digit) untuk
