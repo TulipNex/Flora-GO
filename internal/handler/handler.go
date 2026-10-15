@@ -12,13 +12,20 @@ import (
 	"wabot-go/internal/store"
 	"wabot-go/plugins"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/types"
-	"go.mau.fi/whatsmeow/types/events"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/types"
+	"github.com/polymorfa/hypermeow/types/events"
 )
 
 // Prefix command bot, misal ".ping" atau "!ping". Ubah sesuai selera.
 const CommandPrefix = "."
+
+// init memasang factory handler clone ke plugins supaya .jadibot /
+// RestoreClones bisa membuat event handler untuk client clone tanpa
+// import cycle (plugins tidak boleh import handler balik).
+func init() {
+	plugins.NewCloneHandlerFactory = NewEventHandler
+}
 
 // staleGrace adalah toleransi umur pesan: pesan ber-timestamp server lebih
 // tua dari (boot − grace) dianggap sisa antrean offline (dikirim saat bot
@@ -91,18 +98,19 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 	// tidak bikin bot diam total.
 	if !selfCmd && !plugins.IsOwnerEvent(evt) {
 		bg := context.Background()
-		if self, err := store.Groups().IsSelfMode(bg); err != nil {
+		gdb := store.GroupsFor(client)
+		if self, err := gdb.IsSelfMode(bg); err != nil {
 			logfmt.Warn("Gagal cek mode bot: %v\n", err)
 		} else if self {
 			return
 		}
-		if banned, err := store.Groups().IsUserBanned(bg, evt.Info.Sender, evt.Info.SenderAlt); err != nil {
+		if banned, err := gdb.IsUserBanned(bg, evt.Info.Sender, evt.Info.SenderAlt); err != nil {
 			logfmt.Warn("Gagal cek ban user: %v\n", err)
 		} else if banned {
 			return
 		}
 		if evt.Info.IsGroup {
-			if gbanned, err := store.Groups().IsGroupBanned(bg, evt.Info.Chat.String()); err != nil {
+			if gbanned, err := gdb.IsGroupBanned(bg, evt.Info.Chat.String()); err != nil {
 				logfmt.Warn("Gagal cek ban grup: %v\n", err)
 			} else if gbanned {
 				return
@@ -115,7 +123,7 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 	// telepon susulan. Ditaruh di sini (setelah gerbang, sebelum routing)
 	// supaya SEMUA pesan tercatat — termasuk command dan pesan yang nantinya
 	// ditindak moderasi. Murah (map in-memory) dan tidak mengubah alur.
-	if !evt.Info.IsGroup && plugins.IsOwnerEvent(evt) {
+	if !evt.Info.IsGroup && plugins.IsOwnerEvent(evt) && store.IsMainClient(client) {
 		bridge.NoteOwnerDMActivity(evt.Info.Sender, evt.Info.SenderAlt)
 	}
 
@@ -124,7 +132,8 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 	// pesan dari user/grup banned tetap tidak terarsip, konsisten dengan
 	// "diabaikan total". Fail-soft di dalam (DB mati = no-op).
 	// Dilewati untuk pesan self-command: itu perintah owner, bukan chat user.
-	if !selfCmd {
+	// Hanya bot utama: arsip CRM milik utama (keputusan jadibot).
+	if !selfCmd && store.IsMainClient(client) {
 		plugins.ArchiveIncoming(client, evt)
 	}
 
@@ -132,7 +141,8 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 	// otomatis (observasi murni, fail-soft di dalam). Setelah gerbang ban
 	// supaya konsisten; sebelum AI (lokasi tak ber-teks, tak mengganggu AI).
 	// Dilewati untuk pesan self-command (alasan sama dengan arsip).
-	if !selfCmd {
+	// Hanya bot utama: absensi milik utama (keputusan jadibot).
+	if !selfCmd && store.IsMainClient(client) {
 		plugins.CheckAbsensiCheckin(client, evt)
 	}
 
@@ -141,7 +151,8 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 	// gerbang ban; sebelum antilink/AI supaya input setup tak bocor.
 	// Dilewati untuk pesan self-command: teks self selalu berprefix
 	// command (jaminan ShouldProcessSelfMessage) sehingga selalu lolos.
-	if !selfCmd && plugins.CheckAbsensiSetup(client, evt) {
+	// Hanya bot utama: absensi milik utama (keputusan jadibot).
+	if !selfCmd && store.IsMainClient(client) && plugins.CheckAbsensiSetup(client, evt) {
 		return
 	}
 
@@ -185,12 +196,21 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 		return
 	}
 
+	// Staging JPG (.jpgpdf mulai): foto polos tanpa caption ditampung saat
+	// sesi aktif (cermin CheckPDFStaging di atas). Foto bercaption .jpgpdf
+	// lewat jalur command biasa.
+	if plugins.CheckJpgStaging(client, evt) {
+		return
+	}
+
 	// Autodownload medsos — pesan NON-command (grup maupun private) yang
-	// mengandung link didukung. TIDAK menyetop alur (beda dari antilink):
-	// trigger AI tetap diproses setelah ini. Fungsi kembali seketika,
-	// download-nya async di dalam.
+	// mengandung link didukung. Kalau link ditangani (return true), trigger
+	// AI untuk pesan itu dilewati (download saja) — tapi jalur lain
+	// (prefix spesial, game, Spotify/LRC/Shazam, tombol) tetap jalan normal.
+	// Fungsi kembali seketika, download-nya async di dalam.
+	dlHandled := false
 	if text != "" {
-		plugins.CheckAutodownload(client, evt, text)
+		dlHandled = plugins.CheckAutodownload(client, evt, text)
 	}
 
 	// Prefix spesial karakter tunggal: "$" = shell server, "\" = eval JS.
@@ -257,7 +277,16 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 		return
 	}
 
+	// Tap tombol jpgpdf (cermin pdfmerge di atas, prefix "jpgpdf:").
+	if plugins.CheckJpgButtonTap(client, evt) {
+		return
+	}
+
 	// Bukan command (termasuk pesan media tanpa caption) → cek trigger AI.
+	// Dilewati bila pesan sudah ditangani autodownload (download saja).
+	if dlHandled {
+		return
+	}
 	handleAITrigger(client, evt, text)
 }
 
@@ -347,6 +376,17 @@ func executeNamedCommand(client *whatsmeow.Client, registry *plugins.Registry, e
 		return // command tidak ditemukan, diamkan saja (bisa diubah untuk balas "command tidak dikenal")
 	}
 
+	// Gerbang clone (jadibot): command main-only (flag MainOnly atau
+	// kategori Owner/Hidden/AI/Absensi) ditolak eksplisit di clone supaya
+	// user tahu harus ke bot utama — bukan diam-diam.
+	if cmd.CloneBlocked() && !store.IsMainClient(client) {
+		mctx := &store.MessageContext{
+			Client: client, Chat: evt.Info.Chat, Sender: evt.Info.Sender, RawEvt: evt,
+		}
+		_ = store.ReplyText(context.Background(), mctx, "Perintah ini hanya tersedia di bot utama.")
+		return
+	}
+
 	ctx := &store.MessageContext{
 		Client:  client,
 		Chat:    evt.Info.Chat,
@@ -372,6 +412,11 @@ func executeNamedCommand(client *whatsmeow.Client, registry *plugins.Registry, e
 // konteks ke AI — supaya user tidak perlu mengulang topik yang ingin
 // ditanyakan lebih lanjut.
 func handleAITrigger(client *whatsmeow.Client, evt *events.Message, text string) {
+	// Flora hanya milik bot utama (keputusan jadibot): pesan lewat clone
+	// tidak pernah menyentuh jalur AI — termasuk lock/unlock dan trust.
+	if !store.IsMainClient(client) {
+		return
+	}
 	// sessionKey dibangun lewat ai.BuildSessionKey yang sama dipakai
 	// plugins/ai.go (HandleAIMessage/processAITurn) — WAJIB identik supaya
 	// HasActiveSession di bawah mengecek kunci yang benar-benar dipakai

@@ -10,7 +10,7 @@ import (
 	"wabot-go/internal/timex"
 	"wabot-go/plugins"
 
-	"go.mau.fi/whatsmeow/types"
+	"github.com/polymorfa/hypermeow/types"
 )
 
 // requireOwnerTool memastikan peminta tool adalah owner bot. Dipakai tool

@@ -11,8 +11,8 @@ import (
 	"wabot-go/internal/scraper"
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/types/events"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/types/events"
 )
 
 // Pencarian lirik via lrclib.net: `.lrclib`/`.lrc` (plain) dan
@@ -53,7 +53,7 @@ var lrcPending = struct {
 	m map[string]*lrcPendingResult
 }{m: make(map[string]*lrcPendingResult)}
 
-func lrcPendingKey(chat, sender string) string { return chat + "|" + sender }
+func lrcPendingKey(chat, sender string) string { return pendingKey(chat, sender) }
 
 func lrcPendingSet(chat, sender string, songs []scraper.LrclibSong, query string, mode lrcMode) {
 	lrcPending.Lock()
@@ -202,6 +202,9 @@ func handleLrclibMode(ctx context.Context, mctx *store.MessageContext, mode lrcM
 			return
 		}
 		lrcPendingSet(mctx.Chat.String(), mctx.Sender.String(), songs, query, mode)
+		for _, alt := range pendingAltSenders(mctx) {
+			lrcPendingSet(mctx.Chat.String(), alt, songs, query, mode)
+		}
 		_ = store.ReplyText(bg, mctx, formatLrcSearchList(query, songs))
 	}()
 	return nil

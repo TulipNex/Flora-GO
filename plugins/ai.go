@@ -14,9 +14,9 @@ import (
 	"wabot-go/internal/store"
 	"wabot-go/internal/timex"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/types"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/types"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -79,7 +79,9 @@ func handleAgentCommand(ctx context.Context, mctx *store.MessageContext) error {
 func agentUsage() string {
 	return "Flora Agent:\n" +
 		".agent model [nomor/nama]\n" +
+		".agent model add <nama> | del <nama>\n" +
 		".agent provider [nomor/nama]\n" +
+		".agent provider add <nama> <endpoint> | del <nama>\n" +
 		".agent status\n" +
 		".agent tools\n" +
 		".agent trust @user\n" +
@@ -306,7 +308,28 @@ func handleProviderSubcommand(ctx context.Context, mctx *store.MessageContext) e
 		return store.ReplyText(ctx, mctx, ai.FormatProviderList(ctx))
 	}
 
-	name := ai.ResolveProviderRef(arg)
+	// Subcommand registry: "add <nama> <endpoint>" / "del <nama>".
+	// Key provider dibaca dari env <NAMA>_API_KEY, jadi tambah provider
+	// hanya butuh nama + endpoint (tanpa secret di chat).
+	fields := strings.Fields(arg)
+	if len(fields) >= 1 && strings.EqualFold(fields[0], "add") {
+		if len(fields) != 3 {
+			return store.ReplyText(ctx, mctx, "Format: .agent provider add <nama> <endpoint-chat-completions>\nContoh: .agent provider add openagentic https://openagentic.id/api/v1/chat/completions")
+		}
+		if err := ai.AddProvider(ctx, fields[1], fields[2]); err != nil {
+			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal tambah provider: %v", err))
+		}
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Oke, provider *%s* ditambahkan. Isi API key di env %s lalu pilih modelnya.",
+			strings.ToLower(fields[1]), strings.ToUpper(strings.ReplaceAll(strings.ToLower(fields[1]), "-", "_"))+"_API_KEY"))
+	}
+	if len(fields) == 2 && strings.EqualFold(fields[0], "del") {
+		if err := ai.DelProvider(ctx, fields[1]); err != nil {
+			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal hapus provider: %v", err))
+		}
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Oke, provider *%s* dihapus.", strings.ToLower(fields[1])))
+	}
+
+	name := ai.ResolveProviderRef(ctx, arg)
 	if err := ai.SetActiveProvider(ctx, name); err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal ganti provider: %v\n\n%s", err, ai.FormatProviderList(ctx)))
 	}
@@ -327,7 +350,23 @@ func handleModelSubcommand(ctx context.Context, mctx *store.MessageContext) erro
 		return store.ReplyText(ctx, mctx, ai.FormatModelList(ctx))
 	}
 
-	name := ai.ResolveModelRef(ai.GetActiveProviderName(ctx), arg)
+	// Subcommand registry (provider yang SEDANG aktif): "add <nama>" /
+	// "del <nama>".
+	fields := strings.Fields(arg)
+	if len(fields) == 2 && strings.EqualFold(fields[0], "add") {
+		if err := ai.AddModel(ctx, fields[1]); err != nil {
+			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal tambah model: %v", err))
+		}
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Oke, model *%s* ditambahkan.", fields[1]))
+	}
+	if len(fields) == 2 && strings.EqualFold(fields[0], "del") {
+		if err := ai.DelModel(ctx, fields[1]); err != nil {
+			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal hapus model: %v", err))
+		}
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Oke, model *%s* dihapus.", fields[1]))
+	}
+
+	name := ai.ResolveModelRef(ctx, ai.GetActiveProviderName(ctx), arg)
 	if err := ai.SetActiveModel(ctx, name); err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal ganti model: %v\n\n%s", err, ai.FormatModelList(ctx)))
 	}
@@ -554,15 +593,24 @@ func HandleAIMessage(ctx context.Context, mctx *store.MessageContext, text strin
 		return nil
 	}
 
-	// Lock per-sesi: memastikan giliran percakapan sesi yang sama tidak
-	// pernah diproses tumpang tindih (mis. reply dua kali cepat beruntun).
-	resultText, err := ai.WithSenderLock(sessionKey, func() (string, error) {
+	// Lock per-sesi (non-blocking): pesan yang datang saat sesi yang sama
+	// masih diproses ditolak diam-diam — tidak antre serial, tidak ada LLM
+	// call tambahan, tidak ada bubble. Mencegah burst menumpuk giliran +
+	// bubble berurutan yang terlihat seperti spam.
+	resultText, ok, err := ai.TrySenderLock(sessionKey, func() (string, error) {
 		return processAITurn(ctx, mctx, sessionKey, text)
 	})
+	if !ok {
+		logfmt.Skip("Giliran AI sesi %s ditolak: sesi sibuk.\n", sessionKey)
+		return nil
+	}
 	if err != nil {
 		// Fase 4: pesan ramah ke user, detail teknis sudah dikirim ke owner
-		// oleh notifyOwner di dalam processAITurn.
-		return store.ReplyText(ctx, mctx, "Maaf, lagi ada gangguan nih. Coba lagi sebentar ya~")
+		// oleh notifyOwner di dalam processAITurn. Balasan ramah ini
+		// di-cooldown per chat (lihat sendFriendlyAIError): saat provider
+		// down + chat ramai, tiap giliran gagal tidak boleh membanjiri chat
+		// dengan bubble error berulang.
+		return sendFriendlyAIError(ctx, mctx, err)
 	}
 
 	return sendFloraReply(ctx, mctx, resultText)
@@ -873,6 +921,52 @@ var (
 )
 
 const ownerNotifyCooldown = 5 * time.Minute
+
+// userErrorCooldown: balasan ramah error AI ke chat dibatasi max 1 per
+// jendela ini PER CHAT — saat provider down + chat ramai, tiap giliran gagal
+// tidak boleh membanjiri chat dengan bubble "Maaf, lagi ada gangguan"
+// berulang. Error yang ditahan dihitung (suppressed) dan dilaporkan pada
+// balasan berikutnya. Mutex karena dipanggil dari banyak goroutine trigger
+// konkuren. Return nil saat ditahan supaya fallback di handler (yang juga
+// mengirim pesan error bila HandleAIMessage gagal) tidak ikut mengirim ganda.
+var (
+	userErrMu         sync.Mutex
+	userErrLast       = make(map[string]time.Time)
+	userErrSuppressed = make(map[string]int)
+)
+
+const userErrorCooldown = 5 * time.Minute
+
+// sendFriendlyAIError mengirim bubble ramah error AI dengan cooldown per chat.
+// Saat masih dalam jendela cooldown: tidak kirim apa-apa ke chat (diam),
+// cukup catat di console + hitung suppressed, return nil.
+// Penyebab antrean provider (ai.ProviderBusyMarker) dibalas dengan pesan
+// "lagi antre" yang jujur, bukan "gangguan".
+func sendFriendlyAIError(ctx context.Context, mctx *store.MessageContext, err error) error {
+	chat := mctx.Chat.String()
+
+	userErrMu.Lock()
+	if last, ok := userErrLast[chat]; ok && time.Since(last) < userErrorCooldown {
+		userErrSuppressed[chat]++
+		n := userErrSuppressed[chat]
+		userErrMu.Unlock()
+		logfmt.Skip("Balasan error AI ke %s ditahan (cooldown, +%d ditahan).\n", chat, n)
+		return nil
+	}
+	userErrLast[chat] = time.Now()
+	suppressed := userErrSuppressed[chat]
+	userErrSuppressed[chat] = 0
+	userErrMu.Unlock()
+
+	msg := "Maaf, lagi ada gangguan nih. Coba lagi sebentar ya~"
+	if err != nil && strings.Contains(err.Error(), ai.ProviderBusyMarker) {
+		msg = "Flora lagi antre menjawab chat lain nih, coba lagi sebentar ya~"
+	}
+	if suppressed > 0 {
+		msg += fmt.Sprintf("\n(+%d error serupa ditahan dalam 5 menit terakhir.)", suppressed)
+	}
+	return store.ReplyText(ctx, mctx, msg)
+}
 
 // logAITurnStart mencatat pembuka giliran AI UTUH (format blok MESSAGE).
 // Mode ringkas (AI_LOG_FULL=0) tidak mencetak apa pun di sini.

@@ -1,6 +1,6 @@
 # Flora GO
 
-Bot WhatsApp modular berbasis Go, memakai library [whatsmeow](https://github.com/tulir/whatsmeow). Dilengkapi downloader 7 platform (scraper-first + album media), command grup & owner lengkap, dan **AI agent Flora multi-provider** (NexaRouter / Ciora, default Ciora) yang owner-only dengan sistem trust, tool-calling, sesi percakapan, dan ingatan jangka panjang per user.
+Bot WhatsApp modular berbasis Go, memakai library [hypermeow](https://github.com/polymorfa/hypermeow) (fork whatsmeow). Dilengkapi downloader 7 platform (scraper-first + album media), command grup & owner lengkap, dan **AI agent Flora multi-provider** (Ciora / OpenAgentic, default Ciora — provider & model bisa ditambah/dihapus lewat command, khusus owner) dengan sistem trust, tool-calling, sesi percakapan, dan ingatan jangka panjang per user.
 
 ## Struktur Folder
 
@@ -17,8 +17,7 @@ wabot-go/
 │   │   ├── provider_types.go      # interface ProviderAdapter, GenerateParams, ToolCall
 │   │   ├── providers.go           # daftar provider/model, GetActiveProvider (baca dari SQLite + cache)
 │   │   ├── openai_common.go       # konversi bersama Content/Part <-> format OpenAI
-│   │   ├── nexarouter_adapter.go  # adapter NexaRouter (OpenAI-compatible, tools + fallback teks)
-│   │   ├── ciora_adapter.go       # adapter Ciora AI (OpenAI-compatible, tools + fallback teks, provider utama)
+│   │   ├── openai_adapter.go      # adapter generik SEMUA provider OpenAI-compatible (tools + fallback teks)
 │   │   ├── loop.go                # agent loop: generate -> eksekusi tool -> ulang (max 8 putaran)
 │   │   ├── registry.go            # registry tool AI + AgentContext
 │   │   ├── reliability.go         # retry error transient + notifikasi owner saat gagal
@@ -78,6 +77,7 @@ wabot-go/
 │   ├── serverinfo_sys_other.go    # stub non-Linux (fail-soft "-")
 │   ├── osinfo.go                  # .os (owner): OS + jaringan server (IP/ISP/lokasi via ip-api.com)
 │   ├── rssinfo.go                 # .rss (owner): memori proses (RSS + heap)
+│   ├── jadibot.go                 # .jadibot (owner, bot utama): pair/list/stop bot clone (session + group DB per nomor)
 │   ├── downloader.go              # .tiktok/.youtube/.instagram/.twitter/.facebook/.pinterest/.spotify + album + WebP + batas ukuran/durasi
 │   ├── ai.go                      # .agent (admin Flora: model/provider/status/trust/reset) + HandleAIMessage
 │   ├── sticker.go                 # .sticker / .s (gambar/video -> stiker webp via ffmpeg)
@@ -102,7 +102,7 @@ wabot-go/
 ├── run.sh                         # startup script untuk Pterodactyl (source .env di awal)
 ├── deploy.ps1                     # script build + rclone copyto ke panel (dijalankan dari laptop)
 ├── push.ps1                       # script git add/commit/push cepat
-├── go.mod / go.sum               # Go 1.26+, whatsmeow terbaru
+├── go.mod / go.sum               # Go 1.26+, hypermeow terbaru
 ├── .env / .env.example
 └── .gitignore
 ```
@@ -166,7 +166,7 @@ func RegisterHello(r *Registry) {
 
 2. Jalankan `go run .` — command `.hello` langsung aktif. `RegisterAll` di `registry.go` otomatis menjalankan semua fungsi yang terdaftar lewat `init()`, dan `.menu` otomatis membaca semua command yang ada tanpa perlu update manual.
 
-Pola yang sama berlaku untuk **tool AI** — buat file baru di `internal/ai/tools/native/` (tool murni, tanpa akses WhatsApp) atau `internal/ai/tools/bridge/` (tool yang butuh whatsmeow client), lalu daftarkan lewat `ai.RegisterTool(...)` di dalam `init()`. Jangan lupa import package-nya sebagai side-effect import di `main.go` (lihat baris `_ "wabot-go/internal/ai/tools/bridge"`), kalau tidak tool-nya tidak akan pernah terdaftar.
+Pola yang sama berlaku untuk **tool AI** — buat file baru di `internal/ai/tools/native/` (tool murni, tanpa akses WhatsApp) atau `internal/ai/tools/bridge/` (tool yang butuh WhatsApp client), lalu daftarkan lewat `ai.RegisterTool(...)` di dalam `init()`. Jangan lupa import package-nya sebagai side-effect import di `main.go` (lihat baris `_ "wabot-go/internal/ai/tools/bridge"`), kalau tidak tool-nya tidak akan pernah terdaftar.
 
 ## 3. Build Binary untuk Pterodactyl
 
@@ -220,8 +220,7 @@ Diset lewat file `.env` di root panel (`run.sh` sudah otomatis `source .env` di 
 |------------------------|----------------------------------------------------------------------------|
 | `LOGIN_METHOD`         | `qr` atau `pairing`                                                        |
 | `PHONE_NUMBER`         | Nomor HP bot untuk pairing (format `62812xxxxxxx`)                         |
-| `NEXAROUTER_API_KEY`   | API key NexaRouter (provider `nexarouter`, https://router.nexaworks.web.id) |
-| `CIORA_API_KEY`        | API key Ciora AI (provider utama `ciora`, https://ciora.id) |
+| `<NAMA>_API_KEY`      | API key provider AI (aturan seragam: `CIORA_API_KEY`, `OPENAGENTIC_API_KEY`, …) |
 | `MENU_LINK`            | Link kartu `.menu` (default: wa.me nomor bot)                              |
 | `MENU_TITLE`           | Judul kartu `.menu` (default: nama + versi bot)                            |
 | `MENU_DESC`            | Deskripsi kartu `.menu` (default: jumlah command)                          |
@@ -247,6 +246,7 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 | Command | Keterangan |
 |---|---|
 | `.tiktok` / `.tt`, `.youtube` / `.yt`, `.instagram` / `.ig`, `.twitter` / `.x`, `.facebook` / `.fb`, `.pinterest` / `.pin`, `.spotify` / `.sp` + `<url>` | Download via scraper API per platform (YouTube primer yt-dlp; lainnya scraper-first + fallback) |
+| `.douyin` / `.dy` + `<url/judul>` | Download TikTok gaya Baileys: foto satu-per-satu, video + caption, audio mp3 (tikwm → siputzx) |
 | `.youtubemp3` / `.ytmp3`, `.youtube --mp3` | Audio saja |
 | Perilaku umum | Carousel/foto multi-item digabung **1 bubble album** (tanpa batas jumlah); WebP statis→JPEG / animasi→MP4 otomatis; video asing di-transcode ke MP4/H.264/AAC agar bisa diputar; thumbnail mini agar preview tampil |
 | Batas (keputusan owner) | Media ≤100MB kirim normal; video YouTube 100–200MB jadi **dokumen** (>200MB ditolak); durasi YouTube maks **35 menit**; antrean maks 2 bersamaan |
@@ -279,10 +279,17 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 | `.get <url>` | Fetch URL (sidik TLS browser, anti-SSRF); >10MB jadi dokumen |
 | `.delete` / `.del` | Hapus pesan yang di-reply |
 
+### Dokumen
+| Command | Keterangan |
+|---|---|
+| `.pdfmerge` | Gabung PDF via staging (mulai/kirim/gabung/daftar/nama/batal) |
+| `.compress` / `.split` / `.jpgpdf` / `.watermark` / `.protect` / `.unlock` | Alat PDF lokal via pdfcpu (offline, maks 50MB) |
+
 ### Owner
 | Command | Keterangan |
 |---|---|
 | `.server` / `.si`, `.os`, `.rss` | Info server, OS + jaringan, memori proses (khusus owner) |
+| `.jadibot qr/list/stop/start/hapus` | Kelola bot clone via scan QR (stop=start ulang tanpa QR, hapus=total + arsip grup) |
 | `.call <target>[\|<jam>]` | Panggilan WhatsApp keluar / terjadwal WITA (tersimpan di SQLite, tahan restart) |
 | `.ban` / `.unban` / `.mode` / `.join` / `.leave` | Ban user & grup, mode self/public, keluar-masuk grup via link |
 | `$ <perintah>` | Eksekusi shell di server (async, timeout 120 dtk, output dipotong) |
@@ -303,16 +310,16 @@ Bot merespons pesan **natural** (tanpa prefix) lewat trigger berikut — **hanya
 
 ### Multi-Provider
 
-Dua provider tersedia, bisa diganti kapan saja lewat `.agent provider` (khusus owner, default `ciora`):
+Provider & model dikelola lewat command (khusus owner, default `ciora`):
 
-| Provider | Endpoint | Tool-calling | Default Model |
-|---|---|---|---|
-| `nexarouter` | router.nexaworks.web.id | fallback teks* | `deepseek-v4-flash` |
-| `ciora` | ciora.id | ✅ | `deepseek/deepseek-v4.1-flash` |
+| Provider | Endpoint | Default Model |
+|---|---|---|
+| `ciora` | ciora.id | `ciora-ai-free` |
+| `openagentic` | aimurah.my.id (canonical docs; openagentic.id alias) | `claude-sonnet-4.5` |
 
-> **Catatan NexaRouter/Ciora:** adapter mencoba mengirim field `tools`; kalau server menolak (400 soal tools), otomatis fallback sekali tanpa tools (mode chat teks). Kalau tool (kick/promote) tidak pernah jalan di provider ini, berarti server memang menolak tools.
+> **Catatan tool-calling:** adapter mencoba mengirim field `tools`; kalau server menolak (400 soal tools), otomatis fallback sekali tanpa tools (mode chat teks). Kalau tool (kick/promote) tidak pernah jalan di provider ini, berarti server memang menolak tools.
 
-Model bisa diganti per provider lewat `.agent model <nama>` (daftar model hardcode di `internal/ai/providers.go`). Pengaturan provider/model **global** (berlaku untuk semua user) dan persist di SQLite.
+Model bisa diganti per provider lewat `.agent model <nama>`; provider/model baru bisa ditambah (`provider add`, `model add`) atau dihapus (`provider del`, `model del`) langsung dari chat — daftar tersimpan di SQLite (`internal/store/aisettingsdb.go`), bukan hardcode. API key tiap provider dibaca dari `.env` (`<NAMA>_API_KEY`). Pengaturan provider/model **global** (berlaku untuk semua user).
 
 ### Kemampuan AI
 
@@ -332,7 +339,7 @@ Model bisa diganti per provider lewat `.agent model <nama>` (daftar model hardco
 
 - **Jangan hapus folder `data/` maupun `wabot-tmp/`** di panel — di `data/` ada session login WhatsApp (`session.db`), database grup (`group.db`: setting, ban, trust Flora, warn, autodownload), dan database AI (`ai.db` berisi histori percakapan, fakta user, pengaturan provider); di `wabot-tmp/` ada file kerja sementara. Kalau `data/` dihapus, bot harus login ulang dari nol dan seluruh data di atas hilang.
 - Nomor yang dipakai bot sebaiknya bukan nomor utama sehari-hari, untuk menghindari risiko banned mengganggu akun pribadi.
-- whatsmeow adalah library tidak resmi (reverse-engineered protokol WhatsApp Web) — pemakaian berlebihan/spam berisiko nomor terkena banned oleh WhatsApp.
+- hypermeow (fork whatsmeow) adalah library tidak resmi (reverse-engineered protokol WhatsApp Web) — pemakaian berlebihan/spam berisiko nomor terkena banned oleh WhatsApp.
 - Pengecekan admin grup (`IsSenderAdmin`/`IsBotAdmin`) membandingkan JID lewat `.User`, nomor telepon, **dan** LID sekaligus untuk menghindari kegagalan akibat dual-format identitas WhatsApp (LID vs nomor telepon).
 - Fitur AI bergantung pada API key di `.env` — jika provider aktif tapi key-nya kosong, chat AI akan gagal (bot tetap jalan untuk command lain). Error AI yang gagal total dilaporkan ke nomor owner via WhatsApp.
 - Bot butuh **ffmpeg** di PATH server — untuk `.sticker`, thumbnail video, konversi WebP, dan transcode video asing. Tanpa ffmpeg, fitur-fitur itu membalas error.

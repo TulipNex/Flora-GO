@@ -8,7 +8,7 @@ import (
 
 	"wabot-go/internal/logfmt"
 
-	"go.mau.fi/whatsmeow/types"
+	"github.com/polymorfa/hypermeow/types"
 )
 
 // IsGroup mengecek apakah chat tujuan pesan ini adalah grup (bukan chat pribadi).

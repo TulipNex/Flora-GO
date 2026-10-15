@@ -6,8 +6,8 @@ import (
 
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/types/events"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/types/events"
 )
 
 // CheckGameInput mencegat pesan NON-command yang merupakan input game

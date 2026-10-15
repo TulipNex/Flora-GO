@@ -11,7 +11,7 @@ import (
 	"wabot-go/internal/store"
 	"wabot-go/internal/timex"
 
-	"go.mau.fi/whatsmeow/types"
+	"github.com/polymorfa/hypermeow/types"
 )
 
 func init() {
@@ -42,6 +42,11 @@ func RegisterMenu(r *Registry) {
 				// Command hidden (privat, mis. tool owner) tidak masuk menu
 				// APAPUN — bahkan untuk owner sekalipun.
 				if cmd.Hidden {
+					continue
+				}
+				// Di clone (jadibot), command main-only disembunyikan supaya
+				// menu tidak menawarkan yang bakal ditolak router.
+				if cmd.CloneBlocked() && !store.IsMainClient(mctx.Client) {
 					continue
 				}
 				cat := cmd.Category
@@ -116,9 +121,9 @@ func RegisterMenu(r *Registry) {
 			// Thumbnail & favicon: nilai kustom DB (.thumbnail/.favicon)
 			// menang atas .env; gagal baca DB = fallback .env (fail-soft,
 			// kartu tetap terkirim tanpa gambar kustom).
-			thumbURL := resolveMenuThumbURL(ctx)
+			thumbURL := resolveMenuThumbURL(ctx, mctx)
 			faviconURL := strings.TrimSpace(config.MenuFaviconURL)
-			if custom, err := store.Groups().GetMenuFaviconURL(ctx); err == nil && custom != "" {
+			if custom, err := store.GroupsFor(mctx.Client).GetMenuFaviconURL(ctx); err == nil && custom != "" {
 				faviconURL = custom
 			}
 			if err := messaging.SendLinkCard(ctx, mctx, messaging.LinkCard{
@@ -140,10 +145,11 @@ func RegisterMenu(r *Registry) {
 // resolveMenuThumbURL mengembalikan URL thumbnail kartu: kustom DB
 // (.thumbnail) menang atas .env (MENU_THUMB_URL); gagal baca DB = fallback
 // .env (fail-soft). Dipakai menu + shareloc (preview lokasi) supaya satu
-// aturan prioritas dipakai di semua tempat.
-func resolveMenuThumbURL(ctx context.Context) string {
+// aturan prioritas dipakai di semua tempat. DB dipilih per pemilik client
+// (bot utama vs clone) supaya thumbnail kustom tidak bocor antar bot.
+func resolveMenuThumbURL(ctx context.Context, mctx *store.MessageContext) string {
 	thumbURL := strings.TrimSpace(config.MenuThumbURL)
-	if custom, err := store.Groups().GetMenuThumbURL(ctx); err == nil && custom != "" {
+	if custom, err := store.GroupsFor(mctx.Client).GetMenuThumbURL(ctx); err == nil && custom != "" {
 		thumbURL = custom
 	}
 	return thumbURL

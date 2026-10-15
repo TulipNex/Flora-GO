@@ -15,6 +15,7 @@ const (
 	CategoryGrup     = "Grup"
 	CategoryAbsensi  = "Absensi"
 	CategoryMedia    = "Media"
+	CategoryDokumen  = "Dokumen"
 	CategoryUnduh    = "Unduh"
 	CategoryAI       = "AI"
 	CategoryAlat     = "Alat"
@@ -41,6 +42,7 @@ var CategoryOrder = []string{
 	CategoryGrup,
 	CategoryAbsensi,
 	CategoryMedia,
+	CategoryDokumen,
 	CategoryUnduh,
 	CategoryAI,
 	CategoryAlat,
@@ -56,7 +58,28 @@ type Command struct {
 	Description string   // dipakai di menu bantuan
 	Category    string   // kategori fungsi, wajib diisi salah satu CategoryXxx di atas
 	Hidden      bool     // true = disembunyikan dari SEMUA tampilan .menu (dipakai command privat owner)
+	MainOnly    bool     // true = hanya jalan di bot utama; di clone (jadibot) ditolak router (lihat CloneBlocked)
 	Handler     func(ctx context.Context, mctx *store.MessageContext) error
+}
+
+// cloneBlockedCategories adalah kategori yang selalu main-only: seluruh
+// command Owner/Hidden/AI/Absensi tidak tersedia di clone, tanpa perlu
+// menandai satu per satu. Lihat matriks akses jadibot di README.
+var cloneBlockedCategories = map[string]bool{
+	CategoryOwner:   true,
+	CategoryHidden:  true,
+	CategoryAI:      true,
+	CategoryAbsensi: true,
+}
+
+// CloneBlocked true bila command ini tidak boleh jalan di bot clone —
+// karena flag MainOnly eksplisit ATAU kategorinya masuk daftar blokir.
+// Dipakai router (internal/handler) sebelum Handler dijalankan.
+func (cmd Command) CloneBlocked() bool {
+	if cmd.MainOnly {
+		return true
+	}
+	return cloneBlockedCategories[cmd.Category]
 }
 
 // Registry menyimpan semua command yang terdaftar, key = nama command.

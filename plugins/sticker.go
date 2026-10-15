@@ -10,10 +10,11 @@ import (
 	"strings"
 
 	"wabot-go/internal/config"
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/proto/waE2E"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -45,17 +46,20 @@ func RegisterSticker(r *Registry) {
 				mediaBytes, err = mctx.Client.Download(ctx, vid)
 			}
 			if err != nil {
-				return store.ReplyText(ctx, mctx, "Gagal download media: "+err.Error())
+				logfmt.Warn("sticker: download gagal (%v)\n", err)
+				return store.ReplyText(ctx, mctx, ErrMsg("Stiker", "Gagal unduh media, coba lagi sebentar."))
 			}
 
 			webpBytes, err := convertToStickerWebp(mediaBytes, isVideo)
 			if err != nil {
-				return store.ReplyText(ctx, mctx, "Gagal convert ke stiker: "+err.Error())
+				logfmt.Warn("sticker: convert gagal (%v)\n", err)
+				return store.ReplyText(ctx, mctx, ErrMsg("Stiker", "Gagal convert ke stiker, coba file lain."))
 			}
 
 			webpBytes, err = store.WriteStickerExif(webpBytes, config.StickerPackname, config.StickerAuthor)
 			if err != nil {
-				return store.ReplyText(ctx, mctx, "Gagal set metadata stiker: "+err.Error())
+				logfmt.Warn("sticker: exif gagal (%v)\n", err)
+				return store.ReplyText(ctx, mctx, ErrMsg("Stiker", "Gagal siapkan stiker, coba lagi."))
 			}
 
 			label := "image->sticker"
@@ -63,7 +67,8 @@ func RegisterSticker(r *Registry) {
 				label = "video->sticker"
 			}
 			if err := sendStickerWebp(ctx, mctx, webpBytes, "sticker", label); err != nil {
-				return store.ReplyText(ctx, mctx, "Gagal kirim stiker: "+err.Error())
+				logfmt.Warn("sticker: kirim gagal (%v)\n", err)
+				return store.ReplyText(ctx, mctx, ErrMsg("Stiker", "Gagal kirim stiker, coba lagi."))
 			}
 			return nil
 		},
@@ -97,17 +102,20 @@ func BuildAndSendSticker(ctx context.Context, mctx *store.MessageContext, packna
 		mediaBytes, err = mctx.Client.Download(ctx, vid)
 	}
 	if err != nil {
-		return fmt.Errorf("gagal download media: %w", err)
+		logfmt.Warn("sticker(tool): download gagal (%v)\n", err)
+		return fmt.Errorf("gagal download media, coba lagi sebentar")
 	}
 
 	webpBytes, err := convertToStickerWebp(mediaBytes, isVideo)
 	if err != nil {
-		return fmt.Errorf("gagal convert ke stiker: %w", err)
+		logfmt.Warn("sticker(tool): convert gagal (%v)\n", err)
+		return fmt.Errorf("gagal convert ke stiker, coba file lain")
 	}
 
 	webpBytes, err = store.WriteStickerExif(webpBytes, packname, author)
 	if err != nil {
-		return fmt.Errorf("gagal set metadata stiker: %w", err)
+		logfmt.Warn("sticker(tool): exif gagal (%v)\n", err)
+		return fmt.Errorf("gagal siapkan stiker, coba lagi")
 	}
 
 	label := "image->sticker"
@@ -115,7 +123,8 @@ func BuildAndSendSticker(ctx context.Context, mctx *store.MessageContext, packna
 		label = "video->sticker"
 	}
 	if err := sendStickerWebp(ctx, mctx, webpBytes, "sticker", label); err != nil {
-		return fmt.Errorf("gagal kirim stiker: %w", err)
+		logfmt.Warn("sticker(tool): kirim gagal (%v)\n", err)
+		return fmt.Errorf("gagal kirim stiker, coba lagi")
 	}
 	return nil
 }
@@ -162,6 +171,12 @@ func sendStickerWebp(ctx context.Context, mctx *store.MessageContext, webp []byt
 	return nil
 }
 
+// maxStickerVideoSeconds adalah durasi maksimum video untuk stiker
+// (keputusan owner): convert video panjang menahan CPU/RAM panel lama —
+// tolak di depan via metadata WhatsApp (tanpa download/ffprobe). 0 =
+// durasi tak diketahui (metadata kosong) = diloloskan.
+const maxStickerVideoSeconds = 10
+
 // extractStickerMedia mengambil ImageMessage/VideoMessage baik dari pesan langsung
 // (kirim media dengan caption .sticker) maupun dari pesan yang di-reply (quoted).
 //
@@ -175,6 +190,9 @@ func extractStickerMedia(mctx *store.MessageContext) (*waE2E.ImageMessage, *waE2
 			return img, nil, nil
 		}
 		if vid := msg.GetVideoMessage(); vid != nil {
+			if vid.GetSeconds() > maxStickerVideoSeconds {
+				return nil, nil, fmt.Errorf("video kepanjangan (maks %d detik untuk stiker)", maxStickerVideoSeconds)
+			}
 			return nil, vid, nil
 		}
 	}
@@ -184,6 +202,9 @@ func extractStickerMedia(mctx *store.MessageContext) (*waE2E.ImageMessage, *waE2
 			return img, nil, nil
 		}
 		if vid := quoted.GetVideoMessage(); vid != nil {
+			if vid.GetSeconds() > maxStickerVideoSeconds {
+				return nil, nil, fmt.Errorf("video kepanjangan (maks %d detik untuk stiker)", maxStickerVideoSeconds)
+			}
 			return nil, vid, nil
 		}
 	}

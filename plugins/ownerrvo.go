@@ -10,8 +10,8 @@ import (
 	"wabot-go/internal/messaging"
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/proto/waE2E"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
 	"google.golang.org/protobuf/proto"
 )
 

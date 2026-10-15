@@ -1,9 +1,9 @@
 package ai
 
 // Konversi bersama format internal Content/Part (universal) <-> format
-// OpenAI (messages/tool_calls) untuk semua provider OpenAI-compatible
-// (NexaRouter, Ciora). Dipindah dari openrouter_adapter.go saat provider
-// google/openrouter dihapus — logika konversi tidak berubah.
+// OpenAI (messages/tool_calls) untuk semua provider OpenAI-compatible.
+// Dipindah dari openrouter_adapter.go saat provider google/openrouter
+// dihapus — logika konversi tidak berubah.
 
 import (
 	"encoding/base64"

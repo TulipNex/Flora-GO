@@ -1,6 +1,6 @@
 package store
 
-import "go.mau.fi/whatsmeow/types/events"
+import "github.com/polymorfa/hypermeow/types/events"
 
 // GetQuotedBotText mengecek apakah pesan masuk (evt) adalah reply ke
 // sebuah pesan yang PERNAH dikirim bot, dan kalau ya, mengembalikan TEKS

@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -361,6 +362,24 @@ func (a *AbsensiDB) AddRecord(sessionID int64, sender, name string, ts int64, la
 	return n > 0, nil
 }
 
+// HasRecord true bila sesi ini sudah punya baris kehadiran untuk sender
+// tersebut. Dipakai CheckAbsensiCheckin untuk first-valid-wins lintas format
+// JID (LID↔PN): pemanggil mengecek SEMUA bentuk identitas pengirim sebelum
+// AddRecord, supaya flip format tidak mencatat orang yang sama dua kali.
+func (a *AbsensiDB) HasRecord(sessionID int64, sender string) (bool, error) {
+	if a == nil || a.db == nil || sessionID == 0 || sender == "" {
+		return false, fmt.Errorf("absensi mati")
+	}
+	var n int
+	err := a.db.QueryRow(
+		`SELECT COUNT(*) FROM absensi_records WHERE session_id = ? AND sender = ?`,
+		sessionID, sender).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // ListRecords mengembalikan catatan satu sesi urut waktu masuk.
 func (a *AbsensiDB) ListRecords(sessionID int64) ([]AbsensiRecord, error) {
 	if a == nil || a.db == nil {
@@ -437,6 +456,15 @@ func (a *AbsensiDB) ListOpenSessions() []AbsensiSession {
 func (a *AbsensiDB) SetSchedule(chat, days string, startMin, endMin int) error {
 	if a == nil || a.db == nil || chat == "" {
 		return fmt.Errorf("absensi mati")
+	}
+	if strings.TrimSpace(days) == "" {
+		return fmt.Errorf("hari jadwal kosong")
+	}
+	if startMin < 0 || startMin >= 24*60 {
+		return fmt.Errorf("jam mulai di luar 00.00–24.00")
+	}
+	if endMin <= startMin || endMin > 24*60 {
+		return fmt.Errorf("jam selesai harus setelah jam mulai (maks 24.00)")
 	}
 	_, err := a.db.Exec(
 		`INSERT INTO absensi_schedules (chat, days, start_min, end_min, enabled, updated_at)

@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/purpshell/meowcaller"
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/types"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/types"
 	"google.golang.org/protobuf/proto"
 
 	"wabot-go/internal/logfmt"
@@ -49,8 +49,8 @@ func InitCallClient(wa *whatsmeow.Client) {
 
 		if mp3, err := meowcaller.MP3File("greeting.mp3"); err != nil {
 			logfmt.Error("Gagal membuka/decode greeting.mp3: %v\n", err)
-		} else if err := call.Play(mp3); err != nil {
-			logfmt.Error("Gagal memutar greeting.mp3: %v\n", err)
+		} else {
+			call.Play(mp3)
 		}
 
 		call.OnEnd(func(reason string) {
@@ -317,8 +317,8 @@ func (p *callProgress) onAccept(call *meowcaller.Call) {
 	p.edit(context.Background(), "Terhubung dengan "+phone+"...")
 	if mp3, err := meowcaller.MP3File("greeting.mp3"); err != nil {
 		logfmt.Error("Gagal membuka/decode greeting.mp3: %v\n", err)
-	} else if err := call.Play(mp3); err != nil {
-		logfmt.Error("Gagal memutar greeting.mp3: %v\n", err)
+	} else {
+		call.Play(mp3)
 	}
 }
 

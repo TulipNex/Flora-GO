@@ -15,9 +15,9 @@ import (
 	"wabot-go/internal/messaging"
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/types/events"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/types/events"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -53,25 +53,25 @@ func handleAntistatus(ctx context.Context, mctx *store.MessageContext) error {
 	arg := strings.ToLower(strings.TrimSpace(strings.Join(mctx.Args, " ")))
 	switch arg {
 	case "on", "aktif", "enable":
-		if err := store.Groups().SetAntistatus(ctx, mctx.Chat.String(), true); err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal menyalakan antistatus: %v", err))
+		if err := store.GroupsFor(mctx.Client).SetAntistatus(ctx, mctx.Chat.String(), true); err != nil {
+			return store.ReplyText(ctx, mctx, ErrMsg("Antistatus", fmt.Sprintf("Gagal menyalakan: %v", err)))
 		}
-		return store.ReplyText(ctx, mctx, "Antistatus *aktif* — status grup dari orang lain otomatis dihapus (bot harus admin; status buatan bot sendiri tidak ikut dihapus).")
+		return store.ReplyText(ctx, mctx, Block("Antistatus", Row("Status", "aktif"), "Status grup dari orang lain otomatis dihapus (bot harus admin; status buatan bot sendiri tidak ikut dihapus)."))
 	case "off", "mati", "disable":
-		if err := store.Groups().SetAntistatus(ctx, mctx.Chat.String(), false); err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal mematikan antistatus: %v", err))
+		if err := store.GroupsFor(mctx.Client).SetAntistatus(ctx, mctx.Chat.String(), false); err != nil {
+			return store.ReplyText(ctx, mctx, ErrMsg("Antistatus", fmt.Sprintf("Gagal mematikan: %v", err)))
 		}
-		return store.ReplyText(ctx, mctx, "Antistatus *mati*.")
+		return store.ReplyText(ctx, mctx, Block("Antistatus", Row("Status", "mati")))
 	default:
-		on, err := store.Groups().IsAntistatusOn(ctx, mctx.Chat.String())
+		on, err := store.GroupsFor(mctx.Client).IsAntistatusOn(ctx, mctx.Chat.String())
 		if err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca status antistatus: %v", err))
+			return store.ReplyText(ctx, mctx, ErrMsg("Antistatus", fmt.Sprintf("Gagal baca status: %v", err)))
 		}
 		status := "mati"
 		if on {
 			status = "aktif"
 		}
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Antistatus grup ini: *%s*\n\nPakai `.antistatus on` / `.antistatus off` untuk mengubah.", status))
+		return store.ReplyText(ctx, mctx, Block("Antistatus", Row("Status", status), "Ubah: `.antistatus on` / `.antistatus off`."))
 	}
 }
 
@@ -98,7 +98,7 @@ func CheckAntistatus(client *whatsmeow.Client, evt *events.Message) bool {
 		return false
 	}
 	ctx := context.Background()
-	on, err := store.Groups().IsAntistatusOn(ctx, evt.Info.Chat.String())
+	on, err := store.GroupsFor(client).IsAntistatusOn(ctx, evt.Info.Chat.String())
 	if err != nil {
 		logfmt.Warn("antistatus: baca toggle gagal (%v)\n", err)
 		return false

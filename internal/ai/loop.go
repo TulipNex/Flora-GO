@@ -14,6 +14,22 @@ import (
 // tanpa pernah menghasilkan jawaban final.
 const MaxLoops = 8
 
+// TurnToolCache menyimpan hasil eksekusi tool dalam SATU giliran user
+// (satu pesan pemicu), dibagikan lintas attempt retry. Key = nama tool +
+// args JSON stabil; value = output yang dikembalikan ke model (termasuk
+// prefix "[TOOL_GAGAL]" bila eksekusi gagal). Tujuannya mencegah side-effect
+// ganda: tanpa cache, RunAgentLoopWithRetry yang mengulang RunAgentLoop utuh
+// akan mengeksekusi ulang tool yang sudah sukses mengirim pesan/tag/telepon
+// di attempt sebelumnya (mis. tag_all terkirim 2-3x).
+type TurnToolCache map[string]string
+
+// turnToolKey membangun kunci cache stabil untuk satu tool call.
+// Memakai aiJSON (json.Marshal, key map terurut) supaya urutan key args
+// yang berbeda dari provider tetap menghasilkan kunci yang sama.
+func turnToolKey(name string, args map[string]interface{}) string {
+	return name + ":" + aiJSON(args)
+}
+
 // RunAgentLoop menjalankan satu giliran percakapan penuh: kirim history
 // ke provider, kalau provider minta tool maka dieksekusi dan hasilnya
 // dikirim balik, diulang sampai provider menghasilkan teks final atau
@@ -23,7 +39,15 @@ const MaxLoops = 8
 // ini tidak menambahkannya sendiri, supaya pemanggil (plugins/ai.go)
 // yang mengatur kapan pesan user ditambahkan (relevan untuk penyimpanan
 // ke SessionStore/SQLite).
-func RunAgentLoop(actx *AgentContext, provider ProviderAdapter, history []Content, systemPrompt string) (string, error) {
+//
+// cache boleh nil (dibuatkan baru per panggilan). Pemanggil retry
+// (RunAgentLoopWithRetry) WAJIB membuat satu cache per giliran dan
+// meneruskannya ke tiap attempt supaya tool yang sudah dieksekusi tidak
+// dijalankan ulang.
+func RunAgentLoop(actx *AgentContext, provider ProviderAdapter, history []Content, systemPrompt string, cache TurnToolCache) (string, error) {
+	if cache == nil {
+		cache = make(TurnToolCache)
+	}
 	current := append([]Content{}, history...)
 	loopStart := time.Now()
 	sessionKey := BuildSessionKey(actx.IsGroup, actx.ChatJID, actx.SenderJID)
@@ -50,9 +74,8 @@ func RunAgentLoop(actx *AgentContext, provider ProviderAdapter, history []Conten
 		// supaya provider "ingat" dia baru saja meminta tool tersebut.
 		// PENTING ID (di FunctionCall) WAJIB diikutsertakan apa adanya
 		// persis seperti yang dikembalikan model: provider OpenAI-compatible
-		// (NexaRouter/Ciora) mensyaratkan tool_call_id pada balasan
-		// role="tool" cocok PERSIS dengan id yang diterbitkan di sini
-		// (lihat types.go, tag json:"-").
+		// mensyaratkan tool_call_id pada balasan role="tool" cocok PERSIS
+		// dengan id yang diterbitkan di sini (lihat types.go, tag json:"-").
 		// Lihat catatan lengkap di types.go pada Part/FunctionCall dan di
 		// provider_types.go pada struct ToolCall.
 		modelParts := make([]Part, 0, len(resp.ToolCalls)+1)
@@ -75,17 +98,26 @@ func RunAgentLoop(actx *AgentContext, provider ProviderAdapter, history []Conten
 		seen := map[string]bool{}
 		var responseParts []Part
 		for _, tc := range resp.ToolCalls {
-			key := fmt.Sprintf("%s:%v", tc.Name, tc.Args)
+			key := turnToolKey(tc.Name, tc.Args)
 			var output, status string
+			var toolMs int64
 			if seen[key] {
 				output = "[DILEWATI] Tool ini sudah dipanggil dengan argumen yang sama pada giliran ini."
 				status = "dilewati"
+				logToolFull(sessionKey, tc, output, i, 0, status)
+			} else if cached, ok := cache[key]; ok {
+				// Tool ini sudah dieksekusi di attempt sebelumnya dalam
+				// giliran yang sama — pakai ulang hasilnya, JANGAN eksekusi
+				// ulang (mencegah aksi WA ganda saat retry).
+				seen[key] = true
+				output = cached
+				status = "cache"
 				logToolFull(sessionKey, tc, output, i, 0, status)
 			} else {
 				seen[key] = true
 				toolStart := time.Now()
 				result, execErr := CallTool(actx, tc.Name, tc.Args)
-				toolMs := time.Since(toolStart).Milliseconds()
+				toolMs = time.Since(toolStart).Milliseconds()
 				if execErr != nil {
 					output = fmt.Sprintf("[TOOL_GAGAL] %s", execErr.Error())
 					status = "gagal"
@@ -93,6 +125,10 @@ func RunAgentLoop(actx *AgentContext, provider ProviderAdapter, history []Conten
 					output = result
 					status = "ok"
 				}
+				// Cache hasil (sukses maupun gagal): kegagalan pun di-cache
+				// karena tool side-effect bisa setengah jalan (mis. pesan
+				// terkirim tapi return error) — eksekusi ulang berisiko ganda.
+				cache[key] = output
 				logToolFull(sessionKey, tc, output, i, toolMs, status)
 			}
 			responseParts = append(responseParts, Part{

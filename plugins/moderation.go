@@ -11,10 +11,10 @@ import (
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/types"
-	"go.mau.fi/whatsmeow/types/events"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/types"
+	"github.com/polymorfa/hypermeow/types/events"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -103,25 +103,25 @@ func handleAntilink(ctx context.Context, mctx *store.MessageContext) error {
 	arg := strings.ToLower(strings.TrimSpace(strings.Join(mctx.Args, " ")))
 	switch arg {
 	case "on", "aktif", "enable":
-		if err := store.Groups().SetAntilink(ctx, mctx.Chat.String(), true); err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal menyalakan antilink: %v", err))
+		if err := store.GroupsFor(mctx.Client).SetAntilink(ctx, mctx.Chat.String(), true); err != nil {
+			return store.ReplyText(ctx, mctx, ErrMsg("Antilink", fmt.Sprintf("Gagal menyalakan: %v", err)))
 		}
-		return store.ReplyText(ctx, mctx, "Antilink *aktif* — link grup WhatsApp lain otomatis dihapus + warn (link grup ini sendiri tetap boleh).")
+		return store.ReplyText(ctx, mctx, Block("Antilink", Row("Status", "aktif"), "Link grup WhatsApp lain otomatis dihapus + warn (link grup ini sendiri tetap boleh)."))
 	case "off", "mati", "disable":
-		if err := store.Groups().SetAntilink(ctx, mctx.Chat.String(), false); err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal mematikan antilink: %v", err))
+		if err := store.GroupsFor(mctx.Client).SetAntilink(ctx, mctx.Chat.String(), false); err != nil {
+			return store.ReplyText(ctx, mctx, ErrMsg("Antilink", fmt.Sprintf("Gagal mematikan: %v", err)))
 		}
-		return store.ReplyText(ctx, mctx, "Antilink *mati*.")
+		return store.ReplyText(ctx, mctx, Block("Antilink", Row("Status", "mati")))
 	default:
-		on, err := store.Groups().IsAntilinkOn(ctx, mctx.Chat.String())
+		on, err := store.GroupsFor(mctx.Client).IsAntilinkOn(ctx, mctx.Chat.String())
 		if err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca status antilink: %v", err))
+			return store.ReplyText(ctx, mctx, ErrMsg("Antilink", fmt.Sprintf("Gagal baca status: %v", err)))
 		}
 		status := "mati"
 		if on {
 			status = "aktif"
 		}
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Antilink grup ini: *%s*\n\nPakai `.antilink on` / `.antilink off` untuk mengubah.", status))
+		return store.ReplyText(ctx, mctx, Block("Antilink", Row("Status", status), "Ubah: `.antilink on` / `.antilink off`."))
 	}
 }
 
@@ -131,7 +131,7 @@ func handleWarnCmd(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	target, err := resolveTargetJID(mctx)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, err.Error())
+		return store.ReplyText(ctx, mctx, Block("Warn", Row("Cara", ".warn @user / reply pesan target")))
 	}
 	return giveWarn(ctx, mctx.Client, mctx.Chat, mctx.Sender, target.ToNonAD(), mctx.RawEvt.Info.ID, mctx.RawEvt.Message, "manual oleh admin")
 }
@@ -142,23 +142,23 @@ func handleUnwarn(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	target, err := resolveTargetJID(mctx)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, err.Error())
+		return store.ReplyText(ctx, mctx, Block("Unwarn", Row("Cara", ".unwarn @user / reply pesan target")))
 	}
 	bare := target.ToNonAD()
-	count, err := store.Groups().GetWarnCount(ctx, mctx.Chat.String(), bare.String())
+	count, err := store.GroupsFor(mctx.Client).GetWarnCount(ctx, mctx.Chat.String(), bare.String())
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca warn: %v", err))
+		return store.ReplyText(ctx, mctx, ErrMsg("Unwarn", fmt.Sprintf("Gagal baca warn: %v", err)))
 	}
 	if count == 0 {
 		return store.ReplyTextWithMentions(ctx, mctx,
-			fmt.Sprintf("@%s tidak punya warn.", bare.User),
+			Title("Unwarn")+"\n@"+bare.User+" tidak punya warn.",
 			[]types.JID{bare})
 	}
-	if err := store.Groups().ResetWarn(ctx, mctx.Chat.String(), bare.String()); err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal reset warn: %v", err))
+	if err := store.GroupsFor(mctx.Client).ResetWarn(ctx, mctx.Chat.String(), bare.String()); err != nil {
+		return store.ReplyText(ctx, mctx, ErrMsg("Unwarn", fmt.Sprintf("Gagal reset warn: %v", err)))
 	}
 	return store.ReplyTextWithMentions(ctx, mctx,
-		fmt.Sprintf("Warn @%s direset (sebelumnya %d).", bare.User, count),
+		Title("Unwarn")+"\nWarn @"+bare.User+fmt.Sprintf(" direset (sebelumnya %d).", count),
 		[]types.JID{bare})
 }
 
@@ -166,12 +166,12 @@ func handleWarnList(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireModGate(ctx, mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
 	}
-	list, err := store.Groups().ListWarns(ctx, mctx.Chat.String())
+	list, err := store.GroupsFor(mctx.Client).ListWarns(ctx, mctx.Chat.String())
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca daftar warn: %v", err))
+		return store.ReplyText(ctx, mctx, ErrMsg("Daftar Warn", fmt.Sprintf("Gagal baca daftar: %v", err)))
 	}
 	if len(list) == 0 {
-		return store.ReplyText(ctx, mctx, "Tidak ada warn di grup ini.")
+		return store.ReplyText(ctx, mctx, Block("Daftar Warn", "Tidak ada warn di grup ini."))
 	}
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("*Daftar Warn* (maks %d)\n\n", MaxWarns))
@@ -197,11 +197,12 @@ func handleWarnList(ctx context.Context, mctx *store.MessageContext) error {
 // Kalau total mencapai MaxWarns, user langsung di-kick dan catatannya
 // di-reset supaya mulai dari nol lagi kalau dia join kembali.
 //
-// quoteID adalah ID pesan yang di-quote di balasan (pesan pelanggaran untuk
-// jalur otomatis, pesan command untuk jalur manual). Reply dikirim dengan
+// quoteID adalah ID pesan yang di-quote di balasan (pesan command untuk
+// jalur manual; KOSONG + quoted nil untuk jalur otomatis antilink = balasan
+// lepas tanpa quote, lihat moderationReplyMessage). Reply dikirim dengan
 // mention beneran (metode tagall) supaya target dapat notif.
 func giveWarn(ctx context.Context, client *whatsmeow.Client, chat types.JID, replier types.JID, target types.JID, quoteID string, quoted *waE2E.Message, reason string) error {
-	count, err := store.Groups().AddWarn(ctx, chat.String(), target.String())
+	count, err := store.GroupsFor(client).AddWarn(ctx, chat.String(), target.String())
 	if err != nil {
 		logfmt.Warn("Gagal simpan warn %s di %s: %v\n", target, chat, err)
 		return err
@@ -217,13 +218,13 @@ func giveWarn(ctx context.Context, client *whatsmeow.Client, chat types.JID, rep
 		// admin bisa coba tendang manual.
 		if _, err := client.UpdateGroupParticipants(ctx, chat, []types.JID{target}, whatsmeow.ParticipantChangeRemove); err != nil {
 			logfmt.Warn("Gagal kick %s (warn %d): %v\n", target, count, err)
-			return sendMentionReply(fmt.Sprintf("@%s mencapai %d/%d warn (%s), tapi gagal dikeluarkan otomatis: %v", target.User, count, MaxWarns, reason, err))
+			return sendMentionReply(Title("Warn") + fmt.Sprintf("\n@%s mencapai %d/%d warn (%s), tapi gagal dikeluarkan otomatis: %v", target.User, count, MaxWarns, reason, err))
 		}
-		_ = store.Groups().ResetWarn(ctx, chat.String(), target.String())
-		return sendMentionReply(fmt.Sprintf("@%s mencapai %d/%d warn (%s) dan dikeluarkan dari grup.", target.User, count, MaxWarns, reason))
+		_ = store.GroupsFor(client).ResetWarn(ctx, chat.String(), target.String())
+		return sendMentionReply(Title("Warn") + fmt.Sprintf("\n@%s mencapai %d/%d warn (%s) dan dikeluarkan dari grup.", target.User, count, MaxWarns, reason))
 	}
 
-	return sendMentionReply(fmt.Sprintf("@%s diberi warn %d/%d (%s).", target.User, count, MaxWarns, reason))
+	return sendMentionReply(Title("Warn") + fmt.Sprintf("\n@%s diberi warn %d/%d (%s).", target.User, count, MaxWarns, reason))
 }
 
 // sendModerationReply mengirim balasan quote + mention tanpa butuh
@@ -252,7 +253,22 @@ func sendModerationReply(ctx context.Context, client *whatsmeow.Client, chat, re
 // seperti store.ReplyTextWithMentions — dipisah supaya sendModerationReply
 // tetap ringkas. QuotedMessage memakai pesan asli (evt.Message) supaya
 // balasan menempel ke pesan pelanggaran, bukan pesan lepas.
+//
+// Jalur otomatis antilink SENGAJA tanpa quote (quoteID kosong / quoted nil):
+// pesan pelanggaran baru saja di-revoke, me-quote pesan yang terhapus bisa
+// gagal/aneh di sebagian klien — balasannya dikirim sebagai pesan lepas
+// dengan mention (notif tetap masuk).
 func moderationReplyMessage(replier types.JID, quoteID, text string, mentioned []string, quotedProto *waE2E.Message) *waE2E.Message {
+	if quoteID == "" || quotedProto == nil {
+		return &waE2E.Message{
+			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text: proto.String(text),
+				ContextInfo: &waE2E.ContextInfo{
+					MentionedJID: mentioned,
+				},
+			},
+		}
+	}
 	return &waE2E.Message{
 		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
 			Text: proto.String(text),
@@ -278,7 +294,7 @@ func CheckAntilink(client *whatsmeow.Client, evt *events.Message, text string) b
 	chat := evt.Info.Chat
 	sender := evt.Info.Sender
 
-	on, err := store.Groups().IsAntilinkOn(ctx, chat.String())
+	on, err := store.GroupsFor(client).IsAntilinkOn(ctx, chat.String())
 	if err != nil {
 		logfmt.Warn("Gagal cek antilink %s: %v\n", chat, err)
 		return false
@@ -323,7 +339,9 @@ func CheckAntilink(client *whatsmeow.Client, evt *events.Message, text string) b
 			}
 		}
 		antilinkWarnMu.Unlock()
-		_ = giveWarn(ctx, client, chat, sender, sender.ToNonAD(), evt.Info.ID, evt.Message,
+		// Tanpa quote: pesan pelanggaran baru saja di-revoke (lihat G8 di
+		// moderationReplyMessage) — balasan warn dikirim lepas + mention.
+		_ = giveWarn(ctx, client, chat, sender, sender.ToNonAD(), "", nil,
 			fmt.Sprintf("kirim link grup lain (%d link)", len(codes)))
 		return true
 	}
@@ -332,23 +350,79 @@ func CheckAntilink(client *whatsmeow.Client, evt *events.Message, text string) b
 	return true
 }
 
+// extractInviteCode mengambil kode invite dari link WhatsApp dalam bentuk
+// apa pun (https/http, www, trailing slash, query) memakai regex yang sama
+// dengan deteksi teks — jauh lebih tahan dari TrimPrefix satu bentuk URL.
+// Fallback: teks utuh yang di-trim (kalau API suatu saat mengembalikan kode
+// mentah).
+func extractInviteCode(link string) string {
+	if m := inviteLinkRe.FindStringSubmatch(link); len(m) >= 2 {
+		return m[1]
+	}
+	return strings.TrimSpace(link)
+}
+
 // foreignInviteCodes mengembalikan kode invite dari teks yang BUKAN milik grup
-// ini. Link grup sendiri (dibandingkan via GetGroupInviteLink) selalu lolos.
-// Kalau link grup sendiri tidak bisa diambil (error), kembalikan kosong supaya
-// tidak ada salah hapus — lebih baik lolos satu link asing daripada menghapus
-// link grup sendiri.
+// ini. Kode grup sendiri diambil dari cache groupdb (diisi saat pertama kali
+// dibutuhkan, tanpa network call untuk pesan biasa yang tidak mengandung
+// link sama sekali). Kalau teks mengandung kode yang tidak cocok dengan
+// cache, link grup diverifikasi ulang sekali ke server: cocok = link asing
+// benar; beda = link grup ternyata di-reset, cache diperbarui dan tidak ada
+// yang dianggap asing. Verifikasi yang gagal (error) = kembalikan kosong
+// supaya tidak ada salah hapus — lebih baik lolos satu link asing daripada
+// menghapus link grup sendiri.
 func foreignInviteCodes(ctx context.Context, client *whatsmeow.Client, chat types.JID, text string) []string {
 	matches := inviteLinkRe.FindAllStringSubmatch(text, -1)
 	if len(matches) == 0 {
 		return nil
 	}
 
-	ownLink, err := client.GetGroupInviteLink(ctx, chat, false)
+	gdb := store.GroupsFor(client)
+	ownCode, err := gdb.GetInviteCode(ctx, chat.String())
 	if err != nil {
-		logfmt.Warn("Gagal ambil invite link grup %s untuk antilink: %v\n", chat, err)
+		logfmt.Warn("Gagal baca invite cache grup %s untuk antilink: %v\n", chat, err)
 		return nil
 	}
-	ownCode := strings.TrimSpace(strings.TrimPrefix(ownLink, "https://chat.whatsapp.com/"))
+	if ownCode == "" {
+		ownLink, err := client.GetGroupInviteLink(ctx, chat, false)
+		if err != nil {
+			logfmt.Warn("Gagal ambil invite link grup %s untuk antilink: %v\n", chat, err)
+			return nil
+		}
+		ownCode = extractInviteCode(ownLink)
+		if ownCode == "" {
+			logfmt.Warn("Kode invite grup %s kosong, antilink dilewati.\n", chat)
+			return nil
+		}
+		if serr := gdb.SetInviteCode(ctx, chat.String(), ownCode); serr != nil {
+			logfmt.Warn("Gagal simpan invite cache grup %s: %v\n", chat, serr)
+		}
+	}
+
+	isForeign := func(code string) bool { return code != "" && code != ownCode }
+	hasMismatch := false
+	for _, m := range matches {
+		if len(m) >= 2 && isForeign(m[1]) {
+			hasMismatch = true
+			break
+		}
+	}
+	if !hasMismatch {
+		return nil
+	}
+
+	// Ada kode tak cocok: verifikasi apakah link grup di-reset sejak cache.
+	freshLink, err := client.GetGroupInviteLink(ctx, chat, false)
+	if err != nil {
+		logfmt.Warn("Gagal verifikasi invite link grup %s untuk antilink: %v\n", chat, err)
+		return nil
+	}
+	if freshCode := extractInviteCode(freshLink); freshCode != "" && freshCode != ownCode {
+		if serr := gdb.SetInviteCode(ctx, chat.String(), freshCode); serr != nil {
+			logfmt.Warn("Gagal perbarui invite cache grup %s: %v\n", chat, serr)
+		}
+		ownCode = freshCode
+	}
 
 	var foreign []string
 	for _, m := range matches {

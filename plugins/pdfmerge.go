@@ -15,12 +15,11 @@ import (
 
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"go.mau.fi/whatsmeow"
-	waBinary "go.mau.fi/whatsmeow/binary"
-	"go.mau.fi/whatsmeow/proto/waCommon"
-	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/types"
-	"go.mau.fi/whatsmeow/types/events"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waCommon"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/types"
+	"github.com/polymorfa/hypermeow/types/events"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -40,17 +39,20 @@ func RegisterPDFMerge(r *Registry) {
 	r.Register(Command{
 		Name:        "pdfmerge",
 		Description: "Gabung s.d. 15 PDF (.pdfmerge untuk menu)",
-		Category:    CategoryAlat,
+		Category:    CategoryDokumen,
 		Handler:     handlePDFMerge,
 	})
 }
 
-// Batas staging (keputusan owner): 15 file, total 200MB per sender (tanpa
+// Batas staging (keputusan owner): 15 file, total 200MB per sesi (tanpa
 // batas per file), idle 30 menit. Hasil merge ≤100MB (getMaxFileSize).
+// pdfMergeMaxGlobalTotal membatasi TOTAL seluruh sesi aktif supaya banyak
+// staging bareng tidak menghabiskan RAM panel.
 const (
-	pdfMergeMaxFiles = 15
-	pdfMergeMaxTotal = 200 << 20
-	pdfMergeIdleTTL  = 30 * time.Minute
+	pdfMergeMaxFiles       = 15
+	pdfMergeMaxTotal       = 200 << 20
+	pdfMergeIdleTTL        = 30 * time.Minute
+	pdfMergeMaxGlobalTotal = 500 << 20
 )
 
 // pdfStageFile adalah satu PDF tersimpan di staging.
@@ -74,9 +76,10 @@ var (
 	pdfStages   = map[string]*pdfStage{}
 )
 
-// pdfStageKey adalah kunci staging global per sender.
-func pdfStageKey(sender types.JID) string {
-	return sender.ToNonAD().String()
+// pdfStageKey adalah kunci staging per sender per chat: sesi di tiap chat
+// terpisah, PDF/kata di chat lain tidak ikut tertelan (lihat T1).
+func pdfStageKey(sender, chat types.JID) string {
+	return sender.ToNonAD().String() + "\x00" + chat.String()
 }
 
 func handlePDFMerge(ctx context.Context, mctx *store.MessageContext) error {
@@ -123,7 +126,10 @@ func pdfSendMenu(ctx context.Context, mctx *store.MessageContext) error {
 }
 
 // pdfSendButtons mengirim bubble interactive + tombol quick_reply.
-// Pola sama seperti buttontest.go (biz AdditionalNodes) yang terbukti tampil.
+// Node `biz` SENGAJA tidak disertakan manual: hypermeow menempelkannya
+// otomatis, dan clone ter-patch selalu mengirim name="mixed" (lihat
+// btnTestBizExtra di buttontest.go) — node ganda = error 479, nama
+// turunan = error 473/405.
 func pdfSendButtons(ctx context.Context, mctx *store.MessageContext, title, body string, buttons []pdfButton) error {
 	btns := make([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, 0, len(buttons))
 	for _, b := range buttons {
@@ -147,19 +153,8 @@ func pdfSendButtons(ctx context.Context, mctx *store.MessageContext, title, body
 			},
 		},
 	}
-	nodes := &[]waBinary.Node{{
-		Tag: "biz",
-		Content: []waBinary.Node{{
-			Tag:   "interactive",
-			Attrs: waBinary.Attrs{"type": "native_flow", "v": "1"},
-			Content: []waBinary.Node{{
-				Tag:   "native_flow",
-				Attrs: waBinary.Attrs{"v": "9", "name": "mixed"},
-			}},
-		}},
-	}}
 	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, msg,
-		whatsmeow.SendRequestExtra{ID: whatsmeow.GenerateMessageID(), AdditionalNodes: nodes})
+		whatsmeow.SendRequestExtra{ID: whatsmeow.GenerateMessageID()})
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal kirim menu tombol: %v", err))
 	}
@@ -202,7 +197,8 @@ func pdfTapID(evt *events.Message) (string, bool) {
 
 // CheckPDFButtonTap mencegat tap tombol pdfmerge (prefix "pdfmerge:") lalu
 // menjalankan kata yang sama seperti diketik. true = ditangani (setop,
-// jangan ke AI). Jalur teks lama tetap jalan sebagai fallback.
+// jangan ke AI). Jalur teks tetap jalan sebagai fallback (mis. klien yang
+// tidak me-render tombol).
 func CheckPDFButtonTap(client *whatsmeow.Client, evt *events.Message) bool {
 	id, ok := pdfTapID(evt)
 	if !ok || !strings.HasPrefix(id, "pdfmerge:") {
@@ -211,7 +207,7 @@ func CheckPDFButtonTap(client *whatsmeow.Client, evt *events.Message) bool {
 	word := strings.TrimPrefix(id, "pdfmerge:")
 	ctx := context.Background()
 	mctx := &store.MessageContext{Client: client, Chat: evt.Info.Chat, Sender: evt.Info.Sender, RawEvt: evt}
-	key := pdfStageKey(evt.Info.Sender)
+	key := pdfStageKey(evt.Info.Sender, evt.Info.Chat)
 	if word == "nama" {
 		_ = store.ReplyText(ctx, mctx, "Format: nama <nama file>, contoh: nama rekap bulanan")
 		return true
@@ -253,7 +249,7 @@ func pdfWordArg(text string) (word, arg string) {
 // True = dikonsumsi. Aturan: kata cocok persis; sesi-terkait saja, kecuali
 // "mulai" yang membuka sesi; tanpa sesi + bukan "mulai" = pesan biasa.
 func CheckPDFStaging(client *whatsmeow.Client, evt *events.Message) bool {
-	key := pdfStageKey(evt.Info.Sender)
+	key := pdfStageKey(evt.Info.Sender, evt.Info.Chat)
 	pdfStagesMu.Lock()
 	st, ok := pdfStages[key]
 	pdfStagesMu.Unlock()
@@ -300,6 +296,10 @@ func pdfStageWord(ctx context.Context, mctx *store.MessageContext, key string, s
 	case "mulai":
 		if ok {
 			_ = store.ReplyText(ctx, mctx, fmt.Sprintf("Sesi upload masih aktif (%d file). Lanjut kirim file, atau batal untuk mulai baru.", len(st.files)))
+			return true
+		}
+		if pdfGlobalStaged() >= pdfMergeMaxGlobalTotal {
+			_ = store.ReplyText(ctx, mctx, "Staging server penuh, coba lagi nanti setelah sesi lain selesai.")
 			return true
 		}
 		pdfStagesMu.Lock()
@@ -388,9 +388,9 @@ func pdfReact(ctx context.Context, mctx *store.MessageContext, msgID, emoji stri
 // pdfStageAdd mengunduh + validasi + simpan PDF, reaksi ✅/❌, tampilkan daftar.
 func pdfStageAdd(ctx context.Context, mctx *store.MessageContext, key string, st *pdfStage, evt *events.Message, doc *waE2E.DocumentMessage) bool {
 	msgID := evt.Info.ID
-	name := strings.TrimSpace(doc.GetFileName())
+	name := sanitizeFileName(doc.GetFileName())
 	if name == "" {
-		name = doc.GetTitle()
+		name = sanitizeFileName(doc.GetTitle())
 	}
 	if strings.TrimSpace(name) == "" {
 		name = "dokumen.pdf"
@@ -495,7 +495,7 @@ func pdfStageList(st *pdfStage) string {
 
 // pdfStageCancel membuang sesi. announce=false untuk sapu diam.
 func pdfStageCancel(ctx context.Context, mctx *store.MessageContext, announce bool) {
-	key := pdfStageKey(mctx.Sender)
+	key := pdfStageKey(mctx.Sender, mctx.Chat)
 	pdfStagesMu.Lock()
 	st, ok := pdfStages[key]
 	if ok {
@@ -514,6 +514,17 @@ func pdfStageCancel(ctx context.Context, mctx *store.MessageContext, announce bo
 	if announce {
 		_ = store.ReplyText(ctx, mctx, "Sesi upload dibatalkan, file dibuang.")
 	}
+}
+
+// pdfGlobalStaged menjumlahkan byte staging SEMUA sesi aktif.
+func pdfGlobalStaged() int64 {
+	pdfStagesMu.Lock()
+	defer pdfStagesMu.Unlock()
+	var total int64
+	for _, st := range pdfStages {
+		total += st.totalLen
+	}
+	return total
 }
 
 // pdfStageTouch me-reset timer idle 30 menit (tiap aktivitas).
@@ -539,7 +550,7 @@ func pdfStageTouch(key string) {
 
 // pdfStageFinish mengunci + menggabungkan sesuai urutan via pdfcpu.
 func pdfStageFinish(ctx context.Context, mctx *store.MessageContext) error {
-	key := pdfStageKey(mctx.Sender)
+	key := pdfStageKey(mctx.Sender, mctx.Chat)
 	pdfStagesMu.Lock()
 	st, ok := pdfStages[key]
 	if !ok || len(st.files) < 2 {
@@ -560,9 +571,11 @@ func pdfStageFinish(ctx context.Context, mctx *store.MessageContext) error {
 
 	// Antrean global downloader (maks 2 bersamaan — semua user boleh pakai,
 	// jadi merge berat ikut antrean yang sama, penuh = tolak sopan).
+	// Slot dilepas goroutine saat merge SELESAI (bukan saat handler return),
+	// supaya batas 2 bersamaan benar-benar menahan beban.
 	select {
 	case dlSem <- struct{}{}:
-		defer func() { <-dlSem }()
+		// dilepas goroutine di bawah
 	default:
 		pdfClearMerging(key)
 		return store.ReplyText(ctx, mctx, "Antrean penuh (maks 2 bersamaan), coba lagi sebentar.")
@@ -570,9 +583,11 @@ func pdfStageFinish(ctx context.Context, mctx *store.MessageContext) error {
 
 	if _, err := sendDlStatus(ctx, mctx, fmt.Sprintf("Menggabungkan %d PDF...", len(files))); err != nil {
 		pdfClearMerging(key)
+		func() { <-dlSem }()
 		return err
 	}
 	go func() {
+		defer func() { <-dlSem }()
 		bg := context.Background()
 		if rerr := pdfDoMerge(bg, mctx, key, files, outName); rerr != nil {
 			pdfClearMerging(key)

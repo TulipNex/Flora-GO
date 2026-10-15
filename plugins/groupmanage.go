@@ -7,9 +7,9 @@ import (
 
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/types"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/types"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -164,13 +164,65 @@ func replySingleMention(ctx context.Context, mctx *store.MessageContext, info *t
 	return store.ReplyTextWithMentions(ctx, mctx, sb.String(), []types.JID{bare})
 }
 
+// isBotTarget true kalau target adalah akun bot sendiri (ID maupun LID),
+// supaya command grup tidak bisa dipakai untuk mengeluarkan/mengutak-atik
+// bot itu sendiri.
+func isBotTarget(mctx *store.MessageContext, target types.JID) bool {
+	bare := target.ToNonAD().User
+	if bare == "" {
+		return false
+	}
+	if mctx.Client == nil || mctx.Client.Store == nil {
+		return false
+	}
+	if id := mctx.Client.Store.ID; id != nil && id.ToNonAD().User == bare {
+		return true
+	}
+	if lid := mctx.Client.Store.LID; !lid.IsEmpty() && lid.ToNonAD().User == bare {
+		return true
+	}
+	return false
+}
+
+// IsBotTarget adalah versi exported dari isBotTarget, supaya tool AI
+// (internal/ai/tools/bridge) memakai guard yang SAMA PERSIS dengan command.
+func IsBotTarget(mctx *store.MessageContext, target types.JID) bool {
+	return isBotTarget(mctx, target)
+}
+
+// isOwnerTarget true kalau target adalah owner bot. JID target + hasil
+// resolve alt-JID store (pemetaan LID↔PN) dua-duanya dicek, supaya target
+// owner dalam format LID grup tidak lolos dari guard.
+func isOwnerTarget(ctx context.Context, mctx *store.MessageContext, target types.JID) bool {
+	if isJIDOwner(target) {
+		return true
+	}
+	if mctx.Client != nil && mctx.Client.Store != nil {
+		if alt, err := mctx.Client.Store.GetAltJID(ctx, target); err == nil && !alt.IsEmpty() && isJIDOwner(alt) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsOwnerTarget adalah versi exported dari isOwnerTarget, untuk tool AI.
+func IsOwnerTarget(ctx context.Context, mctx *store.MessageContext, target types.JID) bool {
+	return isOwnerTarget(ctx, mctx, target)
+}
+
 func handleKick(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireGroupAdminGate(ctx, mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
 	}
 	target, err := resolveTargetJID(mctx)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, err.Error())
+		return store.ReplyText(ctx, mctx, Block("Kick", Row("Cara", ".kick @user / reply pesan target")))
+	}
+	if isBotTarget(mctx, target) {
+		return store.ReplyText(ctx, mctx, ErrMsg("Kick", "Tidak bisa mengeluarkan bot sendiri dari grup."))
+	}
+	if isOwnerTarget(ctx, mctx, target) {
+		return store.ReplyText(ctx, mctx, ErrMsg("Kick", "Tidak bisa mengeluarkan owner bot dari grup."))
 	}
 
 	// Resolve JID primer SEBELUM aksi kick dijalankan — setelah member
@@ -183,7 +235,7 @@ func handleKick(ctx context.Context, mctx *store.MessageContext) error {
 
 	_, err = mctx.Client.UpdateGroupParticipants(ctx, mctx.Chat, []types.JID{target}, whatsmeow.ParticipantChangeRemove)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal kick: %v", err))
+		return store.ReplyText(ctx, mctx, ErrMsg("Kick", fmt.Sprintf("Gagal mengeluarkan user: %v", err)))
 	}
 	return replySingleMention(ctx, mctx, infoBefore, target, " berhasil dikeluarkan dari grup.")
 }
@@ -194,14 +246,17 @@ func handlePromote(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	target, err := resolveTargetJID(mctx)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, err.Error())
+		return store.ReplyText(ctx, mctx, Block("Promote", Row("Cara", ".promote @user / reply pesan target")))
+	}
+	if isBotTarget(mctx, target) {
+		return store.ReplyText(ctx, mctx, ErrMsg("Promote", "Tidak bisa mengubah status admin bot sendiri."))
 	}
 
 	infoBefore, _ := mctx.GroupInfo(ctx)
 
 	_, err = mctx.Client.UpdateGroupParticipants(ctx, mctx.Chat, []types.JID{target}, whatsmeow.ParticipantChangePromote)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal promote: %v", err))
+		return store.ReplyText(ctx, mctx, ErrMsg("Promote", fmt.Sprintf("Gagal mengangkat admin: %v", err)))
 	}
 	return replySingleMention(ctx, mctx, infoBefore, target, " sekarang jadi admin grup.")
 }
@@ -212,28 +267,31 @@ func handleDemote(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	target, err := resolveTargetJID(mctx)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, err.Error())
+		return store.ReplyText(ctx, mctx, Block("Demote", Row("Cara", ".demote @user / reply pesan target")))
+	}
+	if isBotTarget(mctx, target) {
+		return store.ReplyText(ctx, mctx, ErrMsg("Demote", "Tidak bisa mengubah status admin bot sendiri."))
 	}
 
 	infoBefore, _ := mctx.GroupInfo(ctx)
 
 	_, err = mctx.Client.UpdateGroupParticipants(ctx, mctx.Chat, []types.JID{target}, whatsmeow.ParticipantChangeDemote)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal demote: %v", err))
+		return store.ReplyText(ctx, mctx, ErrMsg("Demote", fmt.Sprintf("Gagal menurunkan admin: %v", err)))
 	}
 	return replySingleMention(ctx, mctx, infoBefore, target, " diturunkan jadi member biasa.")
 }
 
 func handleTagAll(ctx context.Context, mctx *store.MessageContext) error {
 	if !mctx.IsGroup() {
-		return store.ReplyText(ctx, mctx, "Command ini hanya bisa dipakai di dalam grup.")
+		return store.ReplyText(ctx, mctx, ErrNotGroup("Tagall"))
 	}
 	isSenderAdmin, err := mctx.IsSenderAdmin(ctx)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal cek status admin: %v", err))
+		return store.ReplyText(ctx, mctx, ErrAdminCheck("Tagall", err))
 	}
 	if !isSenderAdmin {
-		return store.ReplyText(ctx, mctx, "Hanya admin grup yang boleh pakai command ini.")
+		return store.ReplyText(ctx, mctx, ErrNotAdmin("Tagall"))
 	}
 
 	pesan := strings.Join(mctx.Args, " ")
@@ -242,7 +300,7 @@ func handleTagAll(ctx context.Context, mctx *store.MessageContext) error {
 	}
 
 	if _, err := TagAllMembers(ctx, mctx, pesan); err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal tagall: %v", err))
+		return store.ReplyText(ctx, mctx, ErrMsg("Tagall", fmt.Sprintf("Gagal menandai semua member: %v", err)))
 	}
 	return nil
 }
@@ -300,19 +358,19 @@ func TagAllMembers(ctx context.Context, mctx *store.MessageContext, pesan string
 // karena mengirim pesan biasa tidak butuh hak admin).
 func handleHideTag(ctx context.Context, mctx *store.MessageContext) error {
 	if !mctx.IsGroup() {
-		return store.ReplyText(ctx, mctx, "Command ini hanya bisa dipakai di dalam grup.")
+		return store.ReplyText(ctx, mctx, ErrNotGroup("Hidetag"))
 	}
 	isSenderAdmin, err := mctx.IsSenderAdmin(ctx)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal cek status admin: %v", err))
+		return store.ReplyText(ctx, mctx, ErrAdminCheck("Hidetag", err))
 	}
 	if !isSenderAdmin {
-		return store.ReplyText(ctx, mctx, "Hanya admin grup yang boleh pakai command ini.")
+		return store.ReplyText(ctx, mctx, ErrNotAdmin("Hidetag"))
 	}
 
 	info, err := mctx.GroupInfo(ctx)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal ambil data grup: %v", err))
+		return store.ReplyText(ctx, mctx, ErrMsg("Hidetag", fmt.Sprintf("Gagal ambil data grup: %v", err)))
 	}
 
 	pesan := strings.Join(mctx.Args, " ")
@@ -375,7 +433,7 @@ func handleAdd(ctx context.Context, mctx *store.MessageContext) error {
 		return store.ReplyText(ctx, mctx, msg)
 	}
 	if len(mctx.Args) == 0 {
-		return store.ReplyText(ctx, mctx, "Isi nomor yang mau ditambahkan, contoh: .add 6281234567890")
+		return store.ReplyText(ctx, mctx, Block("Add", Row("Cara", ".add <nomor...>"), Row("Contoh", ".add 6281234567890")))
 	}
 
 	// Dukung banyak nomor sekaligus, dipisah spasi: .add 6281111 6282222
@@ -383,14 +441,14 @@ func handleAdd(ctx context.Context, mctx *store.MessageContext) error {
 	for _, arg := range mctx.Args {
 		jid, err := parsePhoneToJID(arg)
 		if err != nil {
-			return store.ReplyText(ctx, mctx, err.Error())
+			return store.ReplyText(ctx, mctx, ErrMsg("Add", err.Error()))
 		}
 		targets = append(targets, jid)
 	}
 
 	results, err := mctx.Client.UpdateGroupParticipants(ctx, mctx.Chat, targets, whatsmeow.ParticipantChangeAdd)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal menambahkan member: %v", err))
+		return store.ReplyText(ctx, mctx, ErrMsg("Add", fmt.Sprintf("Gagal menambahkan member: %v", err)))
 	}
 
 	// PENTING: whatsmeow bisa mengembalikan p.JID dalam bentuk LID untuk member
@@ -405,7 +463,7 @@ func handleAdd(ctx context.Context, mctx *store.MessageContext) error {
 	// sebagai info baca. Baris gagal/invite tidak di-mention (member belum
 	// tentu ada di grup) — tampil nomor ketikan saja seperti sebelumnya.
 	var sb strings.Builder
-	sb.WriteString("Hasil penambahan member:\n")
+	sb.WriteString(Title("Hasil penambahan member") + "\n")
 	mentions := make([]types.JID, 0, len(results))
 	for i, p := range results {
 		typed := p.JID.User

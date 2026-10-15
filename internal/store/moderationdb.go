@@ -229,6 +229,37 @@ func (g *GroupDB) SetByeMsg(ctx context.Context, chatJID, tmpl string) error {
 	return err
 }
 
+// GetInviteCode membaca kode invite grup sendiri yang tersimpan (hasil
+// cache dari GetGroupInviteLink). String kosong = belum pernah disimpan.
+// Database lama tanpa kolom (migrasi belum jalan) dianggap kosong, bukan
+// error — pemanggil akan fetch live seperti sebelum fitur cache ada.
+func (g *GroupDB) GetInviteCode(ctx context.Context, chatJID string) (string, error) {
+	var code string
+	err := g.db.QueryRowContext(ctx, `SELECT invite_code FROM group_moderation WHERE chat_jid = ?`, chatJID).Scan(&code)
+	if err != nil {
+		if isNoRowsError(err) || isNoSuchColumnError(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return code, nil
+}
+
+// SetInviteCode menyimpan kode invite grup sendiri (hasil fetch
+// GetGroupInviteLink yang diekstrak kodenya). Dipanggil saat cache pertama
+// kali diisi dan saat terdeteksi link grup di-reset (lihat
+// foreignInviteCodes di plugins/moderation.go).
+func (g *GroupDB) SetInviteCode(ctx context.Context, chatJID, code string) error {
+	_, err := g.db.ExecContext(ctx, `
+		INSERT INTO group_moderation (chat_jid, invite_code) VALUES (?, ?)
+		ON CONFLICT(chat_jid) DO UPDATE SET invite_code = excluded.invite_code, updated_at = strftime('%s','now')
+	`, chatJID, code)
+	if err != nil && isNoSuchColumnError(err) {
+		return nil
+	}
+	return err
+}
+
 // isNoSuchColumnError mengecek error "no such column" (database lama yang
 // migrasinya belum jalan / gagal sebagian) — pemanggil menganggap fitur
 // mati, bukan error fatal.

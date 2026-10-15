@@ -29,11 +29,11 @@ import (
 	_ "wabot-go/internal/ai/tools/native"
 
 	qrcode "github.com/skip2/go-qrcode"
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/types"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/types"
 	_ "modernc.org/sqlite"
 
-	"go.mau.fi/whatsmeow/store/sqlstore"
+	"github.com/polymorfa/hypermeow/store/sqlstore"
 )
 
 // onlinePresenceInterval adalah jeda heartbeat status "online" nomor bot.
@@ -79,7 +79,7 @@ func printBanner() {
 	fmt.Printf("  %s %s\n", config.BotName, config.BotVersion)
 	fmt.Println(line)
 	fmt.Printf("  Language : Go (%s)\n", runtime.Version())
-	fmt.Println("  Library  : whatsmeow")
+	fmt.Println("  Library  : hypermeow")
 	fmt.Printf("  Owner    : %s (%s)\n", config.OwnerName, strings.Join(config.OwnerNumbers, ", "))
 	fmt.Println(line)
 	fmt.Println()
@@ -138,8 +138,8 @@ func main() {
 	}
 
 	// ==========================================================
-	// 0e. Siapkan tabel setting provider/model AI aktif (fitur
-	//     multi-provider NexaRouter/Ciora). Reuse koneksi ai.db yang sama.
+	// 0e. Siapkan tabel setting + registry provider/model AI aktif.
+	//     Reuse koneksi ai.db yang sama.
 	// ==========================================================
 	if err := store.InitAISettingsDB(); err != nil {
 		panic(fmt.Sprintf("gagal inisialisasi AI settings DB: %v", err))
@@ -200,6 +200,10 @@ func main() {
 	clientLog := logfmt.NewWALogger("Client", "INFO")
 	client := whatsmeow.NewClient(deviceStore, clientLog)
 
+	// Daftarkan client bot utama ke registry clone (fondasi jadibot):
+	// router + store memakai ini untuk membedakan bot utama vs clone.
+	store.SetMainClient(client)
+
 	// ==========================================================
 	// 2. Daftarkan event handler (pesan masuk, dsb) dari package handler
 	// ==========================================================
@@ -212,6 +216,11 @@ func main() {
 	//     whatsmeow mulai jalan.
 	// ==========================================================
 	plugins.InitCallClient(client)
+
+	// 2b1. Pasang hook retry SPR (Send Private Reply): PreRetryCallback
+	//     penukar isi per penerima + fallback GetMessageForRetry. Harus
+	//     sebelum Connect supaya retry pertama pun sudah terlayani.
+	plugins.InitSPR(client)
 
 	// 2b2. Pasang client untuk scheduler reminder Flora (pengiriman DM +
 	//     telepon eskalasi dari timer). Sama posisinya dengan InitCallClient.
@@ -270,6 +279,10 @@ func main() {
 	// 3b3. Pulihkan timer sesi absen aktif + nyalakan ticker jadwal harian.
 	plugins.RestoreAbsensiSessions()
 
+	// 3b4. Pulihkan bot clone (jadibot) yang terdaftar. Jalan setelah
+	// connect utama; tiap clone connect dengan session-nya sendiri.
+	plugins.RestoreClones()
+
 	// ==========================================================
 	// 4. Tunggu sinyal berhenti (Ctrl+C atau kill dari Pterodactyl)
 	//    supaya proses shutdown-nya bersih.
@@ -279,6 +292,9 @@ func main() {
 	<-sigChan
 
 	fmt.Println("Menutup koneksi...")
+	// Putus clone dulu supaya tidak ada koneksi menggantung yang menyeret
+	// shutdown melewati stop timeout panel (lihat DisconnectAllClones).
+	store.DisconnectAllClones()
 	client.Disconnect()
 }
 

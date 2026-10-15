@@ -54,8 +54,13 @@ func isTransientError(err error) bool {
 func RunAgentLoopWithRetry(actx *AgentContext, provider ProviderAdapter, history []Content, systemPrompt string, notifyOwner func(err error)) (string, error) {
 	var lastErr error
 
+	// Satu cache per giliran user, dibagikan ke semua attempt: tool yang
+	// sudah dieksekusi di attempt gagal tidak dijalankan ulang di attempt
+	// berikutnya (anti aksi WA ganda). Lihat TurnToolCache di loop.go.
+	cache := make(TurnToolCache)
+
 	for attempt := 0; attempt < MaxRetries; attempt++ {
-		text, err := RunAgentLoop(actx, provider, history, systemPrompt)
+		text, err := RunAgentLoop(actx, provider, history, systemPrompt, cache)
 		if err == nil {
 			if attempt > 0 {
 				LogSide("retry", []AIField{

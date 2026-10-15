@@ -12,7 +12,7 @@ import (
 	"wabot-go/internal/scraper"
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow"
+	whatsmeow "github.com/polymorfa/hypermeow"
 )
 
 func init() {

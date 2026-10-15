@@ -100,14 +100,11 @@ const (
 // AISystemPromptBase statis/compile-time sehingga
 // ditulis langsung di sini seperti konfigurasi lain di file ini.
 var (
-	// NexaRouterAPIKey dibaca dari .env (NEXAROUTER_API_KEY=...).
-	// (https://router.nexaworks.web.id), API-nya OpenAI-compatible.
-	NexaRouterAPIKey = os.Getenv("NEXAROUTER_API_KEY")
-
-	// CioraAPIKey dibaca dari .env (CIORA_API_KEY=...). Provider utama Flora
-	// (https://ciora.id), API-nya OpenAI-compatible dan dokumentasinya
-	// menyatakan mendukung tool calling standar OpenAI.
-	CioraAPIKey = os.Getenv("CIORA_API_KEY")
+	// API key provider AI dibaca dari .env dengan aturan seragam
+	// <NAMA>_API_KEY (huruf besar, strip jadi underscore): CIORA_API_KEY,
+	// OPENAGENTIC_API_KEY, ... Dibaca on-demand oleh internal/ai lewat
+	// os.Getenv (lihat providerAPIKey) supaya provider custom dari command
+	// langsung bisa dipakai tanpa tambah field config.
 
 	// (Keuangan Flora kini database lokal; SHEET_API_URL/TOKEN pensiun
 	// bersama Google Sheet — tidak dibaca lagi.)
@@ -150,7 +147,7 @@ const (
 // - Konfigurasi statis/compile-time (identitas bot & owner) digabung di sini
 //   (config.go), menggantikan owner.go dan bot.go yang sebelumnya terpisah.
 // - Konfigurasi yang sifatnya rahasia atau berubah per-environment
-//   (LOGIN_METHOD, PHONE_NUMBER untuk pairing/QR, NEXAROUTER_API_KEY,
-//   CIORA_API_KEY) TETAP dibaca dari .env lewat os.Getenv — dibaca langsung
+//   (LOGIN_METHOD, PHONE_NUMBER untuk pairing/QR, <NAMA>_API_KEY untuk
+//   tiap provider AI) TETAP dibaca dari .env lewat os.Getenv — dibaca langsung
 //   di file ini (bukan main.go) supaya seluruh plugin AI cukup import config,
 //   konsisten dengan cara plugin lain mengakses OwnerName/BotName dkk.

@@ -22,13 +22,26 @@ var groupDB *GroupDB
 // InitGroupDB membuka (atau membuat) file data/group.db beserta tabel yang
 // dibutuhkan. Dipanggil sekali di main.go sebelum client.Connect().
 func InitGroupDB(path string) error {
+	db, err := openGroupDBFile(path)
+	if err != nil {
+		return err
+	}
+
+	groupDB = &GroupDB{db: db}
+	return nil
+}
+
+// openGroupDBFile membuka file SQLite + memastikan schema. Dipakai InitGroupDB
+// (database utama) dan GroupsFor (database per clone, schema identik —
+// termasuk tabel clones yang hanya dipakai database utama).
+func openGroupDBFile(path string) (*sql.DB, error) {
 	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)", path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return fmt.Errorf("gagal membuka group.db: %w", err)
+		return nil, fmt.Errorf("gagal membuka group.db: %w", err)
 	}
 	if err := db.Ping(); err != nil {
-		return fmt.Errorf("gagal ping group.db: %w", err)
+		return nil, fmt.Errorf("gagal ping group.db: %w", err)
 	}
 
 	schema := `
@@ -56,6 +69,7 @@ func InitGroupDB(path string) error {
 		chat_jid   TEXT PRIMARY KEY,
 		antilink   INTEGER NOT NULL DEFAULT 0,
 		antistatus INTEGER NOT NULL DEFAULT 0,
+		invite_code TEXT NOT NULL DEFAULT '',
 		updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 	);
 	CREATE TABLE IF NOT EXISTS user_warnings (
@@ -102,9 +116,14 @@ func InitGroupDB(path string) error {
 		user_part  TEXT NOT NULL DEFAULT '',
 		created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 	);
+	CREATE TABLE IF NOT EXISTS clones (
+		phone      TEXT PRIMARY KEY,
+		status     TEXT NOT NULL DEFAULT 'active',
+		created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+	);
 	`
 	if _, err := db.Exec(schema); err != nil {
-		return fmt.Errorf("gagal membuat schema group.db: %w", err)
+		return nil, fmt.Errorf("gagal membuat schema group.db: %w", err)
 	}
 
 	// Migrasi untuk database LAMA yang tabel group_greetings-nya sudah ada
@@ -116,14 +135,15 @@ func InitGroupDB(path string) error {
 		`ALTER TABLE group_greetings ADD COLUMN welcome_msg TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE group_greetings ADD COLUMN bye_msg TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE group_moderation ADD COLUMN antistatus INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE group_moderation ADD COLUMN invite_code TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE clones ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`,
 	} {
 		if _, err := db.Exec(alter); err != nil && !isDuplicateColumnError(err) {
-			return fmt.Errorf("gagal migrasi group.db: %w", err)
+			return nil, fmt.Errorf("gagal migrasi group.db: %w", err)
 		}
 	}
 
-	groupDB = &GroupDB{db: db}
-	return nil
+	return db, nil
 }
 
 // Groups mengembalikan instance GroupDB global. Panic kalau InitGroupDB

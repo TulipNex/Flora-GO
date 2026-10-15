@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"go.mau.fi/whatsmeow/types"
+	"github.com/polymorfa/hypermeow/types"
 )
 
 // File ini berisi penyimpanan untuk fitur khusus owner: daftar user yang

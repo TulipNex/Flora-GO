@@ -15,9 +15,18 @@ import (
 	"wabot-go/internal/store"
 )
 
-// normTimeout membatasi sekali probe/transcode ffmpeg (file panel kecil;
-// audio 16MB ~ puluhan detik, transcode 720p beberapa menit).
+// normTimeout membatasi transcode BERAT ffmpeg (file panel kecil;
+// transcode 720p beberapa menit). Langkah ringan (remux/audio) punya
+// timeout sendiri yang jauh lebih pendek di bawah.
 const normTimeout = 4 * time.Minute
+
+// remuxTimeout untuk salin wadah (-c copy): hanya pindah wadah + faststart,
+// tanpa sentuh gambar/suara. Detik-an untuk file normal.
+const remuxTimeout = 60 * time.Second
+
+// audioFixTimeout untuk ubah suara saja (-c:v copy): gambar utuh, hanya
+// suara jadi AAC. Jauh lebih cepat dari transcode total.
+const audioFixTimeout = 2 * time.Minute
 
 // CheckMediaBytes menolak byte kosong atau HTML (halaman error proxy/CDN
 // yang lolos status HTTP 200) SEBELUM diupload — mencegah bubble tak
@@ -95,14 +104,50 @@ func waCompliant(format, vcodec, acodec string) bool {
 	return true
 }
 
+// remuxCopy menyalin wadah saja (-c copy) + faststart, tanpa menyentuh
+// gambar/suara. Ringan (detik-an) dan kualitas 100% sama. Cukup untuk
+// kasus umum: sudah H264/AAC tapi wadah mov/webm/ts atau moov di belakang.
+func remuxCopy(ctx context.Context, inPath, outPath string) error {
+	return runFfmpeg(ctx, remuxTimeout, "remux",
+		"-y", "-i", inPath,
+		"-c", "copy", "-movflags", "+faststart",
+		outPath)
+}
+
+// transcodeAudioOnly mengubah SUARA saja jadi AAC, gambar disalin utuh
+// (-c:v copy). Untuk kasus gambar sudah H264 tapi suara aneh/kosong.
+func transcodeAudioOnly(ctx context.Context, inPath, outPath string) error {
+	return runFfmpeg(ctx, audioFixTimeout, "audiofix",
+		"-y", "-i", inPath,
+		"-c:v", "copy", "-c:a", "aac", "-movflags", "+faststart",
+		outPath)
+}
+
+// runFfmpeg menjalankan satu perintah ffmpeg dengan timeout + log ringkas.
+func runFfmpeg(ctx context.Context, timeout time.Duration, tag string, args ...string) error {
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(timeoutCtx, "ffmpeg", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ffmpeg %s: %v (%s)", tag, err, lastLine(stderr.String()))
+	}
+	return nil
+}
+
 // transcodeToMP4 mengubah video apa pun jadi MP4 H.264 + AAC + faststart,
 // tinggi maks 720p (standar unduhan lama yang terbukti diputar semua klien).
+// Dipakai sebagai LANGKAH TERAKHIR setelah remux/audiofix gagal.
+// Preset veryfast + CRF 23: 2-3x lebih cepat dari default dengan kualitas
+// yang tetap bagus untuk chat.
 func transcodeToMP4(ctx context.Context, inPath, outPath string) error {
 	timeoutCtx, cancel := context.WithTimeout(ctx, normTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(timeoutCtx, "ffmpeg",
 		"-y", "-i", inPath,
-		"-c:v", "libx264", "-pix_fmt", "yuv420p",
+		"-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+		"-pix_fmt", "yuv420p",
 		"-vf", `scale=-2:min(ih\,720)`,
 		"-c:a", "aac", "-movflags", "+faststart",
 		outPath)
@@ -114,10 +159,39 @@ func transcodeToMP4(ctx context.Context, inPath, outPath string) error {
 	return nil
 }
 
-// PrepareVideoBytes memastikan byte video layak dikirim sebagai VideoMessage:
-// tolak kosong/HTML (fail-LOUD, error), passthrough bila sudah compliant
-// (nol biaya untuk video normal), transcode selain itu. Gagal probe/
-// transcode = byte asli + log (fail-soft, perilaku lama) — kecuali validasi
+// tryStep menjalankan satu langkah perbaikan lalu memvalidasi hasilnya:
+// output harus ada + stream video tetap ada + (bila strict) compliant.
+// Mengembalikan (byte, true) bila langkah berhasil dan layak kirim.
+func tryStep(ctx context.Context, dir, in, tag string, strict bool, fn func(ctx context.Context, inPath, outPath string) error) ([]byte, bool) {
+	out := filepath.Join(dir, tag+".mp4")
+	if err := fn(ctx, in, out); err != nil {
+		logfmt.Warn("videonorm: %s gagal (%v).\n", tag, err)
+		return nil, false
+	}
+	norm, err := os.ReadFile(out)
+	if err != nil || len(norm) == 0 {
+		return nil, false
+	}
+	format, vcodec, acodec, err := probeVideo(ctx, out)
+	if err != nil || vcodec == "" {
+		logfmt.Warn("videonorm: %s output kehilangan video, lewati.\n", tag)
+		return nil, false
+	}
+	if strict && !waCompliant(format, vcodec, acodec) {
+		return nil, false
+	}
+	fmt.Printf("videonorm: %s -> %s/%s/%s (%d byte)\n", tag, format, vcodec, acodec, len(norm))
+	return norm, true
+}
+
+// PrepareVideoBytes memastikan byte video layak dikirim sebagai VideoMessage.
+// Urutan hemat CPU (ringan dulu, berat terakhir):
+//  1. tolak kosong/HTML (fail-LOUD, error)
+//  2. passthrough bila sudah compliant (nol biaya)
+//  3. remux -c copy (detik-an, kualitas utuh)
+//  4. audiofix -c:v copy (gambar utuh, suara jadi AAC)
+//  5. transcode total veryfast (langkah terakhir)
+// Gagal semua = byte asli + log (fail-soft, perilaku lama) — kecuali validasi
 // isi yang tetap error supaya tak terkirim bubble hantu.
 func PrepareVideoBytes(ctx context.Context, data []byte) ([]byte, error) {
 	if err := CheckMediaBytes(data); err != nil {
@@ -146,6 +220,14 @@ func PrepareVideoBytes(ctx context.Context, data []byte) ([]byte, error) {
 	}
 	if waCompliant(format, vcodec, acodec) {
 		return data, nil
+	}
+	// Langkah ringan dulu sebelum transcode berat. Tiap langkah divalidasi:
+	// output harus compliant, kalau tidak lanjut ke langkah berikutnya.
+	if norm, ok := tryStep(ctx, dir, in, "remux", true, remuxCopy); ok {
+		return norm, nil
+	}
+	if norm, ok := tryStep(ctx, dir, in, "audiofix", true, transcodeAudioOnly); ok {
+		return norm, nil
 	}
 	out := filepath.Join(dir, "out.mp4")
 	if err := transcodeToMP4(ctx, in, out); err != nil {

@@ -5,14 +5,14 @@ package logfmt
 // (bukan jam server mentah), format blok, garis pembatas. Isi pesan asli
 // library TIDAK diubah (tetap bisa dicari di Google/dilaporkan upstream).
 //
-// Memenuhi interface go.mau.fi/whatsmeow/util/log.Logger (Warnf/Errorf/
+// Memenuhi interface github.com/polymorfa/hypermeow/util/log.Logger (Warnf/Errorf/
 // Infof/Debugf/Sub) sehingga bisa dipasang langsung ke NewClient/sqlstore.
 
 import (
 	"fmt"
 	"strings"
 
-	waLog "go.mau.fi/whatsmeow/util/log"
+	waLog "github.com/polymorfa/hypermeow/util/log"
 
 	"wabot-go/internal/timex"
 )

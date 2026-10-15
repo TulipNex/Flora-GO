@@ -15,7 +15,7 @@ type Content struct {
 // ThoughtSignature: peninggalan jalur Gemini yang sudah dihapus —
 // dipertahankan sebagai field agar histori lama yang masih menyimpannya
 // tetap bisa di-unmarshal, tapi tidak lagi diisi maupun dibaca oleh
-// provider mana pun (NexaRouter/Ciora tidak mengenal konsep ini).
+// provider mana pun (tidak ada yang mengenal konsep ini).
 type Part struct {
 	Text             string            `json:"text,omitempty"`
 	FunctionCall     *FunctionCall     `json:"functionCall,omitempty"`

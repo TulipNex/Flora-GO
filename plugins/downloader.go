@@ -20,10 +20,10 @@ import (
 	"wabot-go/internal/scraper"
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/types"
-	"go.mau.fi/whatsmeow/types/events"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/types"
+	"github.com/polymorfa/hypermeow/types/events"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -135,34 +135,34 @@ func handleAutodownload(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	switch arg {
 	case "on", "aktif", "enable":
-		if err := store.Groups().SetAutodownload(ctx, mctx.Chat.String(), true); err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal menyalakan autodownload: %v", err))
+		if err := store.GroupsFor(mctx.Client).SetAutodownload(ctx, mctx.Chat.String(), true); err != nil {
+			return store.ReplyText(ctx, mctx, ErrMsg("Autodownload", fmt.Sprintf("Gagal menyalakan: %v", err)))
 		}
-		return store.ReplyText(ctx, mctx, "Autodownload *aktif* di chat ini — link medsos yang didukung otomatis didownload + dikirim.")
+		return store.ReplyText(ctx, mctx, Block("Autodownload", Row("Status", "aktif"), "Link medsos yang didukung otomatis didownload + dikirim."))
 	case "off", "mati", "disable":
-		if err := store.Groups().SetAutodownload(ctx, mctx.Chat.String(), false); err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal mematikan autodownload: %v", err))
+		if err := store.GroupsFor(mctx.Client).SetAutodownload(ctx, mctx.Chat.String(), false); err != nil {
+			return store.ReplyText(ctx, mctx, ErrMsg("Autodownload", fmt.Sprintf("Gagal mematikan: %v", err)))
 		}
-		return store.ReplyText(ctx, mctx, "Autodownload *mati* di chat ini.")
+		return store.ReplyText(ctx, mctx, Block("Autodownload", Row("Status", "mati")))
 	default:
-		on, err := store.Groups().IsAutodownloadOn(ctx, mctx.Chat.String())
+		on, err := store.GroupsFor(mctx.Client).IsAutodownloadOn(ctx, mctx.Chat.String())
 		if err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca status autodownload: %v", err))
+			return store.ReplyText(ctx, mctx, ErrMsg("Autodownload", fmt.Sprintf("Gagal baca status: %v", err)))
 		}
 		status := "mati"
 		if on {
 			status = "aktif"
 		}
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Autodownload chat ini: *%s*\n\nPakai `.autodownload on` / `.autodownload off` untuk mengubah.", status))
+		return store.ReplyText(ctx, mctx, Block("Autodownload", Row("Status", status), "Ubah: `.autodownload on` / `.autodownload off`."))
 	}
 }
 
 func handleDownload(ctx context.Context, mctx *store.MessageContext, p dlPlatform) error {
 	if len(mctx.Args) == 0 {
 		if p.command == "spotify" {
-			return store.ReplyText(ctx, mctx, "Sertakan URL atau judul lagu. Contoh: .sp https://open.spotify.com/... atau .sp about you")
+			return store.ReplyText(ctx, mctx, Block("Spotify", "Sertakan URL atau judul lagu.", "Contoh: .sp https://open.spotify.com/... atau .sp about you"))
 		}
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Sertakan URL. Contoh: .%s https://... (%s)", p.command, strings.Join(p.hosts, ", ")))
+		return store.ReplyText(ctx, mctx, Block("Downloader", Row("Cara", "."+p.command+" <url>"), Row("Sumber", strings.Join(p.hosts, ", "))))
 	}
 	// Spotify: tiga jalur — pilih angka pending, URL langsung, atau pencarian judul.
 	if p.command == "spotify" {
@@ -184,7 +184,7 @@ func handleDownload(ctx context.Context, mctx *store.MessageContext, p dlPlatfor
 	}
 	rawURL := mctx.Args[0]
 	if err := validateDlURL(ctx, rawURL, p.hosts); err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("%v Contoh: .%s https://...", err, p.command))
+		return store.ReplyText(ctx, mctx, Block("Downloader", "Status: "+err.Error(), "Contoh: ."+p.command+" https://..."))
 	}
 
 	// Varian audio YouTube: `.yt <url> --mp3`.
@@ -200,7 +200,7 @@ func handleDownload(ctx context.Context, mctx *store.MessageContext, p dlPlatfor
 	case dlSem <- struct{}{}:
 		defer func() { <-dlSem }()
 	default:
-		return store.ReplyText(ctx, mctx, "Antrean download penuh (maks 2 bersamaan), coba lagi sebentar.")
+		return store.ReplyText(ctx, mctx, QueueFullMsg())
 	}
 
 	// Async: download bisa menit-menit — balasan dikirim saat selesai,
@@ -1091,25 +1091,32 @@ func firstSupportedURL(text string) (string, *dlPlatform) {
 
 // CheckAutodownload dipanggil handler untuk tiap pesan NON-command. Kalau
 // autodownload aktif di chat ini dan teks mengandung link medsos yang
-// didukung, link pertama didownload + dikirim — lalu pemrosesan pesan
-// DILANJUTKAN normal (AI trigger tetap jalan, tidak seperti antilink yang
-// menyetop). Seluruh kerja berat async di goroutine; fungsi ini kembali
-// seketika. Kegagalan DIBALAS ke chat (keputusan owner: jangan bikin user
-// menunggu tanpa kabar).
-func CheckAutodownload(client *whatsmeow.Client, evt *events.Message, text string) {
+// didukung, link pertama didownload + dikirim — dan return true supaya
+// pemanggil melewatkan trigger AI untuk pesan itu (keputusan owner: download
+// saja, jangan dijawab AI juga). Seluruh kerja berat async di goroutine;
+// fungsi ini kembali seketika. Kegagalan DIBALAS ke chat (keputusan owner:
+// jangan bikin user menunggu tanpa kabar).
+func CheckAutodownload(client *whatsmeow.Client, evt *events.Message, text string) bool {
 	ctx := context.Background()
 	chatJID := evt.Info.Chat.String()
-	on, err := store.Groups().IsAutodownloadOn(ctx, chatJID)
+	on, err := store.GroupsFor(client).IsAutodownloadOn(ctx, chatJID)
 	if err != nil {
 		logfmt.Warn("Gagal cek autodownload %s: %v\n", chatJID, err)
-		return
+		return false
 	}
 	if !on {
-		return
+		return false
 	}
 	rawURL, p := firstSupportedURL(text)
-	if rawURL == "" {
-		return
+	if rawURL == "" || p == nil {
+		return false
+	}
+	// YouTube dikecualikan dari autodownload (keputusan owner): berat
+	// (yt-dlp + transcode, sampai 200MB) — hanya via command manual
+	// .yt/.ytmp3. Return false supaya pesan diproses normal seperti pesan
+	// biasa (termasuk trigger AI bila ada kata panggilan Flora).
+	if p.command == "youtube" || p.command == "youtubemp3" {
+		return false
 	}
 
 	mctx := &store.MessageContext{
@@ -1144,6 +1151,7 @@ func CheckAutodownload(client *whatsmeow.Client, evt *events.Message, text strin
 			_ = store.ReplyText(bg, mctx, fmt.Sprintf("Gagal autodownload: %v", rerr))
 		}
 	}()
+	return true
 }
 
 // CleanStaleDownloads menyapu folder temp yatim (wabot-dl-*) yang umurnya

@@ -41,11 +41,11 @@ type TokenUsage struct {
 // pun) — dipertahankan agar histori lama tetap kompatibel, diteruskan apa
 // adanya oleh loop.go.
 //
-// ID dibawa apa adanya dari provider OpenAI-compatible (NexaRouter, Ciora)
-// yang menerbitkan tool_call id sendiri (mis. "call_xyz"). WAJIB di-echo
-// balik persis sama di tool_call_id pada balasan role="tool" — provider
-// yang ketat menolak permintaan berikutnya kalau ID tidak cocok (kalau
-// kosong, openai_common.go fallback ke Name).
+// ID dibawa apa adanya dari provider OpenAI-compatible yang menerbitkan
+// tool_call id sendiri (mis. "call_xyz"). WAJIB di-echo balik persis sama
+// di tool_call_id pada balasan role="tool" — provider yang ketat menolak
+// permintaan berikutnya kalau ID tidak cocok (kalau kosong,
+// openai_common.go fallback ke Name).
 type ToolCall struct {
 	ID               string
 	Name             string
@@ -54,7 +54,7 @@ type ToolCall struct {
 }
 
 // ProviderAdapter adalah kontrak seragam untuk semua provider AI
-// (NexaRouter, Ciora) — tambah provider baru tanpa mengubah agent loop
+// OpenAI-compatible — tambah provider baru tanpa mengubah agent loop
 // atau pemanggil lain.
 type ProviderAdapter interface {
 	Generate(ctx context.Context, params GenerateParams) (*AgentResponse, error)

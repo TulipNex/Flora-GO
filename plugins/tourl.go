@@ -16,8 +16,8 @@ import (
 	"wabot-go/internal/messaging"
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/proto/waE2E"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
 )
 
 func init() {
@@ -77,7 +77,7 @@ func RegisterTourl(r *Registry) {
 
 // handleTourl memvalidasi input lalu memproses di goroutine terpisah (pola
 // sama dengan .smeme/.brat: pipeline jaringan bisa memakan belasan detik,
-// jadi event loop whatsmeow tidak boleh diblokir).
+// jadi event loop hypermeow tidak boleh diblokir).
 func handleTourl(ctx context.Context, mctx *store.MessageContext) error {
 	providerName := strings.ToLower(strings.TrimSpace(mctx.RawArgs))
 	if providerName == "" {

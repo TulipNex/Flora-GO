@@ -3,10 +3,10 @@ package store
 import (
 	"context"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/types"
-	"go.mau.fi/whatsmeow/types/events"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/types"
+	"github.com/polymorfa/hypermeow/types/events"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -50,7 +50,7 @@ func ReplyText(ctx context.Context, mctx *MessageContext, text string) error {
 		TrackBotMessageID(resp.ID, text)
 		// Arsip keluar FIORA/CRM: async fire-and-forget supaya latensi
 		// reply nol; fail-soft di dalam bila DB arsip mati.
-		go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg)
+		if IsMainClient(mctx.Client) { go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg) }
 	}
 	return err
 }
@@ -74,7 +74,7 @@ func ReplyTextAgent(ctx context.Context, mctx *MessageContext, text string) erro
 		// Sama seperti ReplyText: catat ID agar reply ke bubble ini
 		// dikenali trigger AI.
 		TrackBotMessageID(resp.ID, text)
-		go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg)
+		if IsMainClient(mctx.Client) { go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg) }
 	}
 	return err
 }
@@ -109,7 +109,7 @@ func ReplyTextWithMentions(ctx context.Context, mctx *MessageContext, text strin
 	if err == nil {
 		LogOutgoing(mctx, "text-mention", text)
 		TrackBotMessageID(resp.ID, text)
-		go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg)
+		if IsMainClient(mctx.Client) { go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg) }
 	}
 	return err
 }
@@ -126,7 +126,34 @@ func SendTextAgent(ctx context.Context, mctx *MessageContext, text string) error
 	if err == nil {
 		LogOutgoingAgent(mctx, "text", text)
 		TrackBotMessageID(resp.ID, text)
-		go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg)
+		if IsMainClient(mctx.Client) { go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg) }
+	}
+	return err
+}
+
+// SendTextWithMentions mengirim pesan lepas (tanpa quote) + mention beneran.
+// Dipakai pengumuman timer yang tak punya pesan asal untuk di-quote
+// (mis. tantangan tictactoe kedaluwarsa). Syarat pairing sama seperti
+// ReplyTextWithMentions: teks WAJIB mengandung "@<User>" yang sama persis
+// dengan JID-nya.
+func SendTextWithMentions(ctx context.Context, mctx *MessageContext, text string, mentions []types.JID) error {
+	bare := make([]string, 0, len(mentions))
+	for _, jid := range mentions {
+		bare = append(bare, jid.ToNonAD().String())
+	}
+	outMsg := &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String(text),
+			ContextInfo: &waE2E.ContextInfo{
+				MentionedJID: bare,
+			},
+		},
+	}
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, outMsg)
+	if err == nil {
+		LogOutgoing(mctx, "text-mention", text)
+		TrackBotMessageID(resp.ID, text)
+		if IsMainClient(mctx.Client) { go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg) }
 	}
 	return err
 }
@@ -145,7 +172,7 @@ func SendText(ctx context.Context, mctx *MessageContext, text string) error {
 	if err == nil {
 		LogOutgoing(mctx, "text", text)
 		TrackBotMessageID(resp.ID, text)
-		go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg)
+		if IsMainClient(mctx.Client) { go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg) }
 	}
 	return err
 }

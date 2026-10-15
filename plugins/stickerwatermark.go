@@ -8,7 +8,7 @@ import (
 	"wabot-go/internal/config"
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
 )
 
 func init() {

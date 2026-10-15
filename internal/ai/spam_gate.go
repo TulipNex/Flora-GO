@@ -40,23 +40,33 @@ func IsSpam(senderKey string) bool {
 
 // --- Lock per-sender ---
 //
-// senderLocks menyimpan satu *sync.Mutex per sender, dibuat on-demand.
+// senderLocks menyimpan satu lock per sender, dibuat on-demand.
 // Ini mencegah race condition kalau (secara teori) dua pesan dari sender
 // yang sama diproses hampir bersamaan (mis. reply cepat dua kali beruntun
 // sebelum balasan pertama selesai) — tanpa lock ini, keduanya bisa saling
 // menimpa saat baca-lalu-tulis ke SessionStore.
+//
+// Lock berbasis channel berkapasitas 1 (bukan sync.Mutex) supaya ada operasi
+// non-blocking TrySenderLock: pesan yang datang saat sesi masih diproses
+// langsung ditolak diam-diam, tidak antre serial yang menumpuk LLM call +
+// bubble balasan berurutan.
+type senderLock struct {
+	ch chan struct{}
+}
+
 var (
 	senderLocksMu sync.Mutex
-	senderLocks   = make(map[string]*sync.Mutex)
+	senderLocks   = make(map[string]*senderLock)
 )
 
-func getSenderLock(senderKey string) *sync.Mutex {
+func getSenderLock(senderKey string) *senderLock {
 	senderLocksMu.Lock()
 	defer senderLocksMu.Unlock()
 
 	lock, ok := senderLocks[senderKey]
 	if !ok {
-		lock = &sync.Mutex{}
+		lock = &senderLock{ch: make(chan struct{}, 1)}
+		lock.ch <- struct{}{}
 		senderLocks[senderKey] = lock
 	}
 	return lock
@@ -64,10 +74,27 @@ func getSenderLock(senderKey string) *sync.Mutex {
 
 // WithSenderLock menjalankan fn hanya setelah mendapat lock eksklusif untuk
 // senderKey tersebut, memastikan giliran percakapan sender yang sama tidak
-// pernah diproses tumpang tindih.
+// pernah diproses tumpang tindih. Versi blocking (menunggu); dipertahankan
+// untuk kompatibilitas — jalur utama HandleAIMessage memakai TrySenderLock.
 func WithSenderLock(senderKey string, fn func() (string, error)) (string, error) {
 	lock := getSenderLock(senderKey)
-	lock.Lock()
-	defer lock.Unlock()
+	<-lock.ch
+	defer func() { lock.ch <- struct{}{} }()
 	return fn()
+}
+
+// TrySenderLock mencoba mendapat lock eksklusif untuk senderKey TANPA menunggu.
+// ok=false berarti sesi ini sedang diproses — pemanggil wajib kembali
+// diam-diam (tanpa LLM call, tanpa bubble, tanpa error) supaya burst pesan
+// tidak antre serial.
+func TrySenderLock(senderKey string, fn func() (string, error)) (result string, ok bool, err error) {
+	lock := getSenderLock(senderKey)
+	select {
+	case <-lock.ch:
+		defer func() { lock.ch <- struct{}{} }()
+		result, err = fn()
+		return result, true, err
+	default:
+		return "", false, nil
+	}
 }

@@ -9,8 +9,8 @@ import (
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow/types"
-	"go.mau.fi/whatsmeow/types/events"
+	"github.com/polymorfa/hypermeow/types"
+	"github.com/polymorfa/hypermeow/types/events"
 )
 
 func init() {
@@ -81,7 +81,7 @@ func IsOwnerOrTrusted(ctx context.Context, mctx *store.MessageContext) bool {
 	if mctx.RawEvt != nil {
 		senderAlt = mctx.RawEvt.Info.SenderAlt
 	}
-	ok, err := store.Groups().IsUserTrusted(ctx, mctx.Sender, senderAlt)
+	ok, err := store.GroupsFor(mctx.Client).IsUserTrusted(ctx, mctx.Sender, senderAlt)
 	if err != nil {
 		logfmt.Error("Gagal cek trust Flora untuk %s: %v\n", mctx.Sender.String(), err)
 		return false
@@ -195,7 +195,7 @@ func handleBan(ctx context.Context, mctx *store.MessageContext) error {
 	if isJIDOwner(target) {
 		return store.ReplyText(ctx, mctx, "Tidak bisa mem-ban owner sendiri.")
 	}
-	if err := store.Groups().BanUser(ctx, target); err != nil {
+	if err := store.GroupsFor(mctx.Client).BanUser(ctx, target); err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal ban: %v", err))
 	}
 	return store.ReplyTextWithMentions(ctx, mctx,
@@ -211,7 +211,7 @@ func handleUnban(ctx context.Context, mctx *store.MessageContext) error {
 	if err != nil {
 		return store.ReplyText(ctx, mctx, err.Error())
 	}
-	removed, err := store.Groups().UnbanUser(ctx, target)
+	removed, err := store.GroupsFor(mctx.Client).UnbanUser(ctx, target)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal unban: %v", err))
 	}
@@ -231,7 +231,7 @@ func handleBanList(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireOwner(mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
 	}
-	list, err := store.Groups().ListBannedUsers(ctx)
+	list, err := store.GroupsFor(mctx.Client).ListBannedUsers(ctx)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca daftar ban: %v", err))
 	}
@@ -268,7 +268,7 @@ func handleBanGroup(ctx context.Context, mctx *store.MessageContext) error {
 	if !mctx.IsGroup() {
 		return store.ReplyText(ctx, mctx, "Command ini hanya bisa dipakai di dalam grup yang mau di-ban.")
 	}
-	if err := store.Groups().BanGroup(ctx, mctx.Chat.String()); err != nil {
+	if err := store.GroupsFor(mctx.Client).BanGroup(ctx, mctx.Chat.String()); err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal ban grup: %v", err))
 	}
 	return store.ReplyText(ctx, mctx, "Grup ini telah di-ban. Bot tidak akan merespons pesan dari sini lagi (kecuali command owner).")
@@ -281,7 +281,7 @@ func handleUnbanGroup(ctx context.Context, mctx *store.MessageContext) error {
 	if !mctx.IsGroup() {
 		return store.ReplyText(ctx, mctx, "Command ini hanya bisa dipakai di dalam grup yang mau di-unban.")
 	}
-	removed, err := store.Groups().UnbanGroup(ctx, mctx.Chat.String())
+	removed, err := store.GroupsFor(mctx.Client).UnbanGroup(ctx, mctx.Chat.String())
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal unban grup: %v", err))
 	}
@@ -295,7 +295,7 @@ func handleBanGroupList(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireOwner(mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
 	}
-	list, err := store.Groups().ListBannedGroups(ctx)
+	list, err := store.GroupsFor(mctx.Client).ListBannedGroups(ctx)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca daftar ban grup: %v", err))
 	}
@@ -337,13 +337,13 @@ func handleMode(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	arg := strings.ToLower(strings.TrimSpace(strings.Join(mctx.Args, " ")))
 	if arg == "" {
-		mode, err := store.Groups().GetBotMode(ctx)
+		mode, err := store.GroupsFor(mctx.Client).GetBotMode(ctx)
 		if err != nil {
 			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca mode: %v", err))
 		}
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Mode bot saat ini: *%s*\n\n- self: hanya owner yang dilayani\n- public: semua orang dilayani", mode))
 	}
-	if err := store.Groups().SetBotMode(ctx, arg); err != nil {
+	if err := store.GroupsFor(mctx.Client).SetBotMode(ctx, arg); err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("%v", err))
 	}
 	if arg == store.BotModeSelf {

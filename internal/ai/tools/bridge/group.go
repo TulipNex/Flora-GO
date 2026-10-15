@@ -7,8 +7,8 @@ import (
 	"wabot-go/internal/store"
 	"wabot-go/plugins"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/types"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/types"
 )
 
 // extractMctx mengambil *store.MessageContext asli dari AgentContext.Extra,
@@ -129,6 +129,16 @@ func executeGroupChange(actx *ai.AgentContext, args map[string]interface{}, chan
 		if !found {
 			return "", fmt.Errorf("member %s tidak ditemukan di grup ini — pastikan orangnya masih jadi member", phoneRaw)
 		}
+	}
+
+	// Guard target yang SAMA dengan command manual (lihat G5 di
+	// plugins/groupmanage.go): promote/demote boleh untuk owner tapi tidak
+	// untuk bot sendiri; kick tidak boleh untuk keduanya.
+	if plugins.IsBotTarget(mctx, target) {
+		return "", fmt.Errorf("tidak bisa mengubah status bot sendiri")
+	}
+	if change == whatsmeow.ParticipantChangeRemove && plugins.IsOwnerTarget(actx.Context, mctx, target) {
+		return "", fmt.Errorf("tidak bisa mengeluarkan owner bot dari grup")
 	}
 
 	_, err = mctx.Client.UpdateGroupParticipants(actx.Context, mctx.Chat, []types.JID{target}, change)

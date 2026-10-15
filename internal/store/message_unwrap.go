@@ -1,6 +1,6 @@
 package store
 
-import "go.mau.fi/whatsmeow/proto/waE2E"
+import "github.com/polymorfa/hypermeow/proto/waE2E"
 
 // UnwrapMessage membuka bungkus EphemeralMessage (mode "Pesan Sementara" di
 // grup) dan semua varian ViewOnceMessage (foto/video sekali lihat), lalu

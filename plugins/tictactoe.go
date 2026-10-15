@@ -10,8 +10,8 @@ import (
 
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/types"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/types"
 )
 
 func init() {
@@ -186,6 +186,9 @@ func ttChallengeLocked(ctx context.Context, mctx *store.MessageContext, key stri
 	if ttSamePlayer(target, sender, alt) {
 		return store.ReplyText(ctx, mctx, "Tidak bisa menantang diri sendiri. Lawan bot saja: .ttt bot.")
 	}
+	if IsBotTarget(mctx, target) {
+		return store.ReplyText(ctx, mctx, "Tidak bisa menantang bot. Lawan bot langsung: .ttt bot.")
+	}
 	g := &ttGame{playerX: sender, playerO: target, turnX: true, pending: true}
 	ttGames[key] = g
 	ttArmChallengeTimeout(mctx.Client, mctx.Chat, key, g)
@@ -227,9 +230,10 @@ func ttArmChallengeTimeout(client *whatsmeow.Client, chat types.JID, key string,
 		challenged := g.playerO
 		delete(ttGames, key)
 		mctx := &store.MessageContext{Client: client, Chat: chat}
-		_ = store.SendText(context.Background(), mctx,
+		_ = store.SendTextWithMentions(context.Background(), mctx,
 			fmt.Sprintf("Tantangan tictactoe untuk @%s kedaluwarsa (tidak dijawab %d detik).",
-				displayTTUser(challenged), int(ttChallengeTimeout.Seconds())))
+				displayTTUser(challenged), int(ttChallengeTimeout.Seconds())),
+			[]types.JID{challenged})
 	})
 }
 

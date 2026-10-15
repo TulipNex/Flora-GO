@@ -65,7 +65,7 @@ func handleShell(ctx context.Context, mctx *store.MessageContext) error {
 	}
 
 	// Async: eksekusi jalan di goroutine sendiri dan balasan dikirim saat
-	// selesai. Handler langsung return supaya event loop whatsmeow tidak
+	// selesai. Handler langsung return supaya event loop hypermeow tidak
 	// terblokir perintah lama (fetch web dsb) — pelajaran dari warning
 	// "Node handling took Xs" di jalur AI. Balasan tetap satu pesan berisi
 	// output (atau status timeout/error).

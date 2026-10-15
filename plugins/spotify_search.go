@@ -12,9 +12,9 @@ import (
 	"wabot-go/internal/scraper"
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/types"
-	"go.mau.fi/whatsmeow/types/events"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/types"
+	"github.com/polymorfa/hypermeow/types/events"
 )
 
 // Pencarian Spotify: `.sp <judul>` → daftar bernomor → pilih via
@@ -38,7 +38,52 @@ var spPending = struct {
 	m map[string]*spPendingResult
 }{m: make(map[string]*spPendingResult)}
 
-func spPendingKey(chat, sender string) string { return chat + "|" + sender }
+func spPendingKey(chat, sender string) string { return pendingKey(chat, sender) }
+
+// normPendingJID menormalisasi string JID ke bare (tanpa device/AD), supaya
+// flip format pengirim tidak menghilangkan hasil pick yang tersimpan.
+func normPendingJID(raw string) string {
+	if jid, err := types.ParseJID(raw); err == nil && !jid.IsEmpty() {
+		return jid.ToNonAD().String()
+	}
+	return raw
+}
+
+// pendingKey membangun kunci pending pick chat|sender ternormalisasi.
+func pendingKey(chat, sender string) string {
+	return normPendingJID(chat) + "|" + normPendingJID(sender)
+}
+
+// pendingAltSenders mengembalikan bentuk alt sender yang ternormalisasi
+// (SenderAlt event + resolve store LID↔PN, di luar bentuk primer) — untuk
+// penyimpanan ganda hasil pick, supaya flip format di tengah sesi
+// pilih-angka tetap ketemu (pola G7).
+func pendingAltSenders(mctx *store.MessageContext) []string {
+	primary := ""
+	if !mctx.Sender.IsEmpty() {
+		primary = mctx.Sender.ToNonAD().String()
+	}
+	seen := map[string]bool{primary: true}
+	var out []string
+	add := func(j types.JID) {
+		if j.IsEmpty() {
+			return
+		}
+		if s := j.ToNonAD().String(); s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	if mctx.RawEvt != nil {
+		add(mctx.RawEvt.Info.SenderAlt)
+	}
+	if mctx.Client != nil && mctx.Client.Store != nil && !mctx.Sender.IsEmpty() {
+		if alt, err := mctx.Client.Store.GetAltJID(context.Background(), mctx.Sender.ToNonAD()); err == nil {
+			add(alt)
+		}
+	}
+	return out
+}
 
 func spPendingSet(chat, sender string, tracks []scraper.SpotifyTrack, query string) {
 	spPending.Lock()
@@ -145,6 +190,9 @@ func handleSpotifySearch(ctx context.Context, mctx *store.MessageContext, query 
 			return
 		}
 		spPendingSet(mctx.Chat.String(), mctx.Sender.String(), tracks, query)
+		for _, alt := range pendingAltSenders(mctx) {
+			spPendingSet(mctx.Chat.String(), alt, tracks, query)
+		}
 		_ = store.ReplyText(bg, mctx, formatSpotifySearchList(query, tracks))
 	}()
 	return nil
@@ -259,7 +307,8 @@ func startSpotifyTrackDownload(mctx *store.MessageContext, track scraper.Spotify
 	}
 	rawURL := "https://open.spotify.com/track/" + track.ID
 	if rerr := downloadSpotifyAndSend(bg, mctx, rawURL, p, true, status, &track); rerr != nil {
-		_ = store.ReplyText(bg, mctx, rerr.Error())
+		logfmt.Warn("spotify: unduh track gagal (%v)\n", rerr)
+		_ = store.ReplyText(bg, mctx, "Gagal mengunduh lagu, coba lagi sebentar.")
 	}
 }
 

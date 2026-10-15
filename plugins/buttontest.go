@@ -12,10 +12,9 @@ import (
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow"
-	waBinary "go.mau.fi/whatsmeow/binary"
-	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/types/events"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/types/events"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -71,20 +70,32 @@ func handleButtonTest(ctx context.Context, mctx *store.MessageContext) error {
 	}
 }
 
-// btnTestBizExtra mengembalikan AdditionalNodes biz standar (wajib agar
-// klien me-render interactiveMessage).
+// Fakta uji tombol native_flow (live, akun bisnis, Okt 2026) — JANGAN uji
+// ulang tanpa alasan:
+//   Jalan (terkirim + tampil + tap terbaca): single_select, cta_copy,
+//   cta_url, quick_reply, cta_call, send_location, inapp_signup,
+//   booking_confirmation. flow/galaxy_message terkirim tapi butuh Flow asli
+//   di server Meta (dummy = kartu kosong + notifikasi kesalahan).
+//   Mati total (terkirim, tak tampil): review_and_pay, payment_info,
+//   wa_payment_transaction_details, automated_greeting_message_view_catalog,
+//   mpm, call_permission_request (butuh order/pembayaran/katalog asli);
+//   cta_catalog (drop total; butuh katalog terisi — belum terkonfirmasi);
+//   address_message (drop total; geo-block Meta, hanya India/Singapura).
+//   Setengah mati (bubble tampil, tombol hilang): cta_reminder,
+//   cta_cancel_reminder (tanpa jalur trigger publik).
+//   Syarat stanza: SATU node `biz` dengan native_flow name="mixed" (patch
+//   fork lokal third_party/hypermeow). Node ganda = 479; nama turunan =
+//   473/405. Subcommand mati (extra/pay/xcatalog/xremind/xunremind/xaddr)
+//   sudah dihapus dari switch di atas.
+
+// btnTestBizExtra mengembalikan extra kirim standar (ID acak). Node `biz`
+// SENGAJA tidak disertakan manual: hypermeow menempelkannya otomatis untuk
+// tiap InteractiveMessage+NativeFlowMessage (getMessageContent /
+// buildNativeFlowBizNode di send.go) — node `biz` ganda ditolak server
+// (error 479, terverifikasi live). Pola manual ini warisan era Baileys yang
+// tak punya auto-biz.
 func btnTestBizExtra() whatsmeow.SendRequestExtra {
-	return whatsmeow.SendRequestExtra{ID: whatsmeow.GenerateMessageID(), AdditionalNodes: &[]waBinary.Node{{
-		Tag: "biz",
-		Content: []waBinary.Node{{
-			Tag:   "interactive",
-			Attrs: waBinary.Attrs{"type": "native_flow", "v": "1"},
-			Content: []waBinary.Node{{
-				Tag:   "native_flow",
-				Attrs: waBinary.Attrs{"v": "9", "name": "mixed"},
-			}},
-		}},
-	}}}
+	return whatsmeow.SendRequestExtra{ID: whatsmeow.GenerateMessageID()}
 }
 
 // btnTestNativeWithExtra membangun bubble native_flow dari daftar tombol
@@ -256,21 +267,10 @@ func btnTestSendNative(ctx context.Context, mctx *store.MessageContext) error {
 			},
 		},
 	}
-	// Node biz (tiruan sendInteractive Baileys): wajib agar klien me-render
-	// tombol native_flow.
-	nodes := &[]waBinary.Node{{
-		Tag: "biz",
-		Content: []waBinary.Node{{
-			Tag:   "interactive",
-			Attrs: waBinary.Attrs{"type": "native_flow", "v": "1"},
-			Content: []waBinary.Node{{
-				Tag:   "native_flow",
-				Attrs: waBinary.Attrs{"v": "9", "name": "mixed"},
-			}},
-		}},
-	}}
+	// Tanpa node `biz` manual (lihat btnTestBizExtra): hypermeow
+	// menempelkannya otomatis, node ganda = error 479.
 	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, msg,
-		whatsmeow.SendRequestExtra{ID: whatsmeow.GenerateMessageID(), AdditionalNodes: nodes})
+		whatsmeow.SendRequestExtra{ID: whatsmeow.GenerateMessageID()})
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal kirim bubble tombol: %v", err))
 	}

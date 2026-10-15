@@ -18,7 +18,7 @@ import (
 	"wabot-go/internal/scraper"
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
 )
 
 func init() {
@@ -82,7 +82,7 @@ func RegisterSmeme(r *Registry) {
 
 // handleSmeme memvalidasi input (teks + media background) lalu memproses
 // di goroutine terpisah (pola sama dengan .brat/downloader): pipeline
-// jaringan bisa memakan belasan detik, jadi event loop whatsmeow tidak
+// jaringan bisa memakan belasan detik, jadi event loop hypermeow tidak
 // boleh diblokir.
 func handleSmeme(ctx context.Context, mctx *store.MessageContext) error {
 	top, bottom, err := smemeInputText(mctx)

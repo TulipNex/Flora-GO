@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"go.mau.fi/whatsmeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
 	"google.golang.org/protobuf/proto"
 )
 

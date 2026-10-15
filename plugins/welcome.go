@@ -12,10 +12,10 @@ import (
 	"wabot-go/internal/store"
 	"wabot-go/internal/timex"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/types"
-	"go.mau.fi/whatsmeow/types/events"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/types"
+	"github.com/polymorfa/hypermeow/types/events"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -120,29 +120,32 @@ func handleWelcomeCmd(ctx context.Context, mctx *store.MessageContext) error {
 	sub, rest := greetingSubcommand(mctx)
 	switch sub {
 	case "on", "aktif", "enable":
-		if err := store.Groups().SetWelcome(ctx, mctx.Chat.String(), true); err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal menyalakan welcome: %v", err))
+		if err := store.GroupsFor(mctx.Client).SetWelcome(ctx, mctx.Chat.String(), true); err != nil {
+			return store.ReplyText(ctx, mctx, ErrMsg("Welcome", fmt.Sprintf("Gagal menyalakan: %v", err)))
 		}
-		return store.ReplyText(ctx, mctx, "Sambutan anggota baru *aktif* di grup ini.")
+		return store.ReplyText(ctx, mctx, Block("Welcome", Row("Status", "aktif")))
 	case "off", "mati", "disable":
-		if err := store.Groups().SetWelcome(ctx, mctx.Chat.String(), false); err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal mematikan welcome: %v", err))
+		if err := store.GroupsFor(mctx.Client).SetWelcome(ctx, mctx.Chat.String(), false); err != nil {
+			return store.ReplyText(ctx, mctx, ErrMsg("Welcome", fmt.Sprintf("Gagal mematikan: %v", err)))
 		}
-		return store.ReplyText(ctx, mctx, "Sambutan anggota baru *mati* di grup ini.")
+		return store.ReplyText(ctx, mctx, Block("Welcome", Row("Status", "mati")))
 	case "set":
 		return handleSetGreeting(ctx, mctx, rest, true)
 	case "simulate", "simulasi", "test", "tes":
 		return handleSimulateGreeting(ctx, mctx, true)
 	default:
-		gr, err := store.Groups().GetGreeting(ctx, mctx.Chat.String())
+		gr, err := store.GroupsFor(mctx.Client).GetGreeting(ctx, mctx.Chat.String())
 		if err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca status welcome: %v", err))
+			return store.ReplyText(ctx, mctx, ErrMsg("Welcome", fmt.Sprintf("Gagal baca status: %v", err)))
 		}
 		status := "mati"
 		if gr.WelcomeOn {
 			status = "aktif"
 		}
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Sambutan anggota baru: *%s*\n\n`.welcome on` / `.welcome off` — ubah status.\n`.welcome set <format>` — ganti teks (multi-baris, `reset` = default).\n`.welcome simulate` — kirim contoh dengan kamu sebagai @user.", status))
+		return store.ReplyText(ctx, mctx, Block("Welcome", Row("Status", status),
+			"`.welcome on` / `.welcome off` — ubah status.",
+			"`.welcome set <format>` — ganti teks (multi-baris, `reset` = default).",
+			"`.welcome simulate` — kirim contoh dengan kamu sebagai @user."))
 	}
 }
 
@@ -153,29 +156,32 @@ func handleByeCmd(ctx context.Context, mctx *store.MessageContext) error {
 	sub, rest := greetingSubcommand(mctx)
 	switch sub {
 	case "on", "aktif", "enable":
-		if err := store.Groups().SetBye(ctx, mctx.Chat.String(), true); err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal menyalakan bye: %v", err))
+		if err := store.GroupsFor(mctx.Client).SetBye(ctx, mctx.Chat.String(), true); err != nil {
+			return store.ReplyText(ctx, mctx, ErrMsg("Bye", fmt.Sprintf("Gagal menyalakan: %v", err)))
 		}
-		return store.ReplyText(ctx, mctx, "Perpisahan anggota keluar *aktif* di grup ini.")
+		return store.ReplyText(ctx, mctx, Block("Bye", Row("Status", "aktif")))
 	case "off", "mati", "disable":
-		if err := store.Groups().SetBye(ctx, mctx.Chat.String(), false); err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal mematikan bye: %v", err))
+		if err := store.GroupsFor(mctx.Client).SetBye(ctx, mctx.Chat.String(), false); err != nil {
+			return store.ReplyText(ctx, mctx, ErrMsg("Bye", fmt.Sprintf("Gagal mematikan: %v", err)))
 		}
-		return store.ReplyText(ctx, mctx, "Perpisahan anggota keluar *mati* di grup ini.")
+		return store.ReplyText(ctx, mctx, Block("Bye", Row("Status", "mati")))
 	case "set":
 		return handleSetGreeting(ctx, mctx, rest, false)
 	case "simulate", "simulasi", "test", "tes":
 		return handleSimulateGreeting(ctx, mctx, false)
 	default:
-		gr, err := store.Groups().GetGreeting(ctx, mctx.Chat.String())
+		gr, err := store.GroupsFor(mctx.Client).GetGreeting(ctx, mctx.Chat.String())
 		if err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca status bye: %v", err))
+			return store.ReplyText(ctx, mctx, ErrMsg("Bye", fmt.Sprintf("Gagal baca status: %v", err)))
 		}
 		status := "mati"
 		if gr.ByeOn {
 			status = "aktif"
 		}
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Perpisahan anggota keluar: *%s*\n\n`.bye on` / `.bye off` — ubah status.\n`.bye set <format>` — ganti teks (multi-baris, `reset` = default).\n`.bye simulate` — kirim contoh dengan kamu sebagai @user.", status))
+		return store.ReplyText(ctx, mctx, Block("Bye", Row("Status", status),
+			"`.bye on` / `.bye off` — ubah status.",
+			"`.bye set <format>` — ganti teks (multi-baris, `reset` = default).",
+			"`.bye simulate` — kirim contoh dengan kamu sebagai @user."))
 	}
 }
 
@@ -209,9 +215,9 @@ func handleSetGreeting(ctx context.Context, mctx *store.MessageContext, rest str
 		name = "welcome"
 	}
 	if rest == "" {
-		gr, err := store.Groups().GetGreeting(ctx, mctx.Chat.String())
+		gr, err := store.GroupsFor(mctx.Client).GetGreeting(ctx, mctx.Chat.String())
 		if err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca template: %v", err))
+			return store.ReplyText(ctx, mctx, ErrMsg("Template", fmt.Sprintf("Gagal baca: %v", err)))
 		}
 		current := gr.ByeMsg
 		if isWelcome {
@@ -224,34 +230,34 @@ func handleSetGreeting(ctx context.Context, mctx *store.MessageContext, rest str
 				current = DefaultByeTemplate + "\n(default)"
 			}
 		}
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Template %s saat ini:\n\n%s\n\n%s", name, current, setTemplateHelp))
+		return store.ReplyText(ctx, mctx, Title("Template")+"\n"+Row("Jenis", name)+"\n\n"+current+"\n\n"+setTemplateHelp)
 	}
 	if strings.EqualFold(rest, "reset") {
 		var err error
 		if isWelcome {
-			err = store.Groups().SetWelcomeMsg(ctx, mctx.Chat.String(), "")
+			err = store.GroupsFor(mctx.Client).SetWelcomeMsg(ctx, mctx.Chat.String(), "")
 		} else {
-			err = store.Groups().SetByeMsg(ctx, mctx.Chat.String(), "")
+			err = store.GroupsFor(mctx.Client).SetByeMsg(ctx, mctx.Chat.String(), "")
 		}
 		if err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal reset template: %v", err))
+			return store.ReplyText(ctx, mctx, ErrMsg("Template", fmt.Sprintf("Gagal reset: %v", err)))
 		}
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Template %s dikembalikan ke default.", name))
+		return store.ReplyText(ctx, mctx, Block("Template", Row("Jenis", name), Row("Status", "Dikembalikan ke default")))
 	}
 	var err error
 	if isWelcome {
-		err = store.Groups().SetWelcomeMsg(ctx, mctx.Chat.String(), rest)
+		err = store.GroupsFor(mctx.Client).SetWelcomeMsg(ctx, mctx.Chat.String(), rest)
 	} else {
-		err = store.Groups().SetByeMsg(ctx, mctx.Chat.String(), rest)
+		err = store.GroupsFor(mctx.Client).SetByeMsg(ctx, mctx.Chat.String(), rest)
 	}
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal simpan template: %v", err))
+		return store.ReplyText(ctx, mctx, ErrMsg("Template", fmt.Sprintf("Gagal simpan: %v", err)))
 	}
 	verb := "join"
 	if !isWelcome {
 		verb = "keluar"
 	}
-	return store.ReplyText(ctx, mctx, fmt.Sprintf("Template %s disimpan.\n\nBerlaku untuk anggota yang %s berikutnya.", name, verb))
+	return store.ReplyText(ctx, mctx, Block("Template", Row("Jenis", name), Row("Status", "Disimpan — berlaku untuk anggota yang "+verb+" berikutnya")))
 }
 
 // handleSimulateGreeting menangani ".welcome simulate" / ".bye simulate":
@@ -262,15 +268,15 @@ func handleSetGreeting(ctx context.Context, mctx *store.MessageContext, rest str
 // yang bermakna).
 func handleSimulateGreeting(ctx context.Context, mctx *store.MessageContext, isWelcome bool) error {
 	if !mctx.IsGroup() {
-		return store.ReplyText(ctx, mctx, "Simulasi hanya bisa di dalam grup.")
+		return store.ReplyText(ctx, mctx, ErrNotGroup("Simulasi"))
 	}
 	kind := "bye"
 	if isWelcome {
 		kind = "welcome"
 	}
-	gr, err := store.Groups().GetGreeting(ctx, mctx.Chat.String())
+	gr, err := store.GroupsFor(mctx.Client).GetGreeting(ctx, mctx.Chat.String())
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca template: %v", err))
+		return store.ReplyText(ctx, mctx, ErrMsg("Template", fmt.Sprintf("Gagal baca: %v", err)))
 	}
 	tmpl := gr.ByeMsg
 	if isWelcome {
@@ -334,19 +340,19 @@ func HandleGroupJoin(client *whatsmeow.Client, evt *events.GroupInfo) {
 	}
 	ctx := context.Background()
 
-	if self, err := store.Groups().IsSelfMode(ctx); err != nil {
+	if self, err := store.GroupsFor(client).IsSelfMode(ctx); err != nil {
 		logfmt.Warn("Gagal cek mode untuk greeting %s: %v\n", evt.JID, err)
 		return
 	} else if self {
 		return
 	}
-	if gbanned, err := store.Groups().IsGroupBanned(ctx, evt.JID.String()); err != nil {
+	if gbanned, err := store.GroupsFor(client).IsGroupBanned(ctx, evt.JID.String()); err != nil {
 		logfmt.Warn("Gagal cek ban grup untuk greeting %s: %v\n", evt.JID, err)
 		return
 	} else if gbanned {
 		return
 	}
-	gr, err := store.Groups().GetGreeting(ctx, evt.JID.String())
+	gr, err := store.GroupsFor(client).GetGreeting(ctx, evt.JID.String())
 	if err != nil {
 		logfmt.Warn("Gagal baca greeting %s: %v\n", evt.JID, err)
 		return
@@ -457,7 +463,16 @@ func sendGreeting(client *whatsmeow.Client, chat, member types.JID, tmpl, groupN
 		return
 	}
 	ctx := context.Background()
-	if banned, err := store.Groups().IsUserBanned(ctx, bare, types.EmptyJID); err != nil {
+	// User yang di-ban diabaikan total (konsisten dengan handler pesan
+	// biasa): cek JID + hasil resolve alt-JID (pemetaan LID↔PN) supaya
+	// format yang berbeda tetap cocok dengan simpanan ban.
+	alt := types.EmptyJID
+	if client.Store != nil {
+		if a, err := client.Store.GetAltJID(ctx, bare); err == nil && !a.IsEmpty() {
+			alt = a.ToNonAD()
+		}
+	}
+	if banned, err := store.GroupsFor(client).IsUserBanned(ctx, bare, alt); err != nil {
 		logfmt.Warn("Gagal cek ban untuk greeting %s: %v\n", bare, err)
 	} else if banned {
 		return

@@ -17,10 +17,10 @@ import (
 	"wabot-go/internal/timex"
 
 	"github.com/xuri/excelize/v2"
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/types"
-	"go.mau.fi/whatsmeow/types/events"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/types"
+	"github.com/polymorfa/hypermeow/types/events"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -257,9 +257,11 @@ func handleAbsenMulai(ctx context.Context, mctx *store.MessageContext) error {
 		dur = cfg.DefaultDurasi
 	}
 	if len(mctx.Args) > 1 {
-		if v, err := strconv.Atoi(strings.TrimSpace(mctx.Args[1])); err == nil && v > 0 {
-			dur = v
+		v, err := strconv.Atoi(strings.TrimSpace(mctx.Args[1]))
+		if err != nil || v < 1 || v > 1440 {
+			return absenReply(ctx, mctx, "Gagal: menit harus angka 1–1440.", "Contoh: .absen mulai 60")
 		}
+		dur = v
 	}
 	sender := absensiSenderLabel(mctx)
 	id, err := store.Absensi().OpenSession(chat, dur, false, sender, time.Now().Unix())
@@ -576,7 +578,42 @@ func CheckAbsensiCheckin(client *whatsmeow.Client, evt *events.Message) {
 	if name == "" {
 		name = evt.Info.Sender.ToNonAD().User
 	}
-	inserted, err := store.Absensi().AddRecord(sess.ID, evt.Info.Sender.String(), name,
+	// Kunci identitas kanonis (bare, tanpa device) + semua bentuk alt
+	// (SenderAlt event, resolve store LID↔PN): first-valid-wins berlaku
+	// lintas format, flip format antar update live-location tidak mencatat
+	// orang yang sama dua kali.
+	canonical := evt.Info.Sender.ToNonAD().String()
+	altKeys := []string{}
+	if alt := evt.Info.SenderAlt; !alt.IsEmpty() {
+		if s := alt.ToNonAD().String(); s != "" && s != canonical {
+			altKeys = append(altKeys, s)
+		}
+	}
+	if client.Store != nil {
+		if alt, err := client.Store.GetAltJID(context.Background(), evt.Info.Sender.ToNonAD()); err == nil && !alt.IsEmpty() {
+			if s := alt.ToNonAD().String(); s != "" && s != canonical {
+				dup := false
+				for _, k := range altKeys {
+					if k == s {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					altKeys = append(altKeys, s)
+				}
+			}
+		}
+	}
+	for _, k := range append([]string{canonical}, altKeys...) {
+		if has, herr := store.Absensi().HasRecord(sess.ID, k); herr != nil {
+			logfmt.Warn("absensi: gagal cek duplikat (%v)\n", herr)
+			return
+		} else if has {
+			return // sudah tercatat (format mana pun) — diam
+		}
+	}
+	inserted, err := store.Absensi().AddRecord(sess.ID, canonical, name,
 		evt.Info.Timestamp.Unix(), lat, long, dist, acc)
 	if err != nil {
 		logfmt.Warn("absensi: gagal catat (%v)\n", err)
@@ -689,8 +726,42 @@ func fireAbsensiClose(chat string, sessionID, expectEnd int64) {
 	}
 }
 
+// sendAbsensiTextRetry mengirim teks ke chat dengan retry singkat (3x,
+// jeda 2s lalu 3s): pengumuman sesi (rekap/tutup) tidak boleh hilang karena
+// satu kegagalan kirim sesaat. Mengembalikan ID pesan bila sukses.
+func sendAbsensiTextRetry(chat, text string) (string, error) {
+	if absensiWAClient == nil {
+		return "", fmt.Errorf("absensi mati")
+	}
+	chatJID, err := types.ParseJID(chat)
+	if err != nil {
+		return "", err
+	}
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt+1) * time.Second)
+		}
+		resp, err := absensiWAClient.SendMessage(context.Background(), chatJID, &waE2E.Message{
+			ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String(text)},
+		})
+		if err == nil {
+			return string(resp.ID), nil
+		}
+		lastErr = err
+	}
+	return "", lastErr
+}
+
 // absensiCloseAndRecap menutup sesi + mengirim rekap ke chat. Dipakai
 // `.absen berhenti`, timer tutup, dan ticker jadwal.
+//
+// Urutan: rekap disusun + dikirim DULU (dengan retry singkat), sesi ditutup
+// SETELAHNYA — pengumuman tidak hilang bila kirim pertama gagal. Retry
+// dibatasi ±5 detik total supaya penutupan tetap praktis tepat jadwal
+// (tidak molor bermenit-menit). Bila kirim tetap gagal setelah retry, sesi
+// TETAP ditutup tepat jadwal + kabar singkat dikirim (rekap lengkap bisa
+// dibaca via `.absen hasil` — data aman).
 func absensiCloseAndRecap(chat string, sessionID int64) error {
 	if absensiWAClient == nil || store.Absensi() == nil {
 		return fmt.Errorf("absensi mati")
@@ -702,28 +773,43 @@ func absensiCloseAndRecap(chat string, sessionID int64) error {
 	if sess == nil || sess.Status != "open" {
 		return fmt.Errorf("tidak ada sesi aktif")
 	}
-	if err := store.Absensi().CloseSession(sessionID); err != nil {
-		return err
-	}
 	records, err := store.Absensi().ListRecords(sessionID)
 	if err != nil {
 		return err
+	}
+	text := buildAbsensiRecap(sess, records)
+	msgID, sendErr := sendAbsensiTextRetry(chat, text)
+	if cerr := store.Absensi().CloseSession(sessionID); cerr != nil {
+		return cerr
+	}
+	if sendErr != nil {
+		logfmt.Warn("absensi: rekap sesi #%d gagal terkirim setelah retry (%v), sesi tetap ditutup.\n", sessionID, sendErr)
+		sendAbsensiTextOnce(chat, "Sesi absen ditutup. Rekap gagal terkirim — lihat via .absen hasil.")
+		return nil
 	}
 	chatJID, err := types.ParseJID(chat)
 	if err != nil {
 		return err
 	}
-	text := buildAbsensiRecap(sess, records)
-	resp, err := absensiWAClient.SendMessage(context.Background(), chatJID, &waE2E.Message{
-		ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String(text)},
-	})
-	if err != nil {
-		return err
-	}
 	mctx := &store.MessageContext{Client: absensiWAClient, Chat: chatJID}
 	store.LogOutgoing(mctx, "text", text)
-	store.TrackBotMessageID(string(resp.ID), text)
+	store.TrackBotMessageID(msgID, text)
 	return nil
+}
+
+// sendAbsensiTextOnce mengirim teks sekali tanpa retry (untuk kabar
+// fallback) — hasilnya diabaikan pemanggil.
+func sendAbsensiTextOnce(chat, text string) {
+	if absensiWAClient == nil {
+		return
+	}
+	chatJID, err := types.ParseJID(chat)
+	if err != nil {
+		return
+	}
+	_, _ = absensiWAClient.SendMessage(context.Background(), chatJID, &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String(text)},
+	})
 }
 
 // absenPadColon meratakan label ke lebar kolom lalu ": " — dipakai di

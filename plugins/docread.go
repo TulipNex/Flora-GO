@@ -40,6 +40,30 @@ const (
 	maxXLSXCols   = 30
 )
 
+// sanitizeFileName membersihkan nama file kiriman user/remote: basename
+// saja (tanpa direktori — ganti backslash dulu supaya lolos di build Linux
+// yang tidak menganggap backslash sebagai separator), tanpa karakter
+// kontrol. Mengembalikan "" bila tak ada nama yang bisa dipakai (pemanggil
+// memakai fallback-nya sendiri). Hari ini nama hanya jadi label teks, tapi
+// fondasi ini mencegah path traversal bila suatu saat dipakai sebagai path.
+func sanitizeFileName(raw string) string {
+	t := strings.ReplaceAll(strings.TrimSpace(raw), "\\", "/")
+	if i := strings.LastIndex(t, "/"); i >= 0 {
+		t = t[i+1:]
+	}
+	t = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, t)
+	t = strings.TrimSpace(t)
+	if t == "" || t == "." || t == ".." {
+		return ""
+	}
+	return t
+}
+
 // readTriggerDocument mengambil dokumen dari pesan pemicu AI (lampiran
 // langsung atau yang di-reply) dan mengekstrak teksnya SECARA PENUH
 // (tanpa potong karakter — batas halaman/baris parse tetap berlaku).
@@ -58,7 +82,7 @@ func readTriggerDocument(ctx context.Context, mctx *store.MessageContext) (name,
 		return "", "", ""
 	}
 
-	name = doc.GetFileName()
+	name = sanitizeFileName(doc.GetFileName())
 	if name == "" {
 		name = "dokumen"
 	}

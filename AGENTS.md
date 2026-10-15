@@ -1,6 +1,6 @@
 # AGENTS.md — wabot-go (Flora GO)
 
-WhatsApp bot in Go (`whatsmeow`, pure-Go `modernc.org/sqlite`, no cgo). Module `wabot-go`, Go 1.26+. Entry: `main.go`. No CI, no lint/typecheck config, no `opencode.json`.
+WhatsApp bot in Go (`hypermeow` fork of `whatsmeow`, pure-Go `modernc.org/sqlite`, no cgo). Module `wabot-go`, Go 1.26+. Entry: `main.go`. No CI, no lint/typecheck config, no `opencode.json`.
 
 ## Run / verify
 

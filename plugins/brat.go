@@ -91,7 +91,7 @@ func RegisterBrat(r *Registry) {
 
 // handleBrat memvalidasi teks input lalu memproses brat di goroutine
 // terpisah (pola sama dengan engine downloader): tahap jaringan bisa
-// memakan beberapa detik, jadi event loop whatsmeow tidak boleh diblokir.
+// memakan beberapa detik, jadi event loop hypermeow tidak boleh diblokir.
 func handleBrat(ctx context.Context, mctx *store.MessageContext, v bratVariant) error {
 	text := bratInputText(mctx)
 	if text == "" {

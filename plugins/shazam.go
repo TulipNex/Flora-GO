@@ -14,9 +14,9 @@ import (
 	"wabot-go/internal/scraper"
 	"wabot-go/internal/store"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/types/events"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/types/events"
 )
 
 func init() {
@@ -43,7 +43,7 @@ var shPending = struct {
 	m map[string]*shPendingResult
 }{m: make(map[string]*shPendingResult)}
 
-func shPendingKey(chat, sender string) string { return chat + "|" + sender }
+func shPendingKey(chat, sender string) string { return pendingKey(chat, sender) }
 
 func shPendingSet(chat, sender string, songs []scraper.ShazamTrack, query string) {
 	shPending.Lock()
@@ -249,6 +249,9 @@ func shazamDoSearch(ctx context.Context, mctx *store.MessageContext, query strin
 		return
 	}
 	shPendingSet(mctx.Chat.String(), mctx.Sender.String(), songs, query)
+	for _, alt := range pendingAltSenders(mctx) {
+		shPendingSet(mctx.Chat.String(), alt, songs, query)
+	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Hasil pencarian untuk \"%s\" :\n\n", query)
 	for i, s := range songs {
@@ -354,7 +357,8 @@ func shazamDoDownloadUnduh(ctx context.Context, mctx *store.MessageContext, rawU
 		return
 	}
 	if rerr := downloadSpotifyAndSend(ctx, mctx, rawURL, p, true, status, nil); rerr != nil {
-		_ = store.ReplyText(ctx, mctx, rerr.Error())
+		logfmt.Warn("shazam: unduh lagu gagal (%v)\n", rerr)
+		_ = store.ReplyText(ctx, mctx, "Gagal mengunduh lagu, coba lagi sebentar.")
 	}
 }
 
@@ -379,7 +383,7 @@ func CheckShazamDownload(client *whatsmeow.Client, evt *events.Message, text str
 func shDlPendingPeek(chat, sender string) string {
 	shDlPending.Lock()
 	defer shDlPending.Unlock()
-	v, ok := shDlPending.m[chat+"|"+sender]
+	v, ok := shDlPending.m[pendingKey(chat, sender)]
 	if !ok || time.Now().After(v.exp) {
 		return ""
 	}
@@ -475,13 +479,13 @@ const shDlPickTTL = 5 * time.Minute
 func shDlPendingSet(chat, sender, rawURL string) {
 	shDlPending.Lock()
 	defer shDlPending.Unlock()
-	shDlPending.m[chat+"|"+sender] = &shDlPendingResult{url: rawURL, exp: time.Now().Add(shDlPickTTL)}
+	shDlPending.m[pendingKey(chat, sender)] = &shDlPendingResult{url: rawURL, exp: time.Now().Add(shDlPickTTL)}
 }
 
 func shDlPendingConsume(chat, sender string) string {
 	shDlPending.Lock()
 	defer shDlPending.Unlock()
-	k := chat + "|" + sender
+	k := pendingKey(chat, sender)
 	v, ok := shDlPending.m[k]
 	if !ok {
 		return ""
@@ -499,6 +503,9 @@ func shazamSendTrack(ctx context.Context, mctx *store.MessageContext, track *scr
 	link, direct := shazamSpotifyLink(ctx, track)
 	if direct && link != "" {
 		shDlPendingSet(mctx.Chat.String(), mctx.Sender.String(), link)
+		for _, alt := range pendingAltSenders(mctx) {
+			shDlPendingSet(mctx.Chat.String(), alt, link)
+		}
 	}
 	caption := shazamTrackCaption(track, link, direct)
 	if strings.TrimSpace(track.Cover) != "" {

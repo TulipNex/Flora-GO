@@ -20,8 +20,8 @@ import (
 	"wabot-go/internal/store"
 
 	"github.com/coder/websocket"
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/proto/waE2E"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -78,7 +78,7 @@ func RegisterTTS(r *Registry) {
 }
 
 // handleTTS memvalidasi input lalu mensintesis di goroutine terpisah (pola
-// .brat/downloader): TTS + convert bisa belasan detik, event loop whatsmeow
+// .brat/downloader): TTS + convert bisa belasan detik, event loop hypermeow
 // tidak boleh diblokir.
 func handleTTS(ctx context.Context, mctx *store.MessageContext) error {
 	text, voice := ttsParseInput(mctx)

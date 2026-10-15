@@ -82,7 +82,7 @@ func handleServerInfo(ctx context.Context, mctx *store.MessageContext) error {
 		runtime.Version(),
 		os.Getpid(),
 		heapLimit,
-		whatsmeowVersion(),
+		hypermeowVersion(),
 	)
 	return store.ReplyText(ctx, mctx, msg)
 }
@@ -100,23 +100,24 @@ func dashStr(s string) string {
 	return s
 }
 
-// whatsmeowVersion membaca versi modul go.mau.fi/whatsmeow dari build info
+// hypermeowVersion membaca versi modul hypermeow (github.com/polymorfa/hypermeow,
+// fork whatsmeow) dari build info
 // (stdlib runtime/debug, tanpa dependensi). Pseudo-version panjang
 // (v0.0.0-20250928140511-35f522c88ce3) dipadatkan jadi v0.0.0-20250928 agar
-// enak dibaca; "whatsmeow" polos bila tak terbaca.
-func whatsmeowVersion() string {
+// enak dibaca; "hypermeow" polos bila tak terbaca.
+func hypermeowVersion() string {
 	if bi, ok := debug.ReadBuildInfo(); ok {
 		for _, dep := range bi.Deps {
-			if dep.Path == "go.mau.fi/whatsmeow" {
+			if dep.Path == "github.com/polymorfa/hypermeow" {
 				v := dep.Version
 				if i := strings.Index(v, "-"); i > 0 && len(v) > i+9 {
-					return "whatsmeow " + v[:i] + "-" + v[i+1:i+9]
+					return "hypermeow " + v[:i] + "-" + v[i+1:i+9]
 				}
-				return "whatsmeow " + v
+				return "hypermeow " + v
 			}
 		}
 	}
-	return "whatsmeow"
+	return "hypermeow"
 }
 
 // formatDuration mengubah durasi jadi format "1h 23m 45s" yang lebih enak dibaca

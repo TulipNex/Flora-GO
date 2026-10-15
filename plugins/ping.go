@@ -3,6 +3,8 @@ package plugins
 import (
 	"context"
 	"fmt"
+	"runtime"
+	"strings"
 	"time"
 
 	"wabot-go/internal/store"
@@ -11,6 +13,10 @@ import (
 func init() {
 	registerPlugin(RegisterPing)
 }
+
+// pingStart dicatat sekali saat package dimuat (bot start) untuk hitung
+// uptime di .pong.
+var pingStart = time.Now()
 
 // RegisterPing mendaftarkan command ".ping" -> balas "Pong!" beserta latensinya
 // Latensi dihitung dari selisih waktu pesan dikirim (mctx.RawEvt.Info.Timestamp)
@@ -23,7 +29,14 @@ func RegisterPing(r *Registry) {
 		Category:    CategoryUmum,
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			latency := time.Since(mctx.RawEvt.Info.Timestamp).Milliseconds()
-			text := fmt.Sprintf("Pong! Bot aktif.\nLatensi: %dms", latency)
+			uptime := formatDuration(time.Since(pingStart).Round(time.Second))
+			goVer := strings.TrimPrefix(runtime.Version(), "go")
+			text := Block("Pong",
+				Row("Status", "Aktif"),
+				Row("Latensi", fmt.Sprintf("%dms", latency)),
+				Row("Uptime", uptime),
+				Row("Runtime", "Golang "+goVer),
+			)
 			return store.ReplyText(ctx, mctx, text)
 		},
 	})
