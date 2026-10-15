@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"wabot-go/internal/logfmt"
@@ -29,16 +28,10 @@ const (
 
 type spPendingResult struct {
 	tracks []scraper.SpotifyTrack
-	exp    time.Time
 	query  string
 }
 
-var spPending = struct {
-	sync.Mutex
-	m map[string]*spPendingResult
-}{m: make(map[string]*spPendingResult)}
-
-func spPendingKey(chat, sender string) string { return pendingKey(chat, sender) }
+var spPending = newPendingStore[*spPendingResult](spPickTTL)
 
 // normPendingJID menormalisasi string JID ke bare (tanpa device/AD), supaya
 // flip format pengirim tidak menghilangkan hasil pick yang tersimpan.
@@ -86,42 +79,18 @@ func pendingAltSenders(mctx *store.MessageContext) []string {
 }
 
 func spPendingSet(chat, sender string, tracks []scraper.SpotifyTrack, query string) {
-	spPending.Lock()
-	defer spPending.Unlock()
-	now := time.Now()
-	// Sapu entri basi oportunistik (map kecil, jarang).
-	for k, v := range spPending.m {
-		if now.After(v.exp) {
-			delete(spPending.m, k)
-		}
-	}
-	spPending.m[spPendingKey(chat, sender)] = &spPendingResult{tracks: tracks, exp: now.Add(spPickTTL), query: query}
+	spPending.Set(chat, sender, &spPendingResult{tracks: tracks, query: query})
 }
 
 // spPendingConsume mengambil + menghapus (sekali pakai — anti double-download).
 func spPendingConsume(chat, sender string) *spPendingResult {
-	spPending.Lock()
-	defer spPending.Unlock()
-	k := spPendingKey(chat, sender)
-	v, ok := spPending.m[k]
-	if !ok {
-		return nil
-	}
-	delete(spPending.m, k)
-	if time.Now().After(v.exp) {
-		return nil
-	}
+	v, _ := spPending.Consume(chat, sender)
 	return v
 }
 
-func spPendingPeek(chat, sender string) *spPendingResult {
-	spPending.Lock()
-	defer spPending.Unlock()
-	v, ok := spPending.m[spPendingKey(chat, sender)]
-	if !ok || time.Now().After(v.exp) {
-		return nil
-	}
-	return v
+func spPendingPeek(chat, sender string) (*spPendingResult, time.Time) {
+	v, at, _ := spPending.Peek(chat, sender)
+	return v, at
 }
 
 // isSpotifyURLArg true kalau argumen pertama terlihat seperti URL Spotify
@@ -324,7 +293,7 @@ func trySpotifyNumberPick(mctx *store.MessageContext, numText string) (bool, str
 	if err != nil {
 		return false, ""
 	}
-	pend := spPendingPeek(mctx.Chat.String(), mctx.Sender.String())
+	pend, _ := spPendingPeek(mctx.Chat.String(), mctx.Sender.String())
 	if pend == nil {
 		return false, ""
 	}
@@ -349,7 +318,7 @@ func CheckSpotifyPick(client *whatsmeow.Client, evt *events.Message, text string
 	if _, err := strconv.Atoi(t); err != nil {
 		return false
 	}
-	pend := spPendingPeek(evt.Info.Chat.String(), evt.Info.Sender.String())
+	pend, _ := spPendingPeek(evt.Info.Chat.String(), evt.Info.Sender.String())
 	if pend == nil {
 		return false
 	}

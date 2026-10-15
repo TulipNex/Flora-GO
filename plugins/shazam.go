@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"wabot-go/internal/logfmt"
@@ -34,72 +33,42 @@ const (
 type shPendingResult struct {
 	songs []scraper.ShazamTrack
 	query string
-	at    time.Time
-	exp   time.Time
 }
 
-var shPending = struct {
-	sync.Mutex
-	m map[string]*shPendingResult
-}{m: make(map[string]*shPendingResult)}
-
-func shPendingKey(chat, sender string) string { return pendingKey(chat, sender) }
+var shPending = newPendingStore[*shPendingResult](shazamPickTTL)
 
 func shPendingSet(chat, sender string, songs []scraper.ShazamTrack, query string) {
-	shPending.Lock()
-	defer shPending.Unlock()
-	now := time.Now()
-	for k, v := range shPending.m {
-		if now.After(v.exp) {
-			delete(shPending.m, k)
-		}
-	}
-	shPending.m[shPendingKey(chat, sender)] = &shPendingResult{songs: songs, query: query, at: now, exp: now.Add(shazamPickTTL)}
+	shPending.Set(chat, sender, &shPendingResult{songs: songs, query: query})
 }
 
-func shPendingPeek(chat, sender string) *shPendingResult {
-	shPending.Lock()
-	defer shPending.Unlock()
-	v, ok := shPending.m[shPendingKey(chat, sender)]
-	if !ok || time.Now().After(v.exp) {
-		return nil
-	}
-	return v
+func shPendingPeek(chat, sender string) (*shPendingResult, time.Time) {
+	v, at, _ := shPending.Peek(chat, sender)
+	return v, at
 }
 
 func shPendingConsume(chat, sender string) *shPendingResult {
-	shPending.Lock()
-	defer shPending.Unlock()
-	k := shPendingKey(chat, sender)
-	v, ok := shPending.m[k]
-	if !ok {
-		return nil
-	}
-	delete(shPending.m, k)
-	if time.Now().After(v.exp) {
-		return nil
-	}
+	v, _ := shPending.Consume(chat, sender)
 	return v
 }
 
 // shNewerThanSpotify true bila pending Shazam lebih baru (aturan terbaru menang).
 func shNewerThanSpotify(chat, sender string) bool {
-	hp := shPendingPeek(chat, sender)
-	sp := spPendingPeek(chat, sender)
+	hp, hpAt := shPendingPeek(chat, sender)
+	sp, spAt := spPendingPeek(chat, sender)
 	if hp == nil || sp == nil {
 		return false
 	}
-	return hp.at.After(sp.exp.Add(-spPickTTL))
+	return hpAt.After(spAt)
 }
 
 // shNewerThanLrc true bila pending Shazam lebih baru dari pending lirik.
 func shNewerThanLrc(chat, sender string) bool {
-	hp := shPendingPeek(chat, sender)
-	lp := lrcPendingPeek(chat, sender)
+	hp, hpAt := shPendingPeek(chat, sender)
+	lp, lpAt := lrcPendingPeek(chat, sender)
 	if hp == nil || lp == nil {
 		return false
 	}
-	return hp.at.After(lp.at)
+	return hpAt.After(lpAt)
 }
 
 func RegisterShazam(r *Registry) {
@@ -280,7 +249,7 @@ func tryShazamNumberPick(mctx *store.MessageContext, numText string) (bool, stri
 	if err != nil {
 		return false, ""
 	}
-	pend := shPendingPeek(mctx.Chat.String(), mctx.Sender.String())
+	pend, _ := shPendingPeek(mctx.Chat.String(), mctx.Sender.String())
 	if pend == nil {
 		return false, ""
 	}
@@ -315,7 +284,7 @@ func CheckShazamPick(client *whatsmeow.Client, evt *events.Message, text string)
 		return false
 	}
 	chat, sender := evt.Info.Chat.String(), evt.Info.Sender.String()
-	pend := shPendingPeek(chat, sender)
+	pend, pendAt := shPendingPeek(chat, sender)
 	if pend == nil {
 		return false
 	}
@@ -323,10 +292,10 @@ func CheckShazamPick(client *whatsmeow.Client, evt *events.Message, text string)
 		return false
 	}
 	// Pending lain yang lebih baru menang.
-	if sp := spPendingPeek(chat, sender); sp != nil && sp.exp.Add(-spPickTTL).After(pend.at) {
+	if sp, spAt := spPendingPeek(chat, sender); sp != nil && spAt.After(pendAt) {
 		return false
 	}
-	if lp := lrcPendingPeek(chat, sender); lp != nil && lp.at.After(pend.at) {
+	if lp, lpAt := lrcPendingPeek(chat, sender); lp != nil && lpAt.After(pendAt) {
 		return false
 	}
 	song := pend.songs[n-1]
@@ -381,13 +350,8 @@ func CheckShazamDownload(client *whatsmeow.Client, evt *events.Message, text str
 
 // shDlPendingPeek melihat pending tanpa menghapus (untuk interceptor).
 func shDlPendingPeek(chat, sender string) string {
-	shDlPending.Lock()
-	defer shDlPending.Unlock()
-	v, ok := shDlPending.m[pendingKey(chat, sender)]
-	if !ok || time.Now().After(v.exp) {
-		return ""
-	}
-	return v.url
+	v, _, _ := shDlPending.Peek(chat, sender)
+	return v
 }
 
 func shazamDoTrack(ctx context.Context, mctx *store.MessageContext, id string) {
@@ -464,37 +428,17 @@ func firstNonEmptyShazam(ss ...string) string {
 }
 
 // shDlPending menyimpan URL track hasil Shazam untuk perintah "unduh".
-type shDlPendingResult struct {
-	url string
-	exp time.Time
-}
-
-var shDlPending = struct {
-	sync.Mutex
-	m map[string]*shDlPendingResult
-}{m: make(map[string]*shDlPendingResult)}
-
 const shDlPickTTL = 5 * time.Minute
 
+var shDlPending = newPendingStore[string](shDlPickTTL)
+
 func shDlPendingSet(chat, sender, rawURL string) {
-	shDlPending.Lock()
-	defer shDlPending.Unlock()
-	shDlPending.m[pendingKey(chat, sender)] = &shDlPendingResult{url: rawURL, exp: time.Now().Add(shDlPickTTL)}
+	shDlPending.Set(chat, sender, rawURL)
 }
 
 func shDlPendingConsume(chat, sender string) string {
-	shDlPending.Lock()
-	defer shDlPending.Unlock()
-	k := pendingKey(chat, sender)
-	v, ok := shDlPending.m[k]
-	if !ok {
-		return ""
-	}
-	delete(shDlPending.m, k)
-	if time.Now().After(v.exp) {
-		return ""
-	}
-	return v.url
+	v, _ := shDlPending.Consume(chat, sender)
+	return v
 }
 
 // shazamSendTrack resolve link, simpan pending unduh (bila langsung),

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"wabot-go/internal/scraper"
@@ -44,52 +43,24 @@ type lrcPendingResult struct {
 	songs []scraper.LrclibSong
 	query string
 	mode  lrcMode
-	at    time.Time
-	exp   time.Time
 }
 
-var lrcPending = struct {
-	sync.Mutex
-	m map[string]*lrcPendingResult
-}{m: make(map[string]*lrcPendingResult)}
-
-func lrcPendingKey(chat, sender string) string { return pendingKey(chat, sender) }
+var lrcPending = newPendingStore[*lrcPendingResult](lrcPickTTL)
 
 func lrcPendingSet(chat, sender string, songs []scraper.LrclibSong, query string, mode lrcMode) {
-	lrcPending.Lock()
-	defer lrcPending.Unlock()
-	now := time.Now()
-	for k, v := range lrcPending.m {
-		if now.After(v.exp) {
-			delete(lrcPending.m, k)
-		}
-	}
-	lrcPending.m[lrcPendingKey(chat, sender)] = &lrcPendingResult{songs: songs, query: query, mode: mode, at: now, exp: now.Add(lrcPickTTL)}
+	lrcPending.Set(chat, sender, &lrcPendingResult{songs: songs, query: query, mode: mode})
 }
 
-func lrcPendingPeek(chat, sender string) *lrcPendingResult {
-	lrcPending.Lock()
-	defer lrcPending.Unlock()
-	v, ok := lrcPending.m[lrcPendingKey(chat, sender)]
-	if !ok || time.Now().After(v.exp) {
-		return nil
-	}
-	return v
+// lrcPendingPeek mengembalikan hasil + waktu simpan (untuk aturan "pending
+// terbaru menang" di interceptor angka).
+func lrcPendingPeek(chat, sender string) (*lrcPendingResult, time.Time) {
+	v, at, _ := lrcPending.Peek(chat, sender)
+	return v, at
 }
 
 // lrcPendingConsume mengambil + menghapus (sekali pakai).
 func lrcPendingConsume(chat, sender string) *lrcPendingResult {
-	lrcPending.Lock()
-	defer lrcPending.Unlock()
-	k := lrcPendingKey(chat, sender)
-	v, ok := lrcPending.m[k]
-	if !ok {
-		return nil
-	}
-	delete(lrcPending.m, k)
-	if time.Now().After(v.exp) {
-		return nil
-	}
+	v, _ := lrcPending.Consume(chat, sender)
 	return v
 }
 
@@ -234,7 +205,7 @@ func tryLrcNumberPick(mctx *store.MessageContext, numText string, mode lrcMode) 
 	if err != nil {
 		return false, ""
 	}
-	pend := lrcPendingPeek(mctx.Chat.String(), mctx.Sender.String())
+	pend, _ := lrcPendingPeek(mctx.Chat.String(), mctx.Sender.String())
 	if pend == nil {
 		return false, ""
 	}
@@ -251,12 +222,12 @@ func tryLrcNumberPick(mctx *store.MessageContext, numText string, mode lrcMode) 
 // lrcNewerThanSpotify true bila pending lirik lebih baru dari pending
 // Spotify (aturan: pencarian terbaru yang menang bila keduanya aktif).
 func lrcNewerThanSpotify(chat, sender string) bool {
-	lp := lrcPendingPeek(chat, sender)
-	sp := spPendingPeek(chat, sender)
+	lp, lpAt := lrcPendingPeek(chat, sender)
+	sp, spAt := spPendingPeek(chat, sender)
 	if lp == nil || sp == nil {
 		return false
 	}
-	return lp.at.After(sp.exp.Add(-spPickTTL))
+	return lpAt.After(spAt)
 }
 
 // CheckLrcPick mencegat pesan NON-command berupa angka polos saat ada hasil
@@ -270,7 +241,7 @@ func CheckLrcPick(client *whatsmeow.Client, evt *events.Message, text string) bo
 	if err != nil {
 		return false
 	}
-	pend := lrcPendingPeek(evt.Info.Chat.String(), evt.Info.Sender.String())
+	pend, pendAt := lrcPendingPeek(evt.Info.Chat.String(), evt.Info.Sender.String())
 	if pend == nil {
 		return false
 	}
@@ -279,8 +250,7 @@ func CheckLrcPick(client *whatsmeow.Client, evt *events.Message, text string) bo
 	}
 	// Pending lain yang lebih baru menang — biar angkanya ke sana.
 	chat, sender := evt.Info.Chat.String(), evt.Info.Sender.String()
-	if sp := spPendingPeek(chat, sender); sp != nil &&
-		sp.exp.Add(-spPickTTL).After(pend.at) {
+	if sp, spAt := spPendingPeek(chat, sender); sp != nil && spAt.After(pendAt) {
 		return false
 	}
 	if shNewerThanLrc(chat, sender) {

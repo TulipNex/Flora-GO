@@ -15,6 +15,7 @@ import (
 	"wabot-go/internal/ai"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
+	"wabot-go/internal/textx"
 
 	"github.com/ledongthuc/pdf"
 	"github.com/xuri/excelize/v2"
@@ -288,13 +289,10 @@ func docExt(name string) string {
 }
 
 // truncateRunes memotong teks ke max rune (aman untuk multi-byte) dan
-// melaporkan apakah pemotongan terjadi.
+// melaporkan apakah pemotongan terjadi — delegasi ke textx.TruncateRunes.
 func truncateRunes(text string, max int) (string, bool) {
-	runes := []rune(strings.TrimSpace(text))
-	if len(runes) <= max {
-		return string(runes), false
-	}
-	return string(runes[:max]), true
+	out, _, cut := textx.TruncateRunes(text, max, true)
+	return out, cut
 }
 
 // extractPDFText membaca teks PDF per baris visual (GetTextByRow) supaya

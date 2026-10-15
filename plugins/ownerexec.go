@@ -11,6 +11,7 @@ import (
 
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
+	"wabot-go/internal/textx"
 
 	"github.com/robertkrimen/otto"
 )
@@ -116,13 +117,14 @@ func appendExecLine(out, line string) string {
 	return out + "\n" + line
 }
 
-// truncateRunesExec memotong teks balasan ke maxExecChars per rune + penanda.
+// truncateRunesExec memotong teks balasan ke maxExecChars per rune + penanda —
+// delegasi inti potong ke textx.TruncateRunes.
 func truncateRunesExec(text string) string {
-	runes := []rune(text)
-	if len(runes) <= maxExecChars {
-		return text
+	out, total, cut := textx.TruncateRunes(text, maxExecChars, false)
+	if !cut {
+		return out
 	}
-	return string(runes[:maxExecChars]) + fmt.Sprintf("\n...(dipotong, total %d karakter)", len(runes))
+	return out + fmt.Sprintf("\n...(dipotong, total %d karakter)", total)
 }
 
 // evalTimeoutSentinel adalah penanda khusus panic interrupt otto supaya bisa

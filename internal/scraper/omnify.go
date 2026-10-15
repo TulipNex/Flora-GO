@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"wabot-go/internal/textx"
 )
 
 // FetchOmnify mengambil media APAPUN via Omnify AIO
@@ -112,11 +114,8 @@ func jsonString(s string) string {
 }
 
 // truncateRunes memotong teks ke max rune (caption WA terbatas; deskripsi
-// YouTube bisa sangat panjang).
+// YouTube bisa sangat panjang) — delegasi ke textx.TruncateRunes.
 func truncateRunes(s string, max int) string {
-	r := []rune(strings.TrimSpace(s))
-	if len(r) <= max {
-		return string(r)
-	}
-	return string(r[:max])
+	out, _, _ := textx.TruncateRunes(s, max, true)
+	return out
 }

@@ -19,6 +19,7 @@ import (
 	"wabot-go/internal/messaging"
 	"wabot-go/internal/netx"
 	"wabot-go/internal/store"
+	"wabot-go/internal/textx"
 
 	fhttp "github.com/bogdanfinn/fhttp"
 	tls_client "github.com/bogdanfinn/tls-client"
@@ -280,11 +281,11 @@ func stripHTMLTags(raw string) string {
 
 // truncateGetText memotong teks balasan ke batas WA + penanda jujur.
 func truncateGetText(text string) string {
-	runes := []rune(strings.TrimSpace(text))
-	if len(runes) <= maxGetTextChars {
-		return string(runes)
+	out, total, cut := textx.TruncateRunes(text, maxGetTextChars, true)
+	if !cut {
+		return out
 	}
-	return string(runes[:maxGetTextChars]) + fmt.Sprintf("\n...(dipotong, total %d karakter)", len(runes))
+	return out + fmt.Sprintf("\n...(dipotong, total %d karakter)", total)
 }
 
 // sendGetMedia mengupload + mengirim gambar/video/audio hasil fetch.
