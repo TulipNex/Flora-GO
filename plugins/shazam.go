@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -241,12 +240,8 @@ func shazamDoSearch(ctx context.Context, mctx *store.MessageContext, query strin
 // tryShazamNumberPick menafsir arg/angka sebagai pilihan hasil pencarian.
 // Mode pick eksplisit (.shazam N). (ditangani, pesanError).
 func tryShazamNumberPick(mctx *store.MessageContext, numText string) (bool, string) {
-	t := strings.TrimSpace(numText)
-	if t == "" || strings.Contains(t, " ") {
-		return false, ""
-	}
-	n, err := strconv.Atoi(t)
-	if err != nil {
+	n, ok := parsePlainPickIndex(numText)
+	if !ok {
 		return false, ""
 	}
 	pend, _ := shPendingPeek(mctx.Chat.String(), mctx.Sender.String())
@@ -275,12 +270,8 @@ func shazamSendSearchPick(ctx context.Context, mctx *store.MessageContext, song 
 // CheckShazamPick mencegat angka polos saat ada pending pencarian Shazam.
 // true = ditangani (setop, jangan ke AI).
 func CheckShazamPick(client *whatsmeow.Client, evt *events.Message, text string) bool {
-	t := strings.TrimSpace(text)
-	if t == "" || strings.Contains(t, " ") {
-		return false
-	}
-	n, err := strconv.Atoi(t)
-	if err != nil {
+	n, ok := parsePlainPickIndex(text)
+	if !ok {
 		return false
 	}
 	chat, sender := evt.Info.Chat.String(), evt.Info.Sender.String()

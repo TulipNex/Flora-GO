@@ -3,7 +3,6 @@ package plugins
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -197,12 +196,8 @@ func sendLrcSong(ctx context.Context, mctx *store.MessageContext, song scraper.L
 // tryLrcNumberPick menafsir arg sebagai pilihan hasil pencarian.
 // (ditangani, pesanError) — pesanError untuk angka di luar range.
 func tryLrcNumberPick(mctx *store.MessageContext, numText string, mode lrcMode) (bool, string) {
-	t := strings.TrimSpace(numText)
-	if t == "" || strings.Contains(t, " ") {
-		return false, ""
-	}
-	n, err := strconv.Atoi(t)
-	if err != nil {
+	n, ok := parsePlainPickIndex(numText)
+	if !ok {
 		return false, ""
 	}
 	pend, _ := lrcPendingPeek(mctx.Chat.String(), mctx.Sender.String())
@@ -233,12 +228,8 @@ func lrcNewerThanSpotify(chat, sender string) bool {
 // CheckLrcPick mencegat pesan NON-command berupa angka polos saat ada hasil
 // pencarian lirik pending dari pengirim yang sama. true = ditangani.
 func CheckLrcPick(client *whatsmeow.Client, evt *events.Message, text string) bool {
-	t := strings.TrimSpace(text)
-	if t == "" || strings.Contains(t, " ") {
-		return false
-	}
-	n, err := strconv.Atoi(t)
-	if err != nil {
+	n, ok := parsePlainPickIndex(text)
+	if !ok {
 		return false
 	}
 	pend, pendAt := lrcPendingPeek(evt.Info.Chat.String(), evt.Info.Sender.String())

@@ -3,7 +3,6 @@ package plugins
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -285,12 +284,8 @@ func startSpotifyTrackDownload(mctx *store.MessageContext, track scraper.Spotify
 // pencarian. Mengembalikan (ditangani, pesanError). PesanError non-kosong
 // berarti angka di luar range → balas panduan, bukan download.
 func trySpotifyNumberPick(mctx *store.MessageContext, numText string) (bool, string) {
-	t := strings.TrimSpace(numText)
-	if t == "" || strings.Contains(t, " ") {
-		return false, ""
-	}
-	n, err := strconv.Atoi(t)
-	if err != nil {
+	n, ok := parsePlainPickIndex(numText)
+	if !ok {
 		return false, ""
 	}
 	pend, _ := spPendingPeek(mctx.Chat.String(), mctx.Sender.String())
@@ -311,18 +306,14 @@ func trySpotifyNumberPick(mctx *store.MessageContext, numText string) (bool, str
 // hasil pencarian pending dari pengirim yang sama. true = ditangani (setop,
 // jangan ke AI). Guard: angka saja + pending aktif + pengirim sama.
 func CheckSpotifyPick(client *whatsmeow.Client, evt *events.Message, text string) bool {
-	t := strings.TrimSpace(text)
-	if t == "" || strings.Contains(t, " ") {
-		return false
-	}
-	if _, err := strconv.Atoi(t); err != nil {
+	n, ok := parsePlainPickIndex(text)
+	if !ok {
 		return false
 	}
 	pend, _ := spPendingPeek(evt.Info.Chat.String(), evt.Info.Sender.String())
 	if pend == nil {
 		return false
 	}
-	n, _ := strconv.Atoi(t)
 	if n < 1 || n > len(pend.tracks) {
 		return false // bukan untuk kita — biar AI/moderasi yang urus
 	}

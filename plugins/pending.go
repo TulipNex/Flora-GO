@@ -1,6 +1,8 @@
 package plugins
 
 import (
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -30,6 +32,22 @@ type pendingStore[T any] struct {
 // newPendingStore membuat store kosong dengan umur entri ttl.
 func newPendingStore[T any](ttl time.Duration) *pendingStore[T] {
 	return &pendingStore[T]{m: make(map[string]pendingEntry[T]), ttl: ttl}
+}
+
+// parsePlainPickIndex menafsir teks sebagai angka pilihan polos: tanpa spasi,
+// berupa bilangan bulat. ok=false bila bukan angka pilihan yang sah (teks
+// kosong, ada spasi, atau bukan angka). Dipakai bersama oleh semua interceptor
+// pilih-nomor (.lrc/.shazam/.sp) supaya guard-nya identik.
+func parsePlainPickIndex(numText string) (n int, ok bool) {
+	t := strings.TrimSpace(numText)
+	if t == "" || strings.Contains(t, " ") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(t)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // Set menyimpan val untuk pasangan chat|sender, sekaligus menyapu entri basi

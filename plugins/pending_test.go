@@ -49,6 +49,30 @@ func TestPendingStore(t *testing.T) {
 	}
 }
 
+// TestParsePlainPickIndex memastikan guard pilih-nomor identik: menerima
+// bilangan bulat polos, menolak kosong/spasi/bukan-angka.
+func TestParsePlainPickIndex(t *testing.T) {
+	cases := []struct {
+		in    string
+		wantN int
+		wantO bool
+	}{
+		{"3", 3, true},
+		{"  2  ", 2, true},
+		{"12", 12, true},
+		{"", 0, false},
+		{"1 2", 0, false},
+		{"abc", 0, false},
+		{"1.5", 0, false},
+	}
+	for _, c := range cases {
+		n, ok := parsePlainPickIndex(c.in)
+		if n != c.wantN || ok != c.wantO {
+			t.Errorf("parsePlainPickIndex(%q) = %d,%v; mau %d,%v", c.in, n, ok, c.wantN, c.wantO)
+		}
+	}
+}
+
 // TestPendingStoreKeyNormalized memastikan kunci memakai bentuk JID bare
 // (ToNonAD) sehingga perbedaan format pengirim tidak menghilangkan pending.
 func TestPendingStoreKeyNormalized(t *testing.T) {
