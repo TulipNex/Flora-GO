@@ -8,6 +8,7 @@ import (
 
 	"wabot-go/internal/logfmt"
 
+	whatsmeow "github.com/polymorfa/hypermeow"
 	"github.com/polymorfa/hypermeow/types"
 )
 
@@ -148,6 +149,32 @@ func (mctx *MessageContext) IsBotAdmin(ctx context.Context) (bool, error) {
 	// kelihatan di log kalau ini yang jadi penyebab false-negative.
 	logfmt.Warn("IsBotAdmin: bot (ID=%v, LID=%v) tidak ditemukan di participant grup %s\n", botID, botLID, mctx.Chat)
 	return false, nil
+}
+
+// IsBotJID true bila jid adalah akun bot sendiri. Dibandingkan DENGAN DUA
+// identitas bot sekaligus (Store.ID dan Store.LID), dalam bentuk bare
+// (ToNonAD) supaya beda device/agent maupun perbedaan format LID vs nomor
+// telepon tidak menggagalkan — prinsip sama dengan IsBotAdmin.
+//
+// Ini adalah SATU-SATUNYA sumber kebenaran deteksi "JID ini bot sendiri":
+// audit menemukan salinan logika identik di beberapa plugin (guard kick,
+// delete, welcome, dan deteksi mention di handler) yang rawan menyimpang
+// diam-diam (satu lupa cek LID = lolos). Nil client/Store aman (false).
+func IsBotJID(client *whatsmeow.Client, jid types.JID) bool {
+	if client == nil || client.Store == nil {
+		return false
+	}
+	bare := jid.ToNonAD().User
+	if bare == "" {
+		return false
+	}
+	if id := client.Store.ID; id != nil && id.ToNonAD().User == bare {
+		return true
+	}
+	if lid := client.Store.LID; !lid.IsEmpty() && lid.ToNonAD().User == bare {
+		return true
+	}
+	return false
 }
 
 // MentionedJIDs mengambil daftar JID yang di-mention (@tag) di pesan ini,

@@ -297,13 +297,10 @@ func sprResolveTokenList(mctx *store.MessageContext, mentions []types.JID, toks 
 	return jids, fails
 }
 
-// sprIsBotJID true bila JID adalah akun bot sendiri (ID atau LID,
-// toleran dual-format via ParticipantMatchesJID).
+// sprIsBotJID true bila JID adalah akun bot sendiri — delegasi ke
+// store.IsBotJID (toleran dual-format LID/PN).
 func sprIsBotJID(client *whatsmeow.Client, jid types.JID) bool {
-	if botID := client.Store.ID; botID != nil && store.ParticipantMatchesJID(types.GroupParticipant{JID: jid}, *botID) {
-		return true
-	}
-	return !client.Store.LID.IsEmpty() && store.ParticipantMatchesJID(types.GroupParticipant{JID: jid}, client.Store.LID)
+	return store.IsBotJID(client, jid)
 }
 
 // sprCanonicalJID memetakan JID ke bentuk participant grup (@lid/@pn sesuai

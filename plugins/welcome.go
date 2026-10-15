@@ -495,16 +495,10 @@ func sendGreeting(client *whatsmeow.Client, chat, member types.JID, tmpl, groupN
 	store.LogOutgoing(&store.MessageContext{Client: client, Chat: chat}, "sapaan", text)
 }
 
-// isOwnJID true kalau JID adalah bot sendiri (ID maupun LID), supaya bot
-// tidak menyapa dirinya sendiri saat baru dimasukkan ke grup.
+// isOwnJID true kalau JID adalah bot sendiri — delegasi ke store.IsBotJID
+// (supaya bot tidak menyapa dirinya sendiri saat baru dimasukkan ke grup).
 func isOwnJID(client *whatsmeow.Client, bare types.JID) bool {
-	if id := client.Store.ID; id != nil && id.ToNonAD().User == bare.User {
-		return true
-	}
-	if lid := client.Store.LID; !lid.IsEmpty() && lid.ToNonAD().User == bare.User {
-		return true
-	}
-	return false
+	return store.IsBotJID(client, bare)
 }
 
 // bareJIDStrings mengubah daftar JID jadi string bare untuk MentionedJID.

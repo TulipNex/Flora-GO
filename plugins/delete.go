@@ -68,18 +68,7 @@ func handleDelete(ctx context.Context, mctx *store.MessageContext) error {
 	return nil
 }
 
-// isBotJID true kalau JID adalah bot sendiri (ID maupun LID), dibandingkan
-// dalam bentuk bare (ToNonAD) supaya beda device/agent tidak menggagalkan.
+// isBotJID true kalau JID adalah bot sendiri — delegasi ke store.IsBotJID.
 func isBotJID(mctx *store.MessageContext, jid types.JID) bool {
-	bare := jid.ToNonAD().User
-	if bare == "" {
-		return false
-	}
-	if id := mctx.Client.Store.ID; id != nil && id.ToNonAD().User == bare {
-		return true
-	}
-	if lid := mctx.Client.Store.LID; !lid.IsEmpty() && lid.ToNonAD().User == bare {
-		return true
-	}
-	return false
+	return store.IsBotJID(mctx.Client, jid)
 }

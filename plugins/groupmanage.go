@@ -164,24 +164,10 @@ func replySingleMention(ctx context.Context, mctx *store.MessageContext, info *t
 	return store.ReplyTextWithMentions(ctx, mctx, sb.String(), []types.JID{bare})
 }
 
-// isBotTarget true kalau target adalah akun bot sendiri (ID maupun LID),
-// supaya command grup tidak bisa dipakai untuk mengeluarkan/mengutak-atik
-// bot itu sendiri.
+// isBotTarget true kalau target adalah akun bot sendiri — delegasi ke
+// store.IsBotJID (satu sumber kebenaran dual-format LID/PN).
 func isBotTarget(mctx *store.MessageContext, target types.JID) bool {
-	bare := target.ToNonAD().User
-	if bare == "" {
-		return false
-	}
-	if mctx.Client == nil || mctx.Client.Store == nil {
-		return false
-	}
-	if id := mctx.Client.Store.ID; id != nil && id.ToNonAD().User == bare {
-		return true
-	}
-	if lid := mctx.Client.Store.LID; !lid.IsEmpty() && lid.ToNonAD().User == bare {
-		return true
-	}
-	return false
+	return store.IsBotJID(mctx.Client, target)
 }
 
 // IsBotTarget adalah versi exported dari isBotTarget, supaya tool AI

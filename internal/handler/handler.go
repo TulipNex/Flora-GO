@@ -507,31 +507,18 @@ func handleAITrigger(client *whatsmeow.Client, evt *events.Message, text string)
 	}()
 }
 
-// isBotMentioned true kalau pesan menandai bot sendiri — dibandingkan
-// dengan ID maupun LID bot (lihat IsBotAdmin untuk dual-format yang sama),
-// karena mention di grup mode LID datang sebagai @lid.
+// isBotMentioned true kalau pesan menandai bot sendiri — delegasi ke
+// store.IsBotJID (satu sumber kebenaran dual-format LID/PN, sama dengan
+// IsBotAdmin), karena mention di grup mode LID datang sebagai @lid.
 func isBotMentioned(client *whatsmeow.Client, evt *events.Message) bool {
-	mentioned := store.ExtractMentionedJIDs(evt)
-	if len(mentioned) == 0 {
-		return false
-	}
-	matches := func(jid types.JID) bool {
-		if jid.IsEmpty() {
-			return false
+	for _, raw := range store.ExtractMentionedJIDs(evt) {
+		parsed, err := types.ParseJID(raw)
+		if err != nil {
+			continue
 		}
-		bare := jid.ToNonAD().User
-		for _, raw := range mentioned {
-			if parsed, err := types.ParseJID(raw); err == nil && parsed.ToNonAD().User == bare {
-				return true
-			}
+		if store.IsBotJID(client, parsed) {
+			return true
 		}
-		return false
-	}
-	if client.Store.ID != nil && matches(*client.Store.ID) {
-		return true
-	}
-	if !client.Store.LID.IsEmpty() && matches(client.Store.LID) {
-		return true
 	}
 	return false
 }
