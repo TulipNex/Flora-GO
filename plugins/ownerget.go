@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"wabot-go/internal/messaging"
+	"wabot-go/internal/netx"
 	"wabot-go/internal/store"
 
 	fhttp "github.com/bogdanfinn/fhttp"
@@ -122,7 +123,7 @@ func isPublicGetURL(ctx context.Context, rawURL string) error {
 	}
 	host = strings.Trim(host, "[]")
 	if ip := net.ParseIP(host); ip != nil {
-		if !isPublicIP(ip) {
+		if !netx.IsPublicIP(ip) {
 			return fmt.Errorf("host internal/private tidak diizinkan.")
 		}
 		return nil
@@ -132,16 +133,11 @@ func isPublicGetURL(ctx context.Context, rawURL string) error {
 		return fmt.Errorf("host tidak bisa di-resolve.")
 	}
 	for _, a := range addrs {
-		if !isPublicIP(a.IP) {
+		if !netx.IsPublicIP(a.IP) {
 			return fmt.Errorf("host mengarah ke alamat internal/private.")
 		}
 	}
 	return nil
-}
-
-func isPublicIP(ip net.IP) bool {
-	return !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() &&
-		!ip.IsLinkLocalMulticast() && !ip.IsUnspecified() && !ip.IsMulticast()
 }
 
 // redirectGuard menolak redirect ke host non-publik (Celah SSRF via

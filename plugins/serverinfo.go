@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"wabot-go/internal/store"
+	"wabot-go/internal/timex"
 )
 
 func init() {
@@ -120,23 +121,8 @@ func hypermeowVersion() string {
 	return "hypermeow"
 }
 
-// formatDuration mengubah durasi jadi format "1h 23m 45s" yang lebih enak dibaca
-// dibanding format default Go (misal "1h23m45.123s").
-// Pindahan dari plugins/info.go yang dihapus — dipakai serverinfo.go,
-// osinfo.go (lewat durationOrDash), dan call.go.
-func formatDuration(d time.Duration) string {
-	h := int(d.Hours())
-	m := int(d.Minutes()) % 60
-	s := int(d.Seconds()) % 60
-
-	if h > 0 {
-		return fmt.Sprintf("%dh %dm %ds", h, m, s)
-	}
-	if m > 0 {
-		return fmt.Sprintf("%dm %ds", m, s)
-	}
-	return fmt.Sprintf("%ds", s)
-}
+// formatDuration dipusatkan di internal/timex.FormatDuration (dulu duplikat
+// di sini dan di internal/ai/tools/native/system.go).
 
 // gbOrDash memformat byte jadi GB, "-" kalau nol (sumber gagal dibaca).
 func gbOrDash(b uint64) string {
@@ -151,7 +137,7 @@ func durationOrDash(d time.Duration, ok bool) string {
 	if !ok {
 		return "-"
 	}
-	return formatDuration(d.Round(time.Second))
+	return timex.FormatDuration(d.Round(time.Second))
 }
 
 // goArchDisplay memetakan GOARCH ke label umum (amd64->x64).

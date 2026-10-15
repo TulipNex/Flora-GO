@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"wabot-go/internal/store"
+	"wabot-go/internal/timex"
 )
 
 func init() {
@@ -29,7 +30,7 @@ func RegisterPing(r *Registry) {
 		Category:    CategoryUmum,
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			latency := time.Since(mctx.RawEvt.Info.Timestamp).Milliseconds()
-			uptime := formatDuration(time.Since(pingStart).Round(time.Second))
+			uptime := timex.FormatDuration(time.Since(pingStart).Round(time.Second))
 			goVer := strings.TrimPrefix(runtime.Version(), "go")
 			text := Block("Pong",
 				Row("Status", "Aktif"),

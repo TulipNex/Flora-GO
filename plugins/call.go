@@ -343,7 +343,7 @@ func (p *callProgress) onEnd(reason string) {
 	logfmt.Call("Panggilan ke %s berakhir: %s\n", phone, reason)
 	var text string
 	if !acceptedAt.IsZero() {
-		text = fmt.Sprintf("Panggilan dengan %s berakhir (durasi %s).", phone, formatDuration(time.Since(acceptedAt).Round(time.Second)))
+		text = fmt.Sprintf("Panggilan dengan %s berakhir (durasi %s).", phone, timex.FormatDuration(time.Since(acceptedAt).Round(time.Second)))
 		kind = CallEndAnswered
 	} else {
 		classified := classifyCallEnd(reason)

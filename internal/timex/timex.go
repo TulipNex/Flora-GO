@@ -86,3 +86,21 @@ func Now() time.Time {
 func Today() string {
 	return Now().Format("2006-01-02")
 }
+
+// FormatDuration mengubah durasi jadi format "1h 23m 45s" yang lebih enak
+// dibaca dibanding format default Go (mis. "1h23m45.123s"). Dipusatkan di
+// sini (dulu duplikat di plugins/serverinfo.go dan
+// internal/ai/tools/native/system.go) supaya hanya ada satu implementasi.
+func FormatDuration(d time.Duration) string {
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+
+	if h > 0 {
+		return fmt.Sprintf("%dh %dm %ds", h, m, s)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
+}

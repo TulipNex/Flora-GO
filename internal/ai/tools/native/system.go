@@ -7,6 +7,7 @@ import (
 
 	"wabot-go/internal/ai"
 	"wabot-go/internal/config"
+	"wabot-go/internal/timex"
 )
 
 // startTime dicatat sekali saat package ini di-load (saat bot start),
@@ -26,7 +27,7 @@ func init() {
 			Properties: map[string]ai.PropertySchema{},
 		},
 		Execute: func(actx *ai.AgentContext, args map[string]interface{}) (string, error) {
-			uptime := formatDuration(time.Since(startTime).Round(time.Second))
+			uptime := timex.FormatDuration(time.Since(startTime).Round(time.Second))
 
 			return fmt.Sprintf(
 				"Nama bot: %s\nVersi: %s\nUptime: %s\nBahasa: Go %s\nOS/Arch: %s/%s\nLibrary: whatsmeow",
@@ -39,21 +40,4 @@ func init() {
 			), nil
 		},
 	})
-}
-
-// formatDuration mengubah durasi jadi format "1h 23m 45s" — duplikasi kecil
-// dari fungsi sama persis di plugins/info.go, sengaja tidak di-share supaya
-// package ini tidak perlu impor plugins (lihat catatan startTime di atas).
-func formatDuration(d time.Duration) string {
-	h := int(d.Hours())
-	m := int(d.Minutes()) % 60
-	s := int(d.Seconds()) % 60
-
-	if h > 0 {
-		return fmt.Sprintf("%dh %dm %ds", h, m, s)
-	}
-	if m > 0 {
-		return fmt.Sprintf("%dm %ds", m, s)
-	}
-	return fmt.Sprintf("%ds", s)
 }

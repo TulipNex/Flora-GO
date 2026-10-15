@@ -17,6 +17,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"wabot-go/internal/netx"
 )
 
 // MediaKind adalah jenis satu item hasil scrape.
@@ -186,7 +188,7 @@ func checkPublicURL(ctx context.Context, rawURL string) error {
 	}
 	host = strings.Trim(strings.ToLower(host), "[]")
 	if ip := net.ParseIP(host); ip != nil {
-		if !isPublicIP(ip) {
+		if !netx.IsPublicIP(ip) {
 			return fmt.Errorf("host internal tidak diizinkan")
 		}
 		return nil
@@ -196,16 +198,11 @@ func checkPublicURL(ctx context.Context, rawURL string) error {
 		return fmt.Errorf("host tidak bisa di-resolve")
 	}
 	for _, a := range addrs {
-		if !isPublicIP(a.IP) {
+		if !netx.IsPublicIP(a.IP) {
 			return fmt.Errorf("host mengarah ke alamat internal")
 		}
 	}
 	return nil
-}
-
-func isPublicIP(ip net.IP) bool {
-	return !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() &&
-		!ip.IsLinkLocalMulticast() && !ip.IsUnspecified() && !ip.IsMulticast()
 }
 
 // firstNonEmpty mengembalikan string non-kosong pertama.
