@@ -75,7 +75,12 @@ var (
 	// dari file VERSION lewat linker flag:
 	//   go build -ldflags "-X wabot-go/internal/config.BotVersion=vX.Y.Z" .
 	// sehingga const sengaja dijadikan var agar bisa di-override saat build.
-	BotVersion = "v5.1.1"
+	//
+	// CATATAN: nilai fallback ini hanya untuk build manual (`go run .`).
+	// Saat rilis resmi, deploy.ps1 menyuntik versi dari file VERSION. Jaga
+	// agar nilainya tetap sinkron dengan VERSION (dulu tertinggal di v5.1.1
+	// sementara VERSION sudah v7.13.0).
+	BotVersion = "v7.13.0"
 )
 
 // ==========================

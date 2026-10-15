@@ -6,12 +6,17 @@ Bot WhatsApp modular berbasis Go, memakai library [hypermeow](https://github.com
 
 ```
 wabot-go/
-├── main.go                       # entry point: printBanner, InitCallClient, init DB (group/ai/facts/settings), login QR/pairing/session lama
+├── main.go                       # entry point: printBanner, InitCallClient, init DB (group/ai/facts/settings/finance/...), login QR/pairing/session lama
 ├── internal/
 │   ├── config/
 │   │   └── config.go              # OwnerName, OwnerNumber, BotName, BotVersion, API key AI + kartu menu (dari .env), system prompt
 │   ├── handler/
 │   │   └── handler.go             # router pesan masuk -> command / prefix spesial ($, \) / trigger AI, LogIncoming di sini
+│   ├── logfmt/                    # helper log terformat ke console (header/level)
+│   ├── timex/                     # zona waktu aktif bot (WIB/WITA/WIT) + FormatDuration
+│   ├── netx/                      # helper jaringan (IsPublicIP anti-SSRF, dipakai scraper & plugins)
+│   ├── textx/                     # helper teks (TruncateRunes, dipakai lintas paket)
+│   ├── tableimage/                # render tabel teks -> gambar
 │   ├── ai/                        # engine AI (multi-provider, agent loop, sesi, fakta, mood, bubble)
 │   │   ├── types.go               # Content/Part/FunctionCall (format universal internal)
 │   │   ├── provider_types.go      # interface ProviderAdapter, GenerateParams, ToolCall
@@ -22,85 +27,84 @@ wabot-go/
 │   │   ├── registry.go            # registry tool AI + AgentContext
 │   │   ├── reliability.go         # retry error transient + notifikasi owner saat gagal
 │   │   ├── session.go             # sesi percakapan per private/grup, idle timeout 10 mnt + ringkasan FIFO, hydrate dari SQLite
+│   │   ├── session_summary.go      # ringkasan sesi yang sudah dipadatkan
 │   │   ├── trigger.go             # deteksi trigger: kata kunci "flora/flo", reply, sticker, media + lock/unlock
 │   │   ├── lock.go                # perintah lock/unlock trigger natural (global, khusus owner)
 │   │   ├── spam_gate.go           # anti-spam per sender + lock per sesi
 │   │   ├── bubble.go              # split balasan jadi multi-bubble + delay ketik simulasi
 │   │   ├── mood.go                # deteksi mood user dari teks -> modifier system prompt
 │   │   ├── facts.go               # format & inject fakta user ke system prompt
-│   │   ├── fact_extractor.go       # ekstraksi fakta tiap 8 giliran (fire-and-forget)
+│   │   ├── fact_extractor.go      # ekstraksi fakta tiap 8 giliran (fire-and-forget)
 │   │   ├── reply_context.go       # sertakan teks bubble bot yang di-reply sebagai konteks
+│   │   ├── ailog.go               # log request AI + eksekusi tool (mode penuh opsional)
 │   │   └── tools/
 │   │       ├── native/system.go   # tool system_info (uptime, versi, OS/arch)
-│   │       └── bridge/group.go    # tool kick/promote/demote, tag, link, buka/tutup grup, stiker, call (reuse validasi command)
+│   │       ├── native/finance.go  # tool keuangan
+│   │       └── bridge/            # group.go, group_tools.go, excel.go, finance.go,
+│   │                              #   reminder.go, special_tools.go (kick/promote,
+│   │                              #   tag, link, buka/tutup grup, stiker, call) — reuse validasi command
 │   ├── messaging/                 # merakit + mengirim pesan kaya (dipakai plugins & tool bridge)
 │   │   ├── linkcard.go            # kartu link preview + thumbnail mini inline + dukungan mention
 │   │   ├── mediathumb.go          # thumbnail inline mini (~1-3KB, agar preview tampil, bukan abu-abu)
 │   │   ├── videonorm.go           # validasi + normalisasi video (MP4/H.264/AAC, transcode bila perlu)
+│   │   ├── sendurl.go             # kirim hasil fetch URL (media/dokumen)
 │   │   └── album.go               # pengiriman album media (association + induk counts)
-│   ├── scraper/                   # adapter unduhan per platform (rantai fallback, tanpa yt-dlp kecuali YouTube)
-│   │   ├── scraper.go             # tipe ScrapeItem/ScrapeResult, HTTP client API (20 dtk) + unduhan (10 mnt, cap 100MB)
-│   │   ├── tiktok.go              # tikwm → tiktokdl → musically
-│   │   ├── instagram.go           # igexport → savereels (pilih resolusi terbesar)
-│   │   ├── twitter.go             # xhancer
-│   │   ├── facebook.go            # faa (foto difilter via omnify)
-│   │   ├── pinterest.go           # klickpin (resolve shortlink + CSRF + parse tombol)
-│   │   ├── youtube.go             # savetube-direct (AES, tanpa cookie/polling)
-│   │   ├── spotify.go             # nexray → musicfab
-│   │   ├── omnify.go              # Omnify AIO: fallback universal 45+ platform
-│   │   ├── universal.go           # FetchUniversal (kontrak tetap, isi = omnify)
+│   ├── scraper/                   # adapter unduhan/API per platform (rantai fallback, tanpa yt-dlp)
+│   │   ├── scraper.go             # tipe ScrapeItem/ScrapeResult, HTTP client API + unduhan (cap 100MB)
+│   │   ├── universal.go / omnify.go # fallback universal 45+ platform + metadata
+│   │   ├── tiktok.go / instagram.go / twitter.go / facebook.go / pinterest.go
+│   │   ├── youtube.go / spotify.go / spotify_search.go / douyin.go
+│   │   ├── lrclib.go / shazam.go  # lirik + kenali lagu
+│   │   ├── flaticon.go / xpvid.go # ikon + video X
+│   │   ├── football.go / pihps.go # klasemen + harga pangan (het)
 │   │   └── htmlhelp.go            # parse HTML + helper URL
 │   └── store/
 │       ├── context.go             # helper reply (ReplyText, ReplyTextWithMentions, SendText) & MessageContext
-│       ├── group_helpers.go       # IsSenderAdmin, IsBotAdmin, ParticipantMatchesJID (LID vs PN)
-│       ├── groupdb.go             # SQLite group.db: setting grup, ban, warn, autodownload, trusted_users, dst
+│       ├── group_helpers.go       # IsSenderAdmin, IsBotAdmin, IsBotJID, ParticipantMatchesJID (LID vs PN)
+│       ├── groupdb.go             # SQLite group.db: setting grup, ban, warn, trusted, autodownload, dst
 │       ├── ownerdb.go             # ban/unban, mode self/public, lock AI, trust/untrust Flora
 │       ├── aidb.go                # SQLite ai.db: histori percakapan AI (ai_history)
-│       ├── factsdb.go             # tabel user_facts (fakta jangka panjang per sender + hapus)
 │       ├── aisettingsdb.go        # tabel ai_settings (provider/model aktif)
-│       ├── tempdir.go             # BotTempDir (<workdir>/wabot-tmp, bukan /tmp yang 100MB di panel)
-│       ├── autodownload.go        # saklar autodownload per chat
+│       ├── factsdb.go             # tabel user_facts (fakta jangka panjang per sender + hapus)
+│       ├── summariesdb.go         # ringkasan sesi AI
+│       ├── absensidb.go           # absensi grup (live-location)
+│       ├── crmdb.go               # arsip pesan CRM (.lastchat/.crm/.insp)
+│       ├── financedb.go           # keuangan lokal (pengganti Google Sheet)
 │       ├── moderationdb.go        # antilink + warnlist per grup
 │       ├── scheduledcalls.go      # jadwal panggilan (tahan restart)
+│       ├── reminders.go           # pengingat (tahan restart)
+│       ├── clones.go              # data bot clone (jadibot)
+│       ├── tempdir.go             # BotTempDir (<workdir>/wabot-tmp, bukan /tmp yang 100MB di panel)
+│       ├── autodownload.go        # saklar autodownload per chat
 │       ├── bot_message_tracker.go # cache ID+teks pesan bot (untuk deteksi reply & konteks)
 │       ├── quoted_context.go      # ambil teks bubble bot yang di-reply user
 │       ├── message_unwrap.go      # buka bungkus Ephemeral/ViewOnce message
 │       ├── trigger_extract.go     # ExtractStanzaID, IsReplyToBot, IsSticker/IsMedia, mentions
 │       ├── sticker_exif.go        # tulis/baca EXIF webp (packname & author stiker)
 │       └── log.go                 # LogIncoming & LogOutgoing (log semua pesan ke console)
-├── plugins/
+├── plugins/                       # command bot (self-registration: tiap file punya init())
 │   ├── registry.go                # Registry generik + slice registrars, RegisterAll jalankan semua otomatis
-│   ├── ping.go                    # .ping (dengan hitung latensi ms)
-│   ├── menu.go                    # .menu berkartu (kategori/all/spesifik + sapaan mention + bold)
-│   ├── serverinfo.go            # .server (alias .serverinfo/.si, owner): hardware, memori sistem, runtime + versi library
-│   ├── serverinfo_sys_linux.go    # syscall khusus Linux (kernel release, memori)
-│   ├── serverinfo_sys_other.go    # stub non-Linux (fail-soft "-")
-│   ├── osinfo.go                  # .os (owner): OS + jaringan server (IP/ISP/lokasi via ip-api.com)
-│   ├── rssinfo.go                 # .rss (owner): memori proses (RSS + heap)
-│   ├── jadibot.go                 # .jadibot (owner, bot utama): pair/list/stop bot clone (session + group DB per nomor)
+│   ├── menu.go / menucard.go      # .menu berkartu + .thumbnail/.favicon (aset kartu menu)
+│   ├── ping.go / owner.go / delete.go / tourl.go
 │   ├── downloader.go              # .tiktok/.youtube/.instagram/.twitter/.facebook/.pinterest/.spotify + album + WebP + batas ukuran/durasi
-│   ├── ai.go                      # .agent (admin Flora: model/provider/status/trust/reset) + HandleAIMessage
-│   ├── sticker.go                 # .sticker / .s (gambar/video -> stiker webp via ffmpeg)
-│   ├── stickerwatermark.go        # .swm (ganti packname & author stiker)
-│   ├── call.go                    # .call <nomor> dan .call <nomor>|<jam> (panggilan + penjadwalan WITA)
-│   ├── groupmanage.go             # kick, promote, demote, tagall, .add <nomor...>
-│   ├── groupsetting.go            # setname, setdesc, open/close, linkgc
-│   ├── moderation.go              # antilink, warn/unwarn/warnlist + welcome/bye grup
-│   ├── welcome.go                 # sapaan + perpisahan member grup (template)
-│   ├── owneradmin.go              # ban/unban user & grup, mode self/public, gate owner + trust Flora
-│   ├── ownerexec.go               # $ shell server dan \ eval JS (khusus owner, async + timeout)
-│   ├── ownerget.go                # .get fetch URL (sidik TLS browser, anti-SSRF, >10MB jadi dokumen)
-│   ├── ownerjoin.go               # .join/.leave grup via link undangan
-│   ├── ownerrvo.go                # .rvo buka pesan sekali-lihat yang di-reply
-│   ├── owner.go                   # .owner (kirim vCard owner)
-│   ├── delete.go                  # .delete/.del hapus pesan yang di-reply
-│   ├── docread.go                 # baca dokumen untuk AI (PDF/DOCX/XLSX/teks, map-reduce)
-│   └── testthumb.go               # .testthumb (DEMO dev untuk kartu link preview, bukan fitur user)
+│   ├── douyin.go / bk.go / insthumb.go / flaticon.go
+│   ├── sticker.go / stickerwatermark.go / smeme.go / brat.go / tomedia.go / setpp.go / tts.go
+│   ├── lrclib.go / shazam.go / spotify_search.go / speedtest.go / het.go / klasemen.go / listgrup.go
+│   ├── absensi.go / crm.go / tictactoe.go / selfcmd.go / replyfmt.go / pending.go
+│   ├── groupmanage.go / groupsetting.go / moderation.go / welcome.go / swgc.go
+│   ├── owneradmin.go / ownerexec.go / ownerget.go / ownerjoin.go / ownerrvo.go / jadibot.go
+│   ├── sbpr.go / spr.go           # batch & private reply (owner)
+│   ├── pdfmerge.go / pdflocal.go / docread.go
+│   ├── ai.go / call.go            # admin Flora + panggilan WA (jadwal)
+│   ├── serverinfo.go (+serverinfo_sys_linux.go/_other.go) / osinfo.go / rssinfo.go
+│   └── booktest.go / qtest.go / buttontest.go   # command uji (owner/hidden, bukan fitur publik)
 ├── data/                          # session WhatsApp & database SQLite (dibuat otomatis, JANGAN dihapus)
 ├── wabot-tmp/                     # temp kerja bot (dibuat otomatis, JANGAN dihapus, gitignored)
 ├── greeting.mp3                   # audio yang diputar saat panggilan (aset runtime, upload manual ke panel)
-├── run.sh                         # startup script untuk Pterodactyl (source .env di awal)
+├── apps-script/arsip/             # arsip Google Apps Script lama (fitur Sheet pensiun, tidak dipakai)
+├── run.sh                         # startup script untuk Pterodactyl
 ├── deploy.ps1                     # script build + rclone copyto ke panel (dijalankan dari laptop)
+├── version-bump.ps1               # tentukan naik versi otomatis dari file yang berubah (dipakai deploy.ps1)
 ├── push.ps1                       # script git add/commit/push cepat
 ├── go.mod / go.sum               # Go 1.26+, hypermeow terbaru
 ├── .env / .env.example
@@ -238,16 +242,21 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 |---|---|
 | `.ping` | Cek bot hidup + latensi (ms) |
 | `.menu` / `.menu all` / `.menu <kategori>` | Daftar command berkartu link + sapaan mention pengirim (bold) |
-| `.testthumb` | Demo developer untuk kartu link preview (bukan fitur user) |
 | `.owner` | vCard kontak owner |
 | `.autodownload on/off` | Download otomatis link medsos di chat ini, per chat |
+| `.tourl` | Upload media (reply) jadi link |
+| `.insthumb` `<url>` | Lihat metadata link |
+| `.selfcmd on\|off` | Saklar eksekusi command dari akun bot sendiri (owner) |
 
 ### Media (downloader)
 | Command | Keterangan |
 |---|---|
 | `.tiktok` / `.tt`, `.youtube` / `.yt`, `.instagram` / `.ig`, `.twitter` / `.x`, `.facebook` / `.fb`, `.pinterest` / `.pin`, `.spotify` / `.sp` + `<url>` | Download via scraper API per platform (YouTube primer yt-dlp; lainnya scraper-first + fallback) |
-| `.douyin` / `.dy` + `<url/judul>` | Download TikTok gaya Baileys: foto satu-per-satu, video + caption, audio mp3 (tikwm → siputzx) |
+| `.douyin` / `.dy` + `<url/judul>` | Download TikTok gaya Baileys: foto satu-per-satu, video + caption, audio mp3 |
+| `.bk` `<link> [d]` | Download video embed |
 | `.youtubemp3` / `.ytmp3`, `.youtube --mp3` | Audio saja |
+| `.shazam` + reply VN/audio | Kenali lagu |
+| `.lrclib` / `.lrc`, `.lrclibs` / `.lrcs` + `<judul>` | Cari lirik plain / synced |
 | Perilaku umum | Carousel/foto multi-item digabung **1 bubble album** (tanpa batas jumlah); WebP statis→JPEG / animasi→MP4 otomatis; video asing di-transcode ke MP4/H.264/AAC agar bisa diputar; thumbnail mini agar preview tampil |
 | Batas (keputusan owner) | Media ≤100MB kirim normal; video YouTube 100–200MB jadi **dokumen** (>200MB ditolak); durasi YouTube maks **35 menit**; antrean maks 2 bersamaan |
 
@@ -265,33 +274,55 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 ### Grup
 | Command | Keterangan |
 |---|---|
-| `.kick` / `.promote` / `.demote` / `.add` / `.tagall` | Manajemen member (deteksi mention/reply/nomor, paham LID) |
-| `.setname` / `.setdesc` / `.open` / `.close` / `.linkgc` | Pengaturan grup |
+| `.kick` / `.promote` / `.demote` / `.add` / `.tagall` / `.hidetag` | Manajemen member & tag (deteksi mention/reply/nomor, paham LID) |
+| `.setname` / `.setdesc` / `.open` / `.close` / `.linkgc` / `.setpp` | Pengaturan grup + ganti foto grup |
 | `.antilink` / `.warn` / `.unwarn` / `.warnlist` | Moderasi link + peringatan (maks 3 = kick) |
-| Welcome/bye | Sapaan + perpisahan member (template @user/@group) |
+| `.welcome` / `.bye` | Sapaan + perpisahan member (on/off/set/simulate) |
+| `.swgc` `<teks>` / `.antistatus on\|off` | Kirim status grup + auto-hapus SWGC orang |
+| `.absen mulai/berhenti/hasil/...` | Absensi live-location |
+| Welcome/bye | Template @user/@group |
 
 ### Alat
 | Command | Keterangan |
 |---|---|
 | `.sticker` / `.s` | Gambar/video (langsung atau reply) jadi stiker webp via ffmpeg |
 | `.swm` | Ganti packname & author stiker |
-| `.rvo` | Buka pesan sekali-lihat yang di-reply (foto/video/voice note) |
+| `.smeme atas \| bawah` | Stiker meme dari gambar (reply) |
+| `.brat` | Stiker bergaya brat |
+| `.toimg` / `.togif` / `.tomp3` | Stiker → foto / GIF bergerak / audio mp3 |
+| `.tts <teks> [\| ardi]` | Ubah teks jadi voice note |
+| `.speedtest` | Tes kecepatan internet panel (kartu hasil Ookla) |
+| `.rvo` | Buka pesan sekali-lihat yang di-reply |
 | `.get <url>` | Fetch URL (sidik TLS browser, anti-SSRF); >10MB jadi dokumen |
 | `.delete` / `.del` | Hapus pesan yang di-reply |
+| `.ttt` / `.tictactoe` | Tictactoe (`.ttt @user tantang`/`bot`/`5`/`stop`) — catatan: `.tt` milik TikTok |
+
+### Internet / Info
+| Command | Keterangan |
+|---|---|
+| `.het` | Harga pangan Sultra 7 hari |
+| `.klasemen` / `.liga [liga]` | Klasemen liga top Eropa |
+| `.flaticon <id/link>` | Link CDN ikon |
 
 ### Dokumen
 | Command | Keterangan |
 |---|---|
-| `.pdfmerge` | Gabung PDF via staging (mulai/kirim/gabung/daftar/nama/batal) |
+| `.pdfmerge` | Gabung s.d. 15 PDF via staging (mulai/kirim/gabung/daftar/nama/batal) |
 | `.compress` / `.split` / `.jpgpdf` / `.watermark` / `.protect` / `.unlock` | Alat PDF lokal via pdfcpu (offline, maks 50MB) |
 
 ### Owner
 | Command | Keterangan |
 |---|---|
-| `.server` / `.si`, `.os`, `.rss` | Info server, OS + jaringan, memori proses (khusus owner) |
+| `.server` / `.si`, `.os`, `.rss` | Info server, OS + jaringan, memori proses |
 | `.jadibot qr/list/stop/start/hapus` | Kelola bot clone via scan QR (stop=start ulang tanpa QR, hapus=total + arsip grup) |
-| `.call <target>[\|<jam>]` | Panggilan WhatsApp keluar / terjadwal WITA (tersimpan di SQLite, tahan restart) |
-| `.ban` / `.unban` / `.mode` / `.join` / `.leave` | Ban user & grup, mode self/public, keluar-masuk grup via link |
+| `.call <target>[\|<jam>]` | Panggilan WhatsApp keluar / terjadwal (zona aktif bot, tersimpan di SQLite) |
+| `.ban` / `.unban` / `.bangroup` / `.unbangroup` / `.banlist` / `.bangrouplist` | Ban user & grup |
+| `.mode` / `.join` / `.leave` | Mode self/public, keluar-masuk grup via link |
+| `.sbpr @a <pesan>` | Batch private relay 1 ID (mis. `.sbpr @a Halo {nama}! \| sapa`) |
+| `.spr @target <pesan> [\| decoy]` | Kirim private reply grup per-target |
+| `.thumbnail` / `.favicon <link>/reset` | Set aset kartu `.menu` |
+| `.lastchat` / `.crm` / `.insp` / `.run` | Arsip pesan (cek metadata/JSON, kirim ulang) |
+| `.listgrup` | Daftar grup bot + JID (untuk flag `-g`) |
 | `$ <perintah>` | Eksekusi shell di server (async, timeout 120 dtk, output dipotong) |
 | `\ <kode js>` | Eval JavaScript di dalam bot (async, timeout 30 dtk) |
 
