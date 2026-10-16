@@ -17,9 +17,9 @@
 #           qr.png, VERSION/state itu sendiri, apps-script/, test-env.ps1)
 #
 # Cara pakai langsung (dry-run, tanpa menulis apa pun):
-#   .\version-bump.ps1 -NoUpdate
+#   .\scripts\version-bump.ps1 -NoUpdate
 # Dipakai dari script lain (dot-source, mengembalikan objek):
-#   . .\version-bump.ps1
+#   . .\scripts\version-bump.ps1
 #   $v = Invoke-VersionBump -Override auto
 param(
     [ValidateSet("auto", "major", "minor", "patch", "none")]
@@ -30,8 +30,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Root = $PSScriptRoot
-if (-not $Root) { $Root = (Get-Location).Path }
+# Script ini berada di scripts/ -> root proyek = satu level di atasnya
+# (tempat VERSION, .last-deploy-state, go.mod, main.go berada).
+$Root = if ($PSScriptRoot) { Split-Path -Parent $PSScriptRoot } else { (Get-Location).Path }
+Set-Location -LiteralPath $Root
 
 # Semua pemanggilan git lewat satu pintu ini: menonaktifkan autocrlf
 # per-command (menghilangkan warning "LF will be replaced by CRLF" yang

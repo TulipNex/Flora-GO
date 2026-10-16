@@ -1,10 +1,15 @@
 # push.ps1 — push cepat source code wabot-go ke GitHub
-# Jalankan dari folder project: .\push.ps1 "pesan commit"
+# Jalankan dari folder project: .\scripts\push.ps1 "pesan commit"
 
 param(
     [Parameter(Mandatory = $false)]
     [string]$Message
 )
+
+# Root proyek = folder induk scripts/. Git harus dijalankan dari root repo,
+# jadi arahkan ke sana walau script dipanggil lewat path scripts\push.ps1.
+$Root = Split-Path -Parent $PSScriptRoot
+Set-Location -LiteralPath $Root
 
 Write-Host "== Mengecek perubahan ==" -ForegroundColor Cyan
 git status

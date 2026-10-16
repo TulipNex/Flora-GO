@@ -1,10 +1,11 @@
 ﻿# deploy.ps1
 # Build wabot-go untuk Linux, lalu sync binary-nya ke panel Pterodactyl via SFTP (rclone).
-# Jalankan dari root folder project (tempat main.go berada).
+# Jalankan dari root folder project:  .\scripts\deploy.ps1  (script otomatis
+# mengarahkan direktori kerja ke root proyek, tempat main.go berada).
 #
 # Konfirmasi: sebelum build, script menanyakan apakah bot di panel sudah
 # di-STOP (upload menimpa binary yang sedang jalan berisiko). Lewati dengan
-# switch -y bila dijalankan otomatis:  .\deploy.ps1 -y
+# switch -y bila dijalankan otomatis:  .\scripts\deploy.ps1 -y
 #
 # Versi: OTOMATIS ditentukan dari file yang berubah sejak deploy terakhir
 # (version-bump.ps1, tanpa flag). -Bump hanya override manual darurat
@@ -16,6 +17,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Root proyek = folder induk scripts/. Semua operasi (go build `.`, output
+# binary, rclone) relatif terhadap root, jadi arahkan langsung ke sana supaya
+# script tetap benar walau dipanggil lewat path scripts\deploy.ps1.
+$Root = Split-Path -Parent $PSScriptRoot
+Set-Location -LiteralPath $Root
 
 $BinaryName = "wabot-go-linux"
 $RemoteName = "panel"                # nama remote rclone yang sudah dikonfigurasi

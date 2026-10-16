@@ -103,9 +103,11 @@ wabot-go/
 ├── greeting.mp3                   # audio yang diputar saat panggilan (aset runtime, upload manual ke panel)
 ├── apps-script/arsip/             # arsip Google Apps Script lama (fitur Sheet pensiun, tidak dipakai)
 ├── run.sh                         # startup script untuk Pterodactyl
-├── deploy.ps1                     # script build + rclone copyto ke panel (dijalankan dari laptop)
-├── version-bump.ps1               # tentukan naik versi otomatis dari file yang berubah (dipakai deploy.ps1)
-├── push.ps1                       # script git add/commit/push cepat
+├── scripts/                       # tooling build/deploy (dijalankan dari laptop)
+│   ├── deploy.ps1                 # build + rclone copyto ke panel
+│   ├── version-bump.ps1           # tentukan naik versi otomatis dari file yang berubah (dipakai deploy.ps1)
+│   ├── push.ps1                   # script git add/commit/push cepat
+│   └── pair-lan.ps1               # pairing opencode via Wi-Fi (QR)
 ├── go.mod / go.sum               # Go 1.26+, hypermeow terbaru
 ├── .env / .env.example
 └── .gitignore
@@ -190,7 +192,7 @@ Source code hanya hidup di laptop. Panel hanya menerima **hasil compile** (binar
 
 1. Edit kode di laptop (folder project, disarankan lewat VS Code dengan terminal bawaan PowerShell).
 2. Stop bot lewat panel (web).
-3. Jalankan `.\deploy.ps1` — script ini menentukan **versi otomatis** dari file yang berubah sejak deploy terakhir (`version-bump.ps1`: file Go baru = minor, hapus command/tool atau naik Go = major, edit lain = patch, hanya README/data = tetap; snapshot di `.last-deploy-state`), menulisnya ke `VERSION`, menyuntik ke binary via ldflags, lalu build + `rclone copyto` binary ke root panel.
+3. Jalankan `.\scripts\deploy.ps1` — script ini menentukan **versi otomatis** dari file yang berubah sejak deploy terakhir (`version-bump.ps1`: file Go baru = minor, hapus command/tool atau naik Go = major, edit lain = patch, hanya README/data = tetap; snapshot di `.last-deploy-state`), menulisnya ke `VERSION`, menyuntik ke binary via ldflags, lalu build + `rclone copyto` binary ke root panel.
 4. Start bot lagi lewat panel (web).
 
 **Setup rclone (sekali saja):**
