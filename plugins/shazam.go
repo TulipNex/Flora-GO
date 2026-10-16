@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"wabot-go/internal/external"
 	"wabot-go/internal/logfmt"
-	"wabot-go/internal/scraper"
 	"wabot-go/internal/store"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
@@ -30,13 +30,13 @@ const (
 )
 
 type shPendingResult struct {
-	songs []scraper.ShazamTrack
+	songs []external.ShazamTrack
 	query string
 }
 
 var shPending = newPendingStore[*shPendingResult](shazamPickTTL)
 
-func shPendingSet(chat, sender string, songs []scraper.ShazamTrack, query string) {
+func shPendingSet(chat, sender string, songs []external.ShazamTrack, query string) {
 	shPending.Set(chat, sender, &shPendingResult{songs: songs, query: query})
 }
 
@@ -197,12 +197,12 @@ func shazamDoRecognize(ctx context.Context, mctx *store.MessageContext) {
 		_ = store.ReplyText(ctx, mctx, err.Error())
 		return
 	}
-	samples, err := scraper.DecodeAudioPCM16K(ctx, data, isVideo)
+	samples, err := external.DecodeAudioPCM16K(ctx, data, isVideo)
 	if err != nil {
 		_ = store.ReplyText(ctx, mctx, err.Error())
 		return
 	}
-	track, err := scraper.RecognizeShazam(ctx, samples)
+	track, err := external.RecognizeShazam(ctx, samples)
 	if err != nil {
 		_ = store.ReplyText(ctx, mctx, fmt.Sprintf("Tidak dikenali: %v", err))
 		return
@@ -211,7 +211,7 @@ func shazamDoRecognize(ctx context.Context, mctx *store.MessageContext) {
 }
 
 func shazamDoSearch(ctx context.Context, mctx *store.MessageContext, query string) {
-	songs, err := scraper.SearchShazam(ctx, query, shazamSearchLimit)
+	songs, err := external.SearchShazam(ctx, query, shazamSearchLimit)
 	if err != nil {
 		_ = store.ReplyText(ctx, mctx, fmt.Sprintf("Pencarian gagal: %v", err))
 		return
@@ -258,7 +258,7 @@ func tryShazamNumberPick(mctx *store.MessageContext, numText string) (bool, stri
 }
 
 // shazamSendSearchPick mengirim detail lagu pilihan pencarian.
-func shazamSendSearchPick(ctx context.Context, mctx *store.MessageContext, song scraper.ShazamTrack) {
+func shazamSendSearchPick(ctx context.Context, mctx *store.MessageContext, song external.ShazamTrack) {
 	if strings.TrimSpace(song.ID) != "" {
 		shazamDoTrack(ctx, mctx, strings.TrimSpace(song.ID))
 		return
@@ -346,7 +346,7 @@ func shDlPendingPeek(chat, sender string) string {
 }
 
 func shazamDoTrack(ctx context.Context, mctx *store.MessageContext, id string) {
-	track, err := scraper.GetShazamTrack(ctx, id)
+	track, err := external.GetShazamTrack(ctx, id)
 	if err != nil {
 		_ = store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal ambil track: %v", err))
 		return
@@ -360,7 +360,7 @@ var shazamSpotifyTrackRe = regexp.MustCompile(`spotify:track:([A-Za-z0-9]+)`)
 // Apple kadang memberi URI skema (spotify:search:/spotify:track:), bukan
 // URL https — langsung diteruskan hanya bila sudah URL track valid.
 // Mengembalikan (url, langsungBisaDiunduh).
-func shazamSpotifyLink(ctx context.Context, t *scraper.ShazamTrack) (string, bool) {
+func shazamSpotifyLink(ctx context.Context, t *external.ShazamTrack) (string, bool) {
 	raw := strings.TrimSpace(t.SpotifyURL)
 	if strings.HasPrefix(raw, "https://open.spotify.com/track/") {
 		return raw, true
@@ -373,7 +373,7 @@ func shazamSpotifyLink(ctx context.Context, t *scraper.ShazamTrack) (string, boo
 	if query == "" {
 		return "", false
 	}
-	if res, err := scraper.SearchSpotify(ctx, query, 1); err == nil && len(res) > 0 && strings.TrimSpace(res[0].ID) != "" {
+	if res, err := external.SearchSpotify(ctx, query, 1); err == nil && len(res) > 0 && strings.TrimSpace(res[0].ID) != "" {
 		return "https://open.spotify.com/track/" + strings.TrimSpace(res[0].ID), true
 	}
 	return "https://open.spotify.com/search/" + url.PathEscape(query), false
@@ -381,7 +381,7 @@ func shazamSpotifyLink(ctx context.Context, t *scraper.ShazamTrack) (string, boo
 
 // shazamTrackCaption membangun kartu hasil: hint, baris kosong, lalu link.
 // direct=true berarti link berupa URL track (bisa .sp / unduh langsung).
-func shazamTrackCaption(t *scraper.ShazamTrack, link string, direct bool) string {
+func shazamTrackCaption(t *external.ShazamTrack, link string, direct bool) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "*%s*\n", firstNonEmptyShazam(t.Title, "-"))
 	fmt.Fprintf(&sb, "> Artis : %s\n", firstNonEmptyShazam(t.Artist, "-"))
@@ -434,7 +434,7 @@ func shDlPendingConsume(chat, sender string) string {
 
 // shazamSendTrack resolve link, simpan pending unduh (bila langsung),
 // lalu kirim cover + caption; gagal cover = teks saja.
-func shazamSendTrack(ctx context.Context, mctx *store.MessageContext, track *scraper.ShazamTrack) {
+func shazamSendTrack(ctx context.Context, mctx *store.MessageContext, track *external.ShazamTrack) {
 	link, direct := shazamSpotifyLink(ctx, track)
 	if direct && link != "" {
 		shDlPendingSet(mctx.Chat.String(), mctx.Sender.String(), link)
@@ -444,7 +444,7 @@ func shazamSendTrack(ctx context.Context, mctx *store.MessageContext, track *scr
 	}
 	caption := shazamTrackCaption(track, link, direct)
 	if strings.TrimSpace(track.Cover) != "" {
-		if data, err := scraper.DownloadBytes(ctx, strings.TrimSpace(track.Cover)); err == nil && len(data) > 0 {
+		if data, err := external.DownloadBytes(ctx, strings.TrimSpace(track.Cover)); err == nil && len(data) > 0 {
 			if serr := sendDlBytesImage(ctx, mctx, data, caption); serr == nil {
 				return
 			} else {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"wabot-go/internal/scraper"
+	"wabot-go/internal/external"
 	"wabot-go/internal/store"
 )
 
@@ -48,7 +48,7 @@ func handleInsThumb(ctx context.Context, mctx *store.MessageContext) error {
 
 	go func() {
 		bg := context.Background()
-		meta, err := scraper.FetchPageMeta(bg, rawURL)
+		meta, err := external.FetchPageMeta(bg, rawURL)
 		if err != nil {
 			_ = store.ReplyText(bg, mctx, fmt.Sprintf("Gagal baca metadata: %v", err))
 			return
@@ -94,7 +94,7 @@ func insThumbQuotedURL(mctx *store.MessageContext) string {
 // formatInsThumb merangkai 5 field yang diminta: link, title, desc,
 // thumb url, favicon url. Field kosong ditandai "-" (bukan error) supaya
 // user tahu apa yang tidak disediakan situs.
-func formatInsThumb(rawURL string, meta *scraper.PageMeta) string {
+func formatInsThumb(rawURL string, meta *external.PageMeta) string {
 	val := func(s string) string {
 		if strings.TrimSpace(s) == "" {
 			return "-"

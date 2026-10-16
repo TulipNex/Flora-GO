@@ -14,7 +14,7 @@ wabot-go/
 │   │   └── handler.go             # router pesan masuk -> command / prefix spesial ($, \) / trigger AI, LogIncoming di sini
 │   ├── logfmt/                    # helper log terformat ke console (header/level)
 │   ├── timex/                     # zona waktu aktif bot (WIB/WITA/WIT) + FormatDuration
-│   ├── netx/                      # helper jaringan (IsPublicIP anti-SSRF, dipakai scraper & plugins)
+│   ├── netx/                      # helper jaringan (IsPublicIP anti-SSRF, dipakai external & plugins)
 │   ├── textx/                     # helper teks (TruncateRunes, dipakai lintas paket)
 │   ├── tableimage/                # render tabel teks -> gambar
 │   ├── ai/                        # engine AI (multi-provider, agent loop, sesi, fakta, mood, bubble)
@@ -49,8 +49,8 @@ wabot-go/
 │   │   ├── videonorm.go           # validasi + normalisasi video (MP4/H.264/AAC, transcode bila perlu)
 │   │   ├── sendurl.go             # kirim hasil fetch URL (media/dokumen)
 │   │   └── album.go               # pengiriman album media (association + induk counts)
-│   ├── scraper/                   # adapter unduhan/API per platform (rantai fallback, tanpa yt-dlp)
-│   │   ├── scraper.go             # tipe ScrapeItem/ScrapeResult, HTTP client API + unduhan (cap 100MB)
+│   ├── external/                  # adapter unduhan/API per platform (rantai fallback, tanpa yt-dlp)
+│   │   ├── external.go            # tipe ScrapeItem/ScrapeResult, HTTP client API + unduhan (cap 100MB)
 │   │   ├── universal.go / omnify.go # fallback universal 45+ platform + metadata
 │   │   ├── tiktok.go / instagram.go / twitter.go / facebook.go / pinterest.go
 │   │   ├── youtube.go / spotify.go / spotify_search.go / douyin.go

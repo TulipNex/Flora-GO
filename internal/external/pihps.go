@@ -1,4 +1,4 @@
-package scraper
+package external
 
 // Scraper PIHPS BI (Pusat Informasi Harga Pangan Strategis Nasional):
 // Tabel Harga Pasar Tradisional Berdasarkan Daerah untuk .het.

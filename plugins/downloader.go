@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"wabot-go/internal/external"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/messaging"
-	"wabot-go/internal/scraper"
 	"wabot-go/internal/store"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
@@ -272,15 +272,15 @@ func downloadAndSend(ctx context.Context, mctx *store.MessageContext, rawURL str
 
 // fetchScraper menjalankan rantai adapter per platform + omnify universal
 // sebagai jaring pengaman terakhir (lihat withUniversal).
-func fetchScraper(ctx context.Context, p *dlPlatform, rawURL string, audioOnly bool) (*scraper.ScrapeResult, error) {
+func fetchScraper(ctx context.Context, p *dlPlatform, rawURL string, audioOnly bool) (*external.ScrapeResult, error) {
 	// withUniversal menjalankan fetch utama, jatuh ke universal bila gagal,
 	// dan merangkai error gabungan yang informatif bila keduanya gagal.
-	withUniversal := func(name string, fetch func(context.Context, string) (*scraper.ScrapeResult, error)) (*scraper.ScrapeResult, error) {
+	withUniversal := func(name string, fetch func(context.Context, string) (*external.ScrapeResult, error)) (*external.ScrapeResult, error) {
 		if res, err := fetch(ctx, rawURL); err == nil {
 			return res, nil
 		} else {
 			firstErr := err
-			if res, err := scraper.FetchUniversal(ctx, rawURL); err == nil {
+			if res, err := external.FetchUniversal(ctx, rawURL); err == nil {
 				return res, nil
 			} else {
 				return nil, fmt.Errorf("%s: %v | universal: %v", name, firstErr, err)
@@ -289,19 +289,19 @@ func fetchScraper(ctx context.Context, p *dlPlatform, rawURL string, audioOnly b
 	}
 	switch p.command {
 	case "tiktok":
-		return withUniversal("tiktok", scraper.FetchTikTok)
+		return withUniversal("tiktok", external.FetchTikTok)
 	case "instagram":
-		return withUniversal("instagram", scraper.FetchInstagram)
+		return withUniversal("instagram", external.FetchInstagram)
 	case "twitter":
-		return withUniversal("twitter", scraper.FetchTwitter)
+		return withUniversal("twitter", external.FetchTwitter)
 	case "spotify":
-		return withUniversal("spotify", scraper.FetchSpotify)
+		return withUniversal("spotify", external.FetchSpotify)
 	case "facebook":
-		return withUniversal("facebook", scraper.FetchFacebook)
+		return withUniversal("facebook", external.FetchFacebook)
 	case "pinterest":
-		return withUniversal("pinterest", scraper.FetchPinterest)
+		return withUniversal("pinterest", external.FetchPinterest)
 	default:
-		return scraper.FetchUniversal(ctx, rawURL)
+		return external.FetchUniversal(ctx, rawURL)
 	}
 }
 
@@ -312,7 +312,7 @@ func fetchScraper(ctx context.Context, p *dlPlatform, rawURL string, audioOnly b
 // diunduh/dikirim dilewati (log console); kalau SEMUA gagal baru error
 // ke user (keputusan owner: kegagalan tetap dibalas agar user tidak
 // menunggu tanpa kabar).
-func sendScrapeResult(ctx context.Context, mctx *store.MessageContext, res *scraper.ScrapeResult, status types.MessageID) error {
+func sendScrapeResult(ctx context.Context, mctx *store.MessageContext, res *external.ScrapeResult, status types.MessageID) error {
 	items := res.Items
 	if len(items) == 0 {
 		return fmt.Errorf("scraper %s tidak mengembalikan media", res.Source)
@@ -328,7 +328,7 @@ func sendScrapeResult(ctx context.Context, mctx *store.MessageContext, res *scra
 
 	sent, failed := 0, 0
 	for i, item := range items {
-		data, err := scraper.DownloadBytes(ctx, item.URL)
+		data, err := external.DownloadBytes(ctx, item.URL)
 		if err != nil {
 			logfmt.Warn("downloader: unduh item %d gagal (%v)\n", i+1, err)
 			failed++
@@ -340,9 +340,9 @@ func sendScrapeResult(ctx context.Context, mctx *store.MessageContext, res *scra
 		}
 		var serr error
 		switch item.Kind {
-		case scraper.KindAudio:
+		case external.KindAudio:
 			serr = sendDlBytesAudio(ctx, mctx, data, labelFromURL(item.URL))
-		case scraper.KindPhoto:
+		case external.KindPhoto:
 			serr = sendDlPhotoSmart(ctx, mctx, data, cap)
 		default:
 			serr = sendDlBytesVideo(ctx, mctx, data, cap)
@@ -363,10 +363,10 @@ func sendScrapeResult(ctx context.Context, mctx *store.MessageContext, res *scra
 
 // albumEligible true kalau ada ≥2 item foto/video (syarat minimal album).
 // Audio tidak dihitung — tidak ikut album.
-func albumEligible(items []scraper.ScrapeItem) bool {
+func albumEligible(items []external.ScrapeItem) bool {
 	n := 0
 	for _, item := range items {
-		if item.Kind == scraper.KindPhoto || item.Kind == scraper.KindVideo {
+		if item.Kind == external.KindPhoto || item.Kind == external.KindVideo {
 			n++
 		}
 	}
@@ -385,17 +385,17 @@ type albumMediaItem struct {
 	data  []byte
 }
 
-func sendScrapeAlbum(ctx context.Context, mctx *store.MessageContext, items []scraper.ScrapeItem, caption string) error {
+func sendScrapeAlbum(ctx context.Context, mctx *store.MessageContext, items []external.ScrapeItem, caption string) error {
 	var media []albumMediaItem
 	sent, failed := 0, 0
 	for i, item := range items {
-		data, err := scraper.DownloadBytes(ctx, item.URL)
+		data, err := external.DownloadBytes(ctx, item.URL)
 		if err != nil {
 			logfmt.Warn("downloader: unduh item %d gagal (%v)\n", i+1, err)
 			failed++
 			continue
 		}
-		if item.Kind == scraper.KindAudio {
+		if item.Kind == external.KindAudio {
 			if serr := sendDlBytesAudio(ctx, mctx, data, labelFromURL(item.URL)); serr != nil {
 				logfmt.Warn("downloader: kirim item %d gagal (%v)\n", i+1, serr)
 				failed++
@@ -404,7 +404,7 @@ func sendScrapeAlbum(ctx context.Context, mctx *store.MessageContext, items []sc
 			sent++
 			continue
 		}
-		if item.Kind == scraper.KindVideo {
+		if item.Kind == external.KindVideo {
 			media = append(media, albumMediaItem{video: true, data: data})
 			continue
 		}

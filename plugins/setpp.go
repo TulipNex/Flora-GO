@@ -13,7 +13,7 @@ import (
 
 	"strings"
 
-	"wabot-go/internal/scraper"
+	"wabot-go/internal/external"
 	"wabot-go/internal/store"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
@@ -86,7 +86,7 @@ func setppSourceBytes(ctx context.Context, mctx *store.MessageContext) ([]byte, 
 		if err := isPublicGetURL(ctx, rawURL); err != nil {
 			return nil, fmt.Errorf("%v", err)
 		}
-		data, err := scraper.DownloadBytes(ctx, rawURL)
+		data, err := external.DownloadBytes(ctx, rawURL)
 		if err != nil {
 			return nil, fmt.Errorf("gagal unduh URL: %v", err)
 		}

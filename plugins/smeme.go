@@ -13,9 +13,9 @@ import (
 	"unicode/utf8"
 
 	"wabot-go/internal/config"
+	"wabot-go/internal/external"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/messaging"
-	"wabot-go/internal/scraper"
 	"wabot-go/internal/store"
 
 	"github.com/polymorfa/hypermeow/proto/waE2E"
@@ -294,7 +294,7 @@ func memegenEscape(s string) string {
 }
 
 // fetchMemegenMedia merender meme via memegen custom background lalu
-// mengunduh PNG hasilnya lewat scraper.DownloadBytes (tameng SSRF + cap
+// mengunduh PNG hasilnya lewat external.DownloadBytes (tameng SSRF + cap
 // 100MB). URL render dirakit penuh oleh kita (host + template fixed,
 // hanya segmen teks dari user yang sudah di-escape) sehingga tidak ada
 // host buatan user yang lolos ke downloader.
@@ -304,7 +304,7 @@ func fetchMemegenMedia(ctx context.Context, bgURL, top, bottom string) ([]byte, 
 		"?background=" + url.QueryEscape(bgURL) +
 		"&font=" + smemeFont
 
-	data, err := scraper.DownloadBytes(ctx, renderURL)
+	data, err := external.DownloadBytes(ctx, renderURL)
 	if err != nil {
 		// Memegen menjawab 415 kalau background ditolak — body-nya
 		// render fallback abu-abu yang tidak boleh terkirim ke user,

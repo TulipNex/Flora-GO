@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"wabot-go/internal/scraper"
+	"wabot-go/internal/external"
 	"wabot-go/internal/store"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
@@ -46,7 +46,7 @@ func handleBK(ctx context.Context, mctx *store.MessageContext) error {
 	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
 		rawURL = "https://" + rawURL
 	}
-	if !scraper.IsXpvidURL(rawURL) {
+	if !external.IsXpvidURL(rawURL) {
 		return store.ReplyText(ctx, mctx, "Media tidak ditemukan.")
 	}
 	docMode := len(mctx.Args) > 1 && strings.EqualFold(strings.TrimSpace(mctx.Args[1]), "d")
@@ -87,7 +87,7 @@ func fetchSendXpvid(ctx context.Context, mctx *store.MessageContext, rawURL stri
 // bila mode d). Error berupa pesan ramah siap-balas ("media tidak
 // ditemukan" untuk tiap kegagalan resolve/unduh).
 func resolveAndSendXpvid(ctx context.Context, mctx *store.MessageContext, rawURL string, docMode bool) error {
-	info, err := scraper.FetchXpvid(ctx, rawURL)
+	info, err := external.FetchXpvid(ctx, rawURL)
 	if err != nil {
 		return fmt.Errorf("gagal ambil video: %v%v", err, xpvidBlockHint(err))
 	}
@@ -99,7 +99,7 @@ func resolveAndSendXpvid(ctx context.Context, mctx *store.MessageContext, rawURL
 		return sendXpvidHLS(ctx, mctx, info)
 	}
 
-	data, err := scraper.DownloadBytesWithHeaders(ctx, info.VideoURL, map[string]string{
+	data, err := external.DownloadBytesWithHeaders(ctx, info.VideoURL, map[string]string{
 		"Referer": info.Referer,
 	})
 	if err != nil {
@@ -118,7 +118,7 @@ func resolveAndSendXpvid(ctx context.Context, mctx *store.MessageContext, rawURL
 // reuse runFfmpegConvert (yang didesain untuk input byte lokal) — exec
 // ditulis eksplisit dengan pola temp+stderr+timeout yang sama. Output dicek
 // ke cap .get (100MB).
-func sendXpvidHLS(ctx context.Context, mctx *store.MessageContext, info *scraper.XpvidInfo) error {
+func sendXpvidHLS(ctx context.Context, mctx *store.MessageContext, info *external.XpvidInfo) error {
 	baseTmp, err := store.BotTempDir()
 	if err != nil {
 		return fmt.Errorf("gagal siapkan temp: %v", err)

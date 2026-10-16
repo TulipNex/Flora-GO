@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"wabot-go/internal/scraper"
+	"wabot-go/internal/external"
 	"wabot-go/internal/store"
 	"wabot-go/internal/timex"
 
@@ -182,11 +182,11 @@ func hetShortDate(iso string) string {
 // resolveAndSendHET: resolve provinsi → fetch grid rentang → bangun xlsx →
 // kirim dokumen. Error berupa pesan ramah siap-balas.
 func resolveAndSendHET(ctx context.Context, mctx *store.MessageContext, from, to string) error {
-	provID, provName, err := scraper.PihpsProvinceID(ctx, hetProvinceName)
+	provID, provName, err := external.PihpsProvinceID(ctx, hetProvinceName)
 	if err != nil {
 		return fmt.Errorf("gagal baca daftar provinsi BI: %v", err)
 	}
-	rows, dates, err := scraper.PihpsGridDaerah(ctx, provID, from, to)
+	rows, dates, err := external.PihpsGridDaerah(ctx, provID, from, to)
 	if err != nil {
 		return fmt.Errorf("gagal ambil data BI: %v", err)
 	}
@@ -203,7 +203,7 @@ func resolveAndSendHET(ctx context.Context, mctx *store.MessageContext, from, to
 
 // buildHETXLSX merakit workbook: header (No, Komoditas, tanggal DD-MM) +
 // baris kategori bold + harga sebagai angka asli + border + autofit.
-func buildHETXLSX(provName, from, to string, rows []scraper.PihpsRow, dates []string) ([]byte, string, error) {
+func buildHETXLSX(provName, from, to string, rows []external.PihpsRow, dates []string) ([]byte, string, error) {
 	f := excelize.NewFile()
 	sheet := "HET " + shortProvName(provName)
 	if _, err := f.NewSheet(sheet); err != nil {
@@ -350,7 +350,7 @@ func dateCaps(n int) []float64 {
 }
 
 // priceStrs memformat harga untuk ukur lebar (ribuan tanpa pemisah).
-func priceStrs(r scraper.PihpsRow, dates []string) []string {
+func priceStrs(r external.PihpsRow, dates []string) []string {
 	out := make([]string, len(dates))
 	for i, d := range dates {
 		if p := r.Prices[d]; p != nil {

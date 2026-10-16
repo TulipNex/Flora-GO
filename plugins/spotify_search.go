@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"wabot-go/internal/external"
 	"wabot-go/internal/logfmt"
-	"wabot-go/internal/scraper"
 	"wabot-go/internal/store"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
@@ -26,7 +26,7 @@ const (
 )
 
 type spPendingResult struct {
-	tracks []scraper.SpotifyTrack
+	tracks []external.SpotifyTrack
 	query  string
 }
 
@@ -77,7 +77,7 @@ func pendingAltSenders(mctx *store.MessageContext) []string {
 	return out
 }
 
-func spPendingSet(chat, sender string, tracks []scraper.SpotifyTrack, query string) {
+func spPendingSet(chat, sender string, tracks []external.SpotifyTrack, query string) {
 	spPending.Set(chat, sender, &spPendingResult{tracks: tracks, query: query})
 }
 
@@ -113,7 +113,7 @@ func spotifyPlatform() *dlPlatform {
 	return nil
 }
 
-func formatSpotifySearchList(query string, tracks []scraper.SpotifyTrack) string {
+func formatSpotifySearchList(query string, tracks []external.SpotifyTrack) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Hasil pencarian untuk \"%s\" :\n\n", query)
 	for i, t := range tracks {
@@ -152,7 +152,7 @@ func handleSpotifySearch(ctx context.Context, mctx *store.MessageContext, query 
 	_ = status
 	go func() {
 		bg := context.Background()
-		tracks, serr := scraper.SearchSpotify(bg, query, spSearchLimit)
+		tracks, serr := external.SearchSpotify(bg, query, spSearchLimit)
 		if serr != nil {
 			_ = store.ReplyText(bg, mctx, fmt.Sprintf("Lagu tidak ditemukan. Coba kata kunci lain. (%v)", serr))
 			return
@@ -168,7 +168,7 @@ func handleSpotifySearch(ctx context.Context, mctx *store.MessageContext, query 
 
 // formatSpotifyCaption membangun caption cover art sebelum audio dikirim:
 // *Judul* + quote Artis/Album/Durasi/Rilis (tahun saja, "-" bila kosong).
-func formatSpotifyCaption(t *scraper.SpotifyTrack) string {
+func formatSpotifyCaption(t *external.SpotifyTrack) string {
 	name := strings.TrimSpace(t.Name)
 	if name == "" {
 		name = "-"
@@ -198,15 +198,15 @@ func formatSpotifyCaption(t *scraper.SpotifyTrack) string {
 // GetSpotifyTrack; gagal = pakai apa adanya (tahun "-"). Untuk URL langsung,
 // ID diekstrak dari URL lalu meta penuh diambil; gagal total = nil (pemanggil
 // lanjut audio-only diam-diam).
-func resolveSpotifyMeta(ctx context.Context, rawURL string, hint *scraper.SpotifyTrack) *scraper.SpotifyTrack {
-	id := scraper.SpotifyIDFromURL(rawURL)
+func resolveSpotifyMeta(ctx context.Context, rawURL string, hint *external.SpotifyTrack) *external.SpotifyTrack {
+	id := external.SpotifyIDFromURL(rawURL)
 	if id == "" && hint != nil {
 		id = strings.TrimSpace(hint.ID)
 	}
 	if id == "" {
 		return nil
 	}
-	meta, err := scraper.GetSpotifyTrack(ctx, id)
+	meta, err := external.GetSpotifyTrack(ctx, id)
 	if err != nil {
 		logfmt.Warn("spotify: meta track %s gagal (%v), lanjut tanpa cover.\n", id, err)
 		if hint != nil && strings.TrimSpace(hint.ID) != "" {
@@ -221,11 +221,11 @@ func resolveSpotifyMeta(ctx context.Context, rawURL string, hint *scraper.Spotif
 // sendSpotifyCover mengunduh cover art + mengirimnya sebagai foto dengan
 // caption. Gagal di titik mana pun = skip DIAM-DIAM (log saja), pemanggil
 // langsung lanjut ke audio — sesuai keputusan owner.
-func sendSpotifyCover(ctx context.Context, mctx *store.MessageContext, meta *scraper.SpotifyTrack) {
+func sendSpotifyCover(ctx context.Context, mctx *store.MessageContext, meta *external.SpotifyTrack) {
 	if meta == nil || strings.TrimSpace(meta.CoverURL) == "" {
 		return
 	}
-	data, err := scraper.DownloadBytes(ctx, strings.TrimSpace(meta.CoverURL))
+	data, err := external.DownloadBytes(ctx, strings.TrimSpace(meta.CoverURL))
 	if err != nil || len(data) == 0 {
 		logfmt.Warn("spotify: unduh cover gagal (%v)\n", err)
 		return
@@ -239,7 +239,7 @@ func sendSpotifyCover(ctx context.Context, mctx *store.MessageContext, meta *scr
 // audio KEMUDIAN. Dipakai URL langsung, pilihan pencarian, dan autodownload
 // (semuanya bermuara di downloadAndSend). hint diisi dari track pending bila
 // ada (hemat fetch), nil untuk URL langsung/autodownload.
-func downloadSpotifyAndSend(ctx context.Context, mctx *store.MessageContext, rawURL string, p *dlPlatform, audioOnly bool, status types.MessageID, hint *scraper.SpotifyTrack) error {
+func downloadSpotifyAndSend(ctx context.Context, mctx *store.MessageContext, rawURL string, p *dlPlatform, audioOnly bool, status types.MessageID, hint *external.SpotifyTrack) error {
 	if meta := resolveSpotifyMeta(ctx, rawURL, hint); meta != nil {
 		sendSpotifyCover(ctx, mctx, meta)
 	}
@@ -254,7 +254,7 @@ func downloadSpotifyAndSend(ctx context.Context, mctx *store.MessageContext, raw
 // startSpotifyTrackDownload mengunduh satu track hasil pencarian via jalur
 // download lama (nexray → musicfab → universal). Konsumsi dlSem + status
 // seperti handleDownload.
-func startSpotifyTrackDownload(mctx *store.MessageContext, track scraper.SpotifyTrack) {
+func startSpotifyTrackDownload(mctx *store.MessageContext, track external.SpotifyTrack) {
 	bg := context.Background()
 	p := spotifyPlatform()
 	if p == nil {

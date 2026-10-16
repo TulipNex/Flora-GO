@@ -12,9 +12,9 @@ import (
 	"unicode/utf8"
 
 	"wabot-go/internal/config"
+	"wabot-go/internal/external"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/messaging"
-	"wabot-go/internal/scraper"
 	"wabot-go/internal/store"
 )
 
@@ -185,7 +185,7 @@ type bratAPIResponse struct {
 }
 
 // fetchBratMedia memanggil API generator lalu mengunduh media hasilnya.
-// Unduh lewat scraper.DownloadBytes supaya kena tameng SSRF + cap 100MB
+// Unduh lewat external.DownloadBytes supaya kena tameng SSRF + cap 100MB
 // yang sama dengan media dari API pihak ketiga lain.
 func fetchBratMedia(ctx context.Context, text, kind string) ([]byte, error) {
 	query := url.Values{}
@@ -229,7 +229,7 @@ func fetchBratMedia(ctx context.Context, text, kind string) ([]byte, error) {
 		return nil, fmt.Errorf("API mengembalikan tipe %q, bukan %q", parsed.Result.Type, kind)
 	}
 
-	data, err := scraper.DownloadBytes(ctx, parsed.Result.URL)
+	data, err := external.DownloadBytes(ctx, parsed.Result.URL)
 	if err != nil {
 		return nil, fmt.Errorf("gagal unduh hasil: %v", err)
 	}

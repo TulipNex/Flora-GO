@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"wabot-go/internal/scraper"
+	"wabot-go/internal/external"
 	"wabot-go/internal/store"
 )
 
@@ -33,11 +33,11 @@ func handleFlaticon(ctx context.Context, mctx *store.MessageContext) error {
 	if len(mctx.Args) == 0 {
 		return store.ReplyText(ctx, mctx, "Format: .flaticon <ID/link ikon>\nContoh: .flaticon 4661257")
 	}
-	id := scraper.FlaticonExtractID(mctx.Args[0])
+	id := external.FlaticonExtractID(mctx.Args[0])
 	if id == "" {
 		return store.ReplyText(ctx, mctx, "ID tidak valid. Contoh: .flaticon 4661257")
 	}
-	urls, err := scraper.FlaticonAllSizes(id)
+	urls, err := external.FlaticonAllSizes(id)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, err.Error())
 	}

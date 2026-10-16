@@ -1,4 +1,4 @@
-package scraper
+package external
 
 import (
 	"net/http"

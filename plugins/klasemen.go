@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"wabot-go/internal/scraper"
+	"wabot-go/internal/external"
 	"wabot-go/internal/store"
 	"wabot-go/internal/tableimage"
 )
@@ -111,7 +111,7 @@ func formatKlasemenList(title string) string {
 	return sb.String()
 }
 
-func formatKlasemen(t *scraper.LeagueTable) string {
+func formatKlasemen(t *external.LeagueTable) string {
 	var sb strings.Builder
 	title := strings.ToUpper(t.League)
 	if title == "" {
@@ -153,7 +153,7 @@ func handleKlasemen(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	go func() {
 		bg := context.Background()
-		t, ferr := scraper.FetchLeagueTable(bg, code)
+		t, ferr := external.FetchLeagueTable(bg, code)
 		if ferr != nil {
 			_ = store.ReplyText(bg, mctx, fmt.Sprintf("Gagal ambil klasemen: %v", ferr))
 			return
@@ -171,7 +171,7 @@ func handleKlasemen(ctx context.Context, mctx *store.MessageContext) error {
 }
 
 // klasemenCaption adalah caption gambar tabel (judul + legenda + sumber).
-func klasemenCaption(t *scraper.LeagueTable) string {
+func klasemenCaption(t *external.LeagueTable) string {
 	title := strings.ToUpper(strings.TrimSpace(t.League))
 	if title == "" {
 		title = "LIGA"
@@ -212,7 +212,7 @@ func klasemenLogo(ctx context.Context, teamID, logoURL string) []byte {
 			return data
 		}
 	}
-	data, derr := scraper.DownloadBytes(ctx, logoURL)
+	data, derr := external.DownloadBytes(ctx, logoURL)
 	if derr != nil || len(data) == 0 {
 		return nil
 	}
@@ -222,13 +222,13 @@ func klasemenLogo(ctx context.Context, teamID, logoURL string) []byte {
 
 // renderKlasemenPNG mengunduh logo (paralel, maks 6) lalu me-render tabel.
 // Kosong bila render gagal.
-func renderKlasemenPNG(ctx context.Context, code string, t *scraper.LeagueTable) []byte {
+func renderKlasemenPNG(ctx context.Context, code string, t *external.LeagueTable) []byte {
 	rows := make([]tableimage.StandingRow, len(t.Rows))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 6)
 	for i, r := range t.Rows {
 		wg.Add(1)
-		go func(i int, r scraper.TableRow) {
+		go func(i int, r external.TableRow) {
 			defer wg.Done()
 			select {
 			case sem <- struct{}{}:

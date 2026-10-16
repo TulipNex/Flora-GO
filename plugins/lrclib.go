@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"wabot-go/internal/scraper"
+	"wabot-go/internal/external"
 	"wabot-go/internal/store"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
@@ -39,14 +39,14 @@ const (
 )
 
 type lrcPendingResult struct {
-	songs []scraper.LrclibSong
+	songs []external.LrclibSong
 	query string
 	mode  lrcMode
 }
 
 var lrcPending = newPendingStore[*lrcPendingResult](lrcPickTTL)
 
-func lrcPendingSet(chat, sender string, songs []scraper.LrclibSong, query string, mode lrcMode) {
+func lrcPendingSet(chat, sender string, songs []external.LrclibSong, query string, mode lrcMode) {
 	lrcPending.Set(chat, sender, &lrcPendingResult{songs: songs, query: query, mode: mode})
 }
 
@@ -85,7 +85,7 @@ func RegisterLrclibSynced(r *Registry) {
 	})
 }
 
-func formatLrcSearchList(query string, songs []scraper.LrclibSong) string {
+func formatLrcSearchList(query string, songs []external.LrclibSong) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Hasil pencarian lirik untuk \"%s\" :\n\n", query)
 	for i, s := range songs {
@@ -101,7 +101,7 @@ func formatLrcSearchList(query string, songs []scraper.LrclibSong) string {
 
 // lrcLyricsFor memilih lirik sesuai mode; versi yang diminta kosong =
 // fallback ke versi satunya + catatan. Keduanya kosong = ("", false).
-func lrcLyricsFor(song *scraper.LrclibSong, mode lrcMode) (string, bool) {
+func lrcLyricsFor(song *external.LrclibSong, mode lrcMode) (string, bool) {
 	plain, synced := song.Plain(), song.Synced()
 	switch mode {
 	case lrcSynced:
@@ -122,7 +122,7 @@ func lrcLyricsFor(song *scraper.LrclibSong, mode lrcMode) (string, bool) {
 	return "", false
 }
 
-func formatLrcLyrics(s *scraper.LrclibSong, mode lrcMode) string {
+func formatLrcLyrics(s *external.LrclibSong, mode lrcMode) string {
 	title := s.Title()
 	artist := strings.TrimSpace(s.ArtistName)
 	if artist == "" {
@@ -166,7 +166,7 @@ func handleLrclibMode(ctx context.Context, mctx *store.MessageContext, mode lrcM
 	}
 	go func() {
 		bg := context.Background()
-		songs, serr := scraper.SearchLrclib(bg, query, lrcSearchLimit)
+		songs, serr := external.SearchLrclib(bg, query, lrcSearchLimit)
 		if serr != nil {
 			_ = store.ReplyText(bg, mctx, fmt.Sprintf("Lirik tidak ditemukan untuk pencarian tersebut. (%v)", serr))
 			return
@@ -181,7 +181,7 @@ func handleLrclibMode(ctx context.Context, mctx *store.MessageContext, mode lrcM
 }
 
 // sendLrcSong mengirim lirik satu lagu pilihan sesuai mode.
-func sendLrcSong(ctx context.Context, mctx *store.MessageContext, song scraper.LrclibSong, mode lrcMode) {
+func sendLrcSong(ctx context.Context, mctx *store.MessageContext, song external.LrclibSong, mode lrcMode) {
 	if _, ok := lrcLyricsFor(&song, mode); !ok {
 		artist := strings.TrimSpace(song.ArtistName)
 		if artist == "" {

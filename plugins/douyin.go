@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"wabot-go/internal/external"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/messaging"
-	"wabot-go/internal/scraper"
 	"wabot-go/internal/store"
 )
 
@@ -70,16 +70,16 @@ func handleDouyin(ctx context.Context, mctx *store.MessageContext) error {
 // runDouyin mengeksekusi alur cermin down-tiktok.js: link langsung atau
 // keyword search, lalu foto loop / video + caption / audio mp3.
 func runDouyin(ctx context.Context, mctx *store.MessageContext, input string) error {
-	var res *scraper.DouyinResult
-	if url := scraper.DouyinFindURL(input); url != "" {
+	var res *external.DouyinResult
+	if url := external.DouyinFindURL(input); url != "" {
 		var err error
-		res, err = scraper.FetchDouyin(ctx, url)
+		res, err = external.FetchDouyin(ctx, url)
 		if err != nil {
 			return fmt.Errorf("❌ Semua API TikTok gagal.")
 		}
 	} else {
 		var err error
-		res, err = scraper.SearchDouyin(ctx, input)
+		res, err = external.SearchDouyin(ctx, input)
 		if err != nil {
 			return fmt.Errorf("❌ Hasil tidak ditemukan untuk %q", input)
 		}
@@ -91,7 +91,7 @@ func runDouyin(ctx context.Context, mctx *store.MessageContext, input string) er
 			caption := ""
 			if i == 0 {
 				caption = fmt.Sprintf("🖼️ *TIKTOK PHOTO*\n\n> Judul : %s\n> Uploader : %s\n> Total Foto : %d\n> Views : %s",
-					douyinDash(res.Title), douyinDash(res.Author), len(res.Images), scraper.FormatDouyinCount(res.PlayCount))
+					douyinDash(res.Title), douyinDash(res.Author), len(res.Images), external.FormatDouyinCount(res.PlayCount))
 			}
 			if err := messaging.SendURLAsImage(ctx, mctx, imgURL, caption); err != nil {
 				return fmt.Errorf("❌ Gagal kirim foto %d: %v", i+1, err)
@@ -107,7 +107,7 @@ func runDouyin(ctx context.Context, mctx *store.MessageContext, input string) er
 	// gagal unduh cover = kirim tanpa preview (fail-soft di helper).
 	if strings.TrimSpace(res.VideoURL) != "" {
 		caption := fmt.Sprintf("🎬 *TIKTOK VIDEO*\n\n> Judul : %s\n> Uploader : %s\n> Durasi : %s\n> Views : %s",
-			douyinDash(res.Title), douyinDash(res.Author), scraper.FormatDouyinDuration(res.Duration), scraper.FormatDouyinCount(res.PlayCount))
+			douyinDash(res.Title), douyinDash(res.Author), external.FormatDouyinDuration(res.Duration), external.FormatDouyinCount(res.PlayCount))
 		var cover []byte
 		if strings.TrimSpace(res.Cover) != "" {
 			if cb, _, cerr := messaging.FetchBytes(ctx, res.Cover, 2<<20); cerr == nil {

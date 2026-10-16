@@ -1,4 +1,4 @@
-package scraper
+package external
 
 // Helper Flaticon untuk .flaticon: ekstrak ID + rakit link CDN semua ukuran.
 // Tanpa HTTP keluar (CDN deterministik, pola terverifikasi live) — tercepat
