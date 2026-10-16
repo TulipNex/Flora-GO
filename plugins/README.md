@@ -127,9 +127,9 @@ Legenda: `•` = command publik, `◇` = helper/modul pendukung (bukan command),
 
 | File | Isi |
 |---|---|
-| `booktest.go` | `✓ .booktest` |
-| `qtest.go` | `✓ .qtest` |
-| `buttontest.go` | `✓ .btntest` (Hidden) |
+| `dev_booktest.go` | `✓ .booktest` |
+| `dev_qtest.go` | `✓ .qtest` |
+| `dev_btntest.go` | `✓ .btntest` (Hidden) |
 
 ## Berkas uji (Go test)
 
