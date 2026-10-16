@@ -1,12 +1,23 @@
-// Package scraper mengambil media langsung dari platform sosial via API
-// scraper pihak ketiga (port dari koleksi D:\scrape). Paket ini TIDAK lagi
-// meng-exec yt-dlp — YouTube di sini murni via API scraper. (Catatan: plugin
-// `plugins/downloader.go` justru memakai yt-dlp sebagai PRIMER untuk YouTube,
-// dengan scraper sebagai fallback; itu jalur di luar paket ini.)
+// Package scraper adalah kumpulan ADAPTER SUMBER LUAR (port dari koleksi
+// D:\scrape): selain mengunduh media dari platform sosial via API scraper
+// pihak ketiga (tiktok, youtube, instagram, facebook, twitter, pinterest,
+// douyin, spotify, xpvid, omnify, universal), paket ini juga mengambil data
+// NON-media (lirik `lrclib`, identifikasi lagu `shazam`, `flaticon`,
+// `football`, `pihps`, `metadata`). Jadi nama "scraper" berarti "pengambil
+// dari sumber luar", bukan hanya media.
+//
+// Paket ini TIDAK lagi meng-exec yt-dlp — YouTube di sini murni via API
+// scraper. (Catatan: plugin `plugins/downloader.go` justru memakai yt-dlp
+// sebagai PRIMER untuk YouTube, dengan scraper sebagai fallback; itu jalur
+// di luar paket ini.)
 //
 // PENTING: API-API ini tidak resmi, tanpa SLA, bisa mati/berubah kapan
 // saja — makanya tiap platform punya RANTAI fallback berjenjang (meniru
 // pola tiktok.js / instagram.js aslinya). Jangan andalkan satu sumber saja.
+//
+// Karena lirik/shazam ikut memakai helper di scraper.go (mis. DownloadBytes,
+// audio/http), paket ini sengaja TIDAK dipecah fisik jadi dua — memecahnya
+// hanya menambah paket dasar bersama tanpa manfaat nyata.
 package scraper
 
 import (
