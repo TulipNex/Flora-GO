@@ -40,7 +40,7 @@ Legenda: `•` = command publik, `◇` = helper/modul pendukung (bukan command),
 
 | File | Isi | Catatan |
 |---|---|---|
-| `downloader.go` | `• .tiktok/.tt`, `• .youtube/.yt`, `• .youtubemp3/.ytmp3`, `• .instagram/.ig`, `• .twitter/.x/.tw`, `• .facebook/.fb`, `• .pinterest/.pin`, `• .spotify/.sp`, `• .autodownload` | Engine unduh multi-platform (yt-dlp dll). `.tt` = tiktok (regression-tested) |
+| `downloader.go` (+ `downloader_ytdlp.go`, `downloader_send.go`) | `• .tiktok/.tt`, `• .youtube/.yt`, `• .youtubemp3/.ytmp3`, `• .instagram/.ig`, `• .twitter/.x/.tw`, `• .facebook/.fb`, `• .pinterest/.pin`, `• .spotify/.sp`, `• .autodownload` | Engine unduh multi-platform. `.tt` = tiktok (regression-tested). `_ytdlp` = jalur yt-dlp; `_send` = pengirim media (video/audio/gambar/webp) |
 | `spotify_search.go` | `◇` | Pencarian Spotify + pending pick (dipakai `downloader`, `shazam`, `lrclib`) |
 | `douyin.go` | `• .douyin` | |
 | `bk.go` | `• .bk` / `• .po` | Unduh video embed |
@@ -67,7 +67,7 @@ Legenda: `•` = command publik, `◇` = helper/modul pendukung (bukan command),
 
 | File | Isi | Catatan |
 |---|---|---|
-| `ai.go` | `• .agent` | Sesi AI (provider/model runtime di SQLite) |
+| `ai.go` (+ `ai_trust.go`, `ai_runtime.go`) | `• .agent` | Sesi AI (provider/model runtime di SQLite). `_trust` = subcommand trust; `_runtime` = mesin percakapan (HandleAIMessage, bubble, suara) |
 | `call.go` | `• .call` | Panggilan WhatsApp (jadwal) |
 | `docread.go` | `◇` | Ekstrak teks PDF/DOCX/XLSX/plain + ringkas untuk AI; `sanitizeFileName` dipakai PDF |
 
@@ -85,7 +85,7 @@ Legenda: `•` = command publik, `◇` = helper/modul pendukung (bukan command),
 
 | File | Isi |
 |---|---|
-| `absensi.go` | `• .absen` |
+| `absensi.go` (+ `absensi_render.go`, `absensi_setup.go`) | `• .absen` | `_render` = parser hari/jam & format; `_setup` = wizard setup + ekspor xlsx |
 | `crm.go` | `• .crm`, `• .insp`, `• .lastchat`, `• .run` |
 
 ## Dokumen & PDF
@@ -106,7 +106,7 @@ Legenda: `•` = command publik, `◇` = helper/modul pendukung (bukan command),
 | `ownerjoin.go` | `⛭ .join`, `⛭ .leave` |
 | `ownerrvo.go` | `⛭ .rvo` |
 | `jadibot.go` | `⛭ .jadibot` |
-| `spr.go` | `⛭ .spr` — private reply grup per-target |
+| `spr.go` (+ `spr_args.go`) | `⛭ .spr` — private reply grup per-target | `_args` = parsing argumen & helper target (dipakai sbpr juga) |
 | `sbpr.go` | `⛭ .sbpr`, `.sbprprofile` — batch private relay |
 
 ## Info server
