@@ -35,7 +35,32 @@ func IsOwner(mctx *store.MessageContext) bool {
 	if mctx.RawEvt != nil && isJIDOwner(mctx.RawEvt.Info.SenderAlt) {
 		return true
 	}
+	// Fallback LID→PN: sebagian DM (dan grup tertentu) datang sebagai @lid
+	// tanpa SenderAlt yang terpakai. Resolve lewat peta resmi whatsmeow supaya
+	// owner tetap dikenali (fail-closed bila nomornya tak diketahui).
+	if pn, ok := resolveSenderPN(mctx); ok && isJIDOwner(pn) {
+		return true
+	}
 	return isSelfSender(mctx) && SelfCommandEnabled()
+}
+
+// resolveSenderPN me-resolve JID pengirim @lid ke nomor HP (PN) lewat peta
+// LID↔PN whatsmeow (client.Store.GetAltJID). Mengembalikan ok=false bila
+// pengirim bukan LID atau nomornya belum diketahui — pemanggil harus
+// memperlakukannya sebagai "bukan owner" (fail-closed).
+func resolveSenderPN(mctx *store.MessageContext) (types.JID, bool) {
+	if mctx.Client == nil || mctx.Client.Store == nil {
+		return types.JID{}, false
+	}
+	sender := mctx.Sender.ToNonAD()
+	if sender.Server != types.HiddenUserServer {
+		return types.JID{}, false
+	}
+	pn, err := mctx.Client.Store.GetAltJID(context.Background(), sender)
+	if err != nil || pn.ToNonAD().Server != types.DefaultUserServer {
+		return types.JID{}, false
+	}
+	return pn.ToNonAD(), true
 }
 
 // IsOwnerEvent versi berbasis events.Message mentah, dipakai handler untuk

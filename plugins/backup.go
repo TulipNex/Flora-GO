@@ -68,8 +68,11 @@ func handleBackup(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireOwner(mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
 	}
-	// Hanya chat pribadi (DM owner), bukan grup/status.
-	if mctx.Chat.Server != types.DefaultUserServer {
+	// Hanya chat pribadi (DM owner), bukan grup. Cek pakai IsGroup() (bukan
+	// membandingkan Chat.Server ke "s.whatsapp.net"): DM mode-LID datang
+	// sebagai "@lid" sehingga server-nya BUKAN DefaultUserServer — perbandingan
+	// lama menolak semua DM owner.
+	if mctx.IsGroup() {
 		return store.ReplyText(ctx, mctx, "Command backup hanya bisa dipakai di chat pribadi (DM) owner.")
 	}
 
