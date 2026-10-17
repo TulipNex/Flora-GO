@@ -162,6 +162,25 @@ func Keys(ctx context.Context, client *whatsmeow.Client, jid, alt types.JID) []s
 	return out
 }
 
+// Strings mengembalikan bentuk JID bare (tanpa AD) dari jid dan alternatifnya,
+// sudah dinormalisasi dan tanpa duplikat. Dipakai untuk mencocokkan nilai
+// tersimpan yang berbentuk JID penuh (mis. banned_users.user_jid).
+func Strings(jid, alt types.JID) []string {
+	seen := make(map[string]bool, 2)
+	out := make([]string, 0, 2)
+	for _, j := range []types.JID{jid, alt} {
+		n := Normalize(j)
+		if n.IsEmpty() || n.User == "" {
+			continue
+		}
+		if s := n.String(); !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // IsBot true bila jid adalah akun bot sendiri. Dibandingkan dengan DUA
 // identitas bot (Store.ID = PN, Store.LID = LID) supaya tak salah saat grup
 // memakai salah satu format. Nil-safe (false).

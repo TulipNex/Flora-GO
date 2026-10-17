@@ -84,17 +84,17 @@ func TestIsOwnerSenderForms(t *testing.T) {
 
 func TestResolveSenderPN(t *testing.T) {
 	withOwners(t, ownerPN)
-	// Tanpa client: tidak bisa resolve, harus ok=false (bukan panic).
+	// Sender sudah PN: dikembalikan apa adanya (ok=true).
+	if pn, ok := resolveSenderPN(&store.MessageContext{
+		Sender: types.NewJID(ownerPN, types.DefaultUserServer),
+	}); !ok || pn.User != ownerPN {
+		t.Errorf("PN langsung harus ok=true dgn user %s, got %v ok=%v", ownerPN, pn, ok)
+	}
+	// Tanpa client: LID tidak bisa resolve, harus ok=false (bukan panic).
 	if _, ok := resolveSenderPN(&store.MessageContext{
 		Sender: types.NewJID(ownerLID, types.HiddenUserServer),
 	}); ok {
-		t.Error("resolveSenderPN tanpa client harus ok=false")
-	}
-	// Sender PN: bukan LID → ok=false.
-	if _, ok := resolveSenderPN(&store.MessageContext{
-		Sender: types.NewJID(ownerPN, types.DefaultUserServer),
-	}); ok {
-		t.Error("resolveSenderPN untuk PN harus ok=false")
+		t.Error("resolveSenderPN LID tanpa client harus ok=false")
 	}
 }
 

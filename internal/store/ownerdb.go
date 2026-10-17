@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"wabot-go/internal/identity"
+
 	"github.com/polymorfa/hypermeow/types"
 )
 
@@ -44,27 +46,49 @@ func (g *GroupDB) UnbanUser(ctx context.Context, bareJID types.JID) (bool, error
 }
 
 // IsUserBanned mengecek apakah pengirim masuk daftar ban. sender dan
-// senderAlt (keduanya dari evt.Info) dibandingkan dalam bentuk bare
-// (ToNonAD) — cocok kalau JID full-nya sama persis ATAU user_part-nya sama
-// dengan salah satu baris. Fallback user_part ini yang membuat ban tetap
-// mempan walau identitas pengirim flip-flop antara PN dan LID.
+// senderAlt (keduanya dari evt.Info) dibandingkan lewat identity: cocok kalau
+// JID bare-nya sama ATAU user_part-nya sama dengan salah satu baris. Fallback
+// user_part inilah yang membuat ban tetap mempan walau identitas pengirim
+// flip-flop antara PN dan LID.
 func (g *GroupDB) IsUserBanned(ctx context.Context, sender, senderAlt types.JID) (bool, error) {
-	sender = sender.ToNonAD()
-	senderAlt = senderAlt.ToNonAD()
-	rows, err := g.db.QueryContext(ctx, `SELECT user_jid, user_part FROM banned_users`)
+	return g.userListMatches(ctx, "banned_users", sender, senderAlt)
+}
+
+// IsUserTrusted mengecek apakah pengirim masuk daftar trust, dengan aturan
+// pencocokan sama seperti IsUserBanned.
+func (g *GroupDB) IsUserTrusted(ctx context.Context, sender, senderAlt types.JID) (bool, error) {
+	return g.userListMatches(ctx, "trusted_users", sender, senderAlt)
+}
+
+// userListMatches mencocokkan identitas pengirim (sender + senderAlt, sudah
+// dinormalisasi lewat identity) terhadap tabel daftar user (banned_users /
+// trusted_users). table HANYA boleh konstanta internal (bukan input user).
+func (g *GroupDB) userListMatches(ctx context.Context, table string, sender, senderAlt types.JID) (bool, error) {
+	full := make(map[string]bool, 2)
+	for _, s := range identity.Strings(sender, senderAlt) {
+		full[s] = true
+	}
+	part := make(map[string]bool, 2)
+	for _, s := range identity.Keys(ctx, nil, sender, senderAlt) {
+		part[s] = true
+	}
+	if len(full) == 0 && len(part) == 0 {
+		return false, nil
+	}
+	rows, err := g.db.QueryContext(ctx, `SELECT user_jid, user_part FROM `+table)
 	if err != nil {
 		return false, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var jid, part string
-		if err := rows.Scan(&jid, &part); err != nil {
+		var jid, p string
+		if err := rows.Scan(&jid, &p); err != nil {
 			return false, err
 		}
-		if jid != "" && (jid == sender.String() || (!senderAlt.IsEmpty() && jid == senderAlt.String())) {
+		if jid != "" && full[jid] {
 			return true, nil
 		}
-		if part != "" && (part == sender.User || (!senderAlt.IsEmpty() && part == senderAlt.User)) {
+		if p != "" && part[p] {
 			return true, nil
 		}
 	}
@@ -358,32 +382,6 @@ func (g *GroupDB) UntrustUser(ctx context.Context, bareJID types.JID) (bool, err
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
-}
-
-// IsUserTrusted mengecek apakah pengirim masuk daftar trust. sender dan
-// senderAlt dibandingkan seperti IsUserBanned (full JID ATAU user_part)
-// supaya trust tidak jebol saat identitas pengirim flip-flop PN↔LID.
-func (g *GroupDB) IsUserTrusted(ctx context.Context, sender, senderAlt types.JID) (bool, error) {
-	sender = sender.ToNonAD()
-	senderAlt = senderAlt.ToNonAD()
-	rows, err := g.db.QueryContext(ctx, `SELECT user_jid, user_part FROM trusted_users`)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var jid, part string
-		if err := rows.Scan(&jid, &part); err != nil {
-			return false, err
-		}
-		if jid != "" && (jid == sender.String() || (!senderAlt.IsEmpty() && jid == senderAlt.String())) {
-			return true, nil
-		}
-		if part != "" && (part == sender.User || (!senderAlt.IsEmpty() && part == senderAlt.User)) {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
 }
 
 // TrustedEntry adalah satu baris daftar trust (untuk .agent trustlist).

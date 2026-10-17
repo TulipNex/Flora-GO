@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"wabot-go/internal/identity"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/timex"
 
@@ -192,22 +193,17 @@ func formatSender(ctx context.Context, client *whatsmeow.Client, pushName string
 // whatsmeow yang tersimpan. Kalau nomornya tidak diketahui, tampilkan LID
 // dengan suffix /lid supaya tidak dikira nomor HP.
 func displayID(ctx context.Context, client *whatsmeow.Client, jid, alt types.JID) string {
-	bare := jid.ToNonAD()
+	bare := identity.Normalize(jid)
 	if bare.IsEmpty() {
 		return "-"
+	}
+	if pn, ok := identity.ResolvePN(ctx, client, jid, alt); ok {
+		return pn.User
 	}
 	if bare.Server == types.DefaultUserServer {
 		return bare.User
 	}
 	if bare.Server == types.HiddenUserServer {
-		if alt.ToNonAD().Server == types.DefaultUserServer {
-			return alt.ToNonAD().User
-		}
-		if client != nil && client.Store != nil {
-			if pn, err := client.Store.GetAltJID(ctx, bare); err == nil && pn.ToNonAD().Server == types.DefaultUserServer {
-				return pn.ToNonAD().User
-			}
-		}
 		return bare.User + "/lid"
 	}
 	if bare.User != "" {

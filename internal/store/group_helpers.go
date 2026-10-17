@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"wabot-go/internal/identity"
 	"wabot-go/internal/logfmt"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
@@ -160,21 +161,9 @@ func (mctx *MessageContext) IsBotAdmin(ctx context.Context) (bool, error) {
 // audit menemukan salinan logika identik di beberapa plugin (guard kick,
 // delete, welcome, dan deteksi mention di handler) yang rawan menyimpang
 // diam-diam (satu lupa cek LID = lolos). Nil client/Store aman (false).
+// Delegasi ke identity.IsBot (paket normalisasi identitas terpusat).
 func IsBotJID(client *whatsmeow.Client, jid types.JID) bool {
-	if client == nil || client.Store == nil {
-		return false
-	}
-	bare := jid.ToNonAD().User
-	if bare == "" {
-		return false
-	}
-	if id := client.Store.ID; id != nil && id.ToNonAD().User == bare {
-		return true
-	}
-	if lid := client.Store.LID; !lid.IsEmpty() && lid.ToNonAD().User == bare {
-		return true
-	}
-	return false
+	return identity.IsBot(client, jid)
 }
 
 // MentionedJIDs mengambil daftar JID yang di-mention (@tag) di pesan ini,

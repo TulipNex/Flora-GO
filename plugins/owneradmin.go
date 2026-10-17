@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"wabot-go/internal/config"
+	"wabot-go/internal/identity"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 
@@ -44,23 +45,16 @@ func IsOwner(mctx *store.MessageContext) bool {
 	return isSelfSender(mctx) && SelfCommandEnabled()
 }
 
-// resolveSenderPN me-resolve JID pengirim @lid ke nomor HP (PN) lewat peta
-// LID↔PN whatsmeow (client.Store.GetAltJID). Mengembalikan ok=false bila
-// pengirim bukan LID atau nomornya belum diketahui — pemanggil harus
-// memperlakukannya sebagai "bukan owner" (fail-closed).
+// resolveSenderPN mengembalikan bentuk PN (nomor HP) dari JID pengirim:
+// sudah PN → dipakai apa adanya; LID → di-resolve lewat peta LID↔PN whatsmeow
+// (client.Store.GetAltJID). ok=false bila nomor HP tidak diketahui — pemanggil
+// harus memperlakukannya sebagai "bukan owner" (fail-closed).
 func resolveSenderPN(mctx *store.MessageContext) (types.JID, bool) {
-	if mctx.Client == nil || mctx.Client.Store == nil {
-		return types.JID{}, false
+	var alt types.JID
+	if mctx.RawEvt != nil {
+		alt = mctx.RawEvt.Info.SenderAlt
 	}
-	sender := mctx.Sender.ToNonAD()
-	if sender.Server != types.HiddenUserServer {
-		return types.JID{}, false
-	}
-	pn, err := mctx.Client.Store.GetAltJID(context.Background(), sender)
-	if err != nil || pn.ToNonAD().Server != types.DefaultUserServer {
-		return types.JID{}, false
-	}
-	return pn.ToNonAD(), true
+	return identity.ResolvePN(context.Background(), mctx.Client, mctx.Sender, alt)
 }
 
 // IsOwnerEvent versi berbasis events.Message mentah, dipakai handler untuk
@@ -73,10 +67,13 @@ func IsOwnerEvent(evt *events.Message) bool {
 }
 
 func isJIDOwner(jid types.JID) bool {
-	if jid.IsEmpty() || len(config.OwnerNumbers) == 0 {
+	if len(config.OwnerNumbers) == 0 {
 		return false
 	}
-	user := jid.ToNonAD().User
+	user := identity.UserPart(jid)
+	if user == "" {
+		return false
+	}
 	for _, owner := range config.OwnerNumbers {
 		if user == owner {
 			return true
