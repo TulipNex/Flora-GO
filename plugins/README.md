@@ -109,7 +109,7 @@ Legenda: `•` = command publik, `◇` = helper/modul pendukung (bukan command),
 | `spr.go` (+ `spr_args.go`) | `⛭ .spr` — private reply grup per-target | `_args` = parsing argumen & helper target (dipakai sbpr juga) |
 | `sbpr.go` | `⛭ .sbpr`, `.sbprprofile` — batch private relay |
 | `backup.go` | `⛭ .backup` — backup database (ZIP/`.db`, jadwal otomatis); khusus DM owner |
-| `toexcel.go` | `⛭ .toexcel` — ubah DB `.db`/ZIP backup jadi Excel (`.xlsx`); khusus DM owner |
+| `toexcel.go` | `⛭ .getexcel` — ubah DB `.db`/ZIP backup jadi Excel (`.xlsx`); khusus DM owner |
 
 ## Info server
 

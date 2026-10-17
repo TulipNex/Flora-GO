@@ -330,7 +330,7 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 | `.thumbnail` / `.favicon <link>/reset` | Set aset kartu `.menu` |
 | `.lastchat` / `.crm` / `.insp` / `.run` | Arsip pesan (cek metadata/JSON, kirim ulang) |
 | `.backup [list\|get <nama>\|jadwal <interval\|off>]` | Backup database (ZIP semua DB / satu `.db` / jadwal otomatis) — hanya via DM owner |
-| `.toexcel [nama.db]` | Ubah file DB jadi Excel (`.xlsx`): reply file `.db`/ZIP hasil backup, atau sebut nama DB — hanya via DM owner |
+| `.getexcel [nama.db]` | Ubah file DB jadi Excel (`.xlsx`): reply file `.db`/ZIP hasil backup, atau sebut nama DB — hanya via DM owner |
 | `.id [nomor\|@jid]` | Diagnostik normalisasi identitas: JID mentah, alt, hasil resolve PN/LID, kunci kanonik (owner) |
 | `.listgrup` | Daftar grup bot + JID (untuk flag `-g`) |
 | `$ <perintah>` | Eksekusi shell di server (async, timeout 120 dtk, output dipotong) |

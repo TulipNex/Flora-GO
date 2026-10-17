@@ -26,9 +26,9 @@ func init() {
 // toexcel.go — ubah file database SQLite (.db) jadi Excel (.xlsx), owner-only
 // dan hanya via DM (data DB sensitif: nomor HP, CRM, dsb).
 //
-//   - Reply file .db (mis. hasil .backup get) dengan .toexcel.
-//   - .toexcel <nama.db> — ambil langsung dari data/ (snapshot dulu).
-//   - Reply ZIP hasil .backup dengan .toexcel — semua DB jadi satu workbook.
+//   - Reply file .db (mis. hasil .backup get) dengan .getexcel.
+//   - .getexcel <nama.db> — ambil langsung dari data/ (snapshot dulu).
+//   - Reply ZIP hasil .backup dengan .getexcel — semua DB jadi satu workbook.
 //
 // Setiap tabel jadi satu sheet; sheet "Info" merangkum. Konversi dijalankan di
 // latar dengan antrean dlSem supaya tidak menahan pipeline pesan; temp selalu
@@ -50,7 +50,7 @@ var (
 
 func RegisterToExcel(r *Registry) {
 	r.Register(Command{
-		Name:        "toexcel",
+		Name:        "getexcel",
 		Description: "Ubah file database (.db) jadi Excel — owner, via DM",
 		Category:    CategoryOwner,
 		Handler:     handleToExcel,
@@ -59,9 +59,9 @@ func RegisterToExcel(r *Registry) {
 
 const toExcelUsage = `*Database → Excel*
 Cara pakai:
-1. Reply file .db (mis. hasil .backup get) dengan .toexcel
-2. .toexcel <nama.db> — ambil langsung dari server
-3. Reply file ZIP hasil .backup dengan .toexcel
+1. Reply file .db (mis. hasil .backup get) dengan .getexcel
+2. .getexcel <nama.db> — ambil langsung dari server
+3. Reply file ZIP hasil .backup dengan .getexcel
 
 Setiap tabel jadi satu sheet. Lihat DB: .backup list`
 
@@ -100,7 +100,7 @@ func toExcelTargetDoc(mctx *store.MessageContext) *waE2E.DocumentMessage {
 // toExcelFromServerDB mengonversi DB di data/ sesuai nama (snapshot dulu).
 func toExcelFromServerDB(ctx context.Context, mctx *store.MessageContext, name string) error {
 	if !strings.HasSuffix(strings.ToLower(name), ".db") {
-		return store.ReplyText(ctx, mctx, "Nama harus file .db, contoh: .toexcel group.db\nLihat daftar: .backup list")
+		return store.ReplyText(ctx, mctx, "Nama harus file .db, contoh: .getexcel group.db\nLihat daftar: .backup list")
 	}
 	paths, err := listDBFiles()
 	if err != nil {
