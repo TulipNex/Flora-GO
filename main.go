@@ -239,6 +239,10 @@ func main() {
 	//     hasil dikirim ke DM owner). Sama posisinya dengan di atas.
 	plugins.InitBackupScheduler(client)
 
+	// 2b5. Pasang client untuk laporan keuangan bulanan otomatis (reset +
+	//     arsip + laporan ke DM owner). Sama posisinya dengan di atas.
+	plugins.InitFinanceScheduler(client)
+
 	// ==========================================================
 	// 2c. Jaga nomor bot tampil "online" (bukan "terakhir dilihat").
 	//     Heartbeat presence berkala, fail-soft kalau belum tersambung.
@@ -287,6 +291,10 @@ func main() {
 
 	// 3b3. Pulihkan timer sesi absen aktif + nyalakan ticker jadwal harian.
 	plugins.RestoreAbsensiSessions()
+
+	// 3b3b. Kejar laporan keuangan bulan yang terlewat (bot sempat mati saat
+	//       pergantian bulan) lalu nyalakan timer bulanan.
+	plugins.RestoreFinanceMonthly()
 
 	// 3b4. Pulihkan bot clone (jadibot) yang terdaftar. Jalan setelah
 	// connect utama; tiap clone connect dengan session-nya sendiri.

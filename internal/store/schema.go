@@ -31,7 +31,7 @@ import (
 const (
 	groupSchemaVersion   = 1
 	aiSchemaVersion      = 1
-	financeSchemaVersion = 1
+	financeSchemaVersion = 2
 	crmSchemaVersion     = 1
 	absensiSchemaVersion = 1
 )

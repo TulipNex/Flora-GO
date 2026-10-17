@@ -24,9 +24,9 @@ import (
 	"wabot-go/internal/timex"
 
 	"github.com/google/uuid"
-	"github.com/xuri/excelize/v2"
 	whatsmeow "github.com/polymorfa/hypermeow"
 	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/xuri/excelize/v2"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -79,8 +79,8 @@ func init() {
 
 	ai.RegisterTool(ai.ToolDefinition{
 		Name: "export_keuangan",
-		Description: "Mengekspor catatan keuangan OWNER ke file Excel (.xlsx) 7 kolom " +
-			"(Nomor,Id,Transaksi,Masuk,Keluar,Sumber,Tanggal — Nomor enumerasi 1..N terlama→terbaru) lalu mengirimnya ke chat ini. " +
+		Description: "Mengekspor catatan keuangan OWNER ke file Excel (.xlsx) 8 kolom " +
+			"(Nomor,Id,Transaksi,Masuk,Keluar,Sumber,Tanggal,Waktu Input — Nomor enumerasi 1..N terlama→terbaru) lalu mengirimnya ke chat ini. " +
 			"Hanya untuk OWNER. Parameter tanggal format YYYY-MM-DD; kosongkan untuk 30 hari terakhir. " +
 			"Tabel ber-border + lebar kolom autofit.",
 		Parameters: ai.ParameterSchema{
@@ -232,8 +232,8 @@ func executeExportKeuangan(actx *ai.AgentContext, args map[string]interface{}) (
 	return msg, nil
 }
 
-// buildFinanceXLSX merakit workbook 1 sheet dengan header kapital + 7 kolom
-// (Nomor enumerasi 1..N,Id,Transaksi,Masuk,Keluar,Sumber,Tanggal). Angka
+// buildFinanceXLSX merakit workbook 1 sheet dengan header kapital + 8 kolom
+// (Nomor enumerasi 1..N,Id,Transaksi,Masuk,Keluar,Sumber,Tanggal,Waktu Input). Angka
 // ditulis sebagai angka Excel asli (SUM/sort benar). Border tipis + autofit.
 func buildFinanceXLSX(rows []store.FinanceRow) ([]byte, string, error) {
 	f := excelize.NewFile()
@@ -241,7 +241,7 @@ func buildFinanceXLSX(rows []store.FinanceRow) ([]byte, string, error) {
 	if _, err := f.NewSheet(sheet); err != nil {
 		return nil, "", err
 	}
-	headers := []string{"Nomor", "Id", "Transaksi", "Masuk", "Keluar", "Sumber", "Tanggal"}
+	headers := []string{"Nomor", "Id", "Transaksi", "Masuk", "Keluar", "Sumber", "Tanggal", "Waktu Input"}
 	// maxW melacak lebar konten per kolom (rune) untuk autofit.
 	maxW := make([]int, len(headers))
 	cellStr := make([][]string, 0, len(rows)+1)
@@ -265,6 +265,7 @@ func buildFinanceXLSX(rows []store.FinanceRow) ([]byte, string, error) {
 			financeNumStr(r.Keluar),
 			r.Sumber,
 			r.Tanggal,
+			r.InputAt,
 		}
 		cellStr = append(cellStr, row)
 		for c, s := range row {
@@ -280,6 +281,7 @@ func buildFinanceXLSX(rows []store.FinanceRow) ([]byte, string, error) {
 			financeNumValPtr(r.Keluar),
 			r.Sumber,
 			r.Tanggal,
+			r.InputAt,
 		})
 	}
 	// Tulis sel.
@@ -309,7 +311,7 @@ func buildFinanceXLSX(rows []store.FinanceRow) ([]byte, string, error) {
 		return nil, "", err
 	}
 	// Autofit: max konten + padding, dibatasi per kolom.
-	caps := []float64{12, 40, 40, 15, 15, 12, 13}
+	caps := []float64{12, 40, 40, 15, 15, 12, 13, 20}
 	for c := range headers {
 		w := float64(maxW[c] + 2)
 		if w < 8 {

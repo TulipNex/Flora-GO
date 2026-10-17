@@ -14,16 +14,23 @@ package store
 //   transaksi, masuk/keluar (INTEGER NULL — NULL berarti sisi kosong),
 //   sumber ('kas'/'rekening'), tanggal ('YYYY-MM-DD' teks),
 //   client_req_id UNIQUE (anti-ganda; NULL = tanpa proteksi),
-//   created_at (unix).
+//   created_at (unix), input_at ('YYYY-MM-DD HH:MM:SS' lokal, NULL baris lama).
 // Nomor urut display TIDAK disimpan (keputusan owner): enumerasi 1..N
 // dibuat saat export Excel. Rekap = SUM langsung (tanpa tabel saldo,
 // tanpa cache — SQLite cukup cepat; lihat diskusi Ide 1 vs Ide 2).
+//
+// finance_periode menyimpan saldo awal per bulan + status laporan: fitur
+// reset bulanan (lihat plugins/finance_monthly.go). DB `keuangan` hanya
+// menyimpan transaksi bulan berjalan; bulan lampau diarsipkan ke Excel lalu
+// dihapus, saldo akhirnya dibawa jadi saldo awal bulan berikutnya.
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"wabot-go/internal/timex"
 
 	_ "modernc.org/sqlite"
 )
@@ -57,8 +64,22 @@ func InitFinanceDB(path string) error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_keuangan_owner_tanggal ON keuangan(owner, tanggal);
 	CREATE INDEX IF NOT EXISTS idx_keuangan_owner_sumber ON keuangan(owner, sumber);
+	CREATE TABLE IF NOT EXISTS finance_periode (
+		owner               TEXT NOT NULL,
+		periode             TEXT NOT NULL,
+		saldo_awal_kas      INTEGER NOT NULL DEFAULT 0,
+		saldo_awal_rekening INTEGER NOT NULL DEFAULT 0,
+		dilaporkan_at       INTEGER NULL,
+		arsip_file          TEXT NULL,
+		PRIMARY KEY (owner, periode)
+	);
 	`
-	if err := applySchema(db, "finance.db", schema, nil, financeSchemaVersion); err != nil {
+	// input_at: waktu input lokal ('YYYY-MM-DD HH:MM:SS'), NULL untuk baris
+	// lama (sebelum fitur ini). Diisi saat INSERT, tak diubah saat edit.
+	alters := []string{
+		`ALTER TABLE keuangan ADD COLUMN input_at TEXT NULL`,
+	}
+	if err := applySchema(db, "finance.db", schema, alters, financeSchemaVersion); err != nil {
 		return err
 	}
 	financeDB = &FinanceDB{db: db}
@@ -82,6 +103,7 @@ type FinanceRow struct {
 	Keluar      *int64
 	Sumber      string
 	Tanggal     string
+	InputAt     string // waktu input 'YYYY-MM-DD HH:MM:SS' ("" bila baris lama)
 	ClientReqID string
 	CreatedAt   int64
 }
@@ -105,8 +127,8 @@ type FinanceFilter struct {
 func scanFinanceRow(rows *sql.Rows) (FinanceRow, error) {
 	var r FinanceRow
 	var masuk, keluar sql.NullInt64
-	var reqID sql.NullString
-	if err := rows.Scan(&r.ID, &r.Transaksi, &masuk, &keluar, &r.Sumber, &r.Tanggal, &reqID, &r.CreatedAt); err != nil {
+	var reqID, inputAt sql.NullString
+	if err := rows.Scan(&r.ID, &r.Transaksi, &masuk, &keluar, &r.Sumber, &r.Tanggal, &reqID, &r.CreatedAt, &inputAt); err != nil {
 		return FinanceRow{}, err
 	}
 	if masuk.Valid {
@@ -119,6 +141,9 @@ func scanFinanceRow(rows *sql.Rows) (FinanceRow, error) {
 	}
 	if reqID.Valid {
 		r.ClientReqID = reqID.String
+	}
+	if inputAt.Valid {
+		r.InputAt = inputAt.String
 	}
 	return r, nil
 }
@@ -161,15 +186,17 @@ func financeWhere(f FinanceFilter) (string, []interface{}) {
 // InsertKeuangan menyimpan transaksi baru. clientReqID kosong = tanpa
 // proteksi ganda. Mengembalikan isDup=true bila req_id sudah ada (bukan
 // error) supaya pemanggil bisa lapor "sudah tercatat".
+// input_at diisi waktu input lokal (zona aktif timex) saat insert.
 func (f *FinanceDB) InsertKeuangan(ctx context.Context, id, owner, transaksi string, masuk, keluar *int64, sumber, tanggal, clientReqID string) (isDup bool, err error) {
 	var reqArg interface{}
 	if strings.TrimSpace(clientReqID) != "" {
 		reqArg = strings.TrimSpace(clientReqID)
 	}
+	inputAt := timex.Now().Format("2006-01-02 15:04:05")
 	_, err = f.db.ExecContext(ctx, `
-		INSERT INTO keuangan (id, owner, transaksi, masuk, keluar, sumber, tanggal, client_req_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, id, owner, transaksi, nullInt64(masuk), nullInt64(keluar), sumber, tanggal, reqArg)
+		INSERT INTO keuangan (id, owner, transaksi, masuk, keluar, sumber, tanggal, client_req_id, input_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, id, owner, transaksi, nullInt64(masuk), nullInt64(keluar), sumber, tanggal, reqArg, inputAt)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return true, nil
@@ -199,7 +226,7 @@ func (f *FinanceDB) SearchKeuangan(ctx context.Context, filter FinanceFilter) (r
 	where, args := financeWhere(filter)
 	args = append(args, limit+1)
 	qrows, err := f.db.QueryContext(ctx, `
-		SELECT id, transaksi, masuk, keluar, sumber, tanggal, client_req_id, created_at
+		SELECT id, transaksi, masuk, keluar, sumber, tanggal, client_req_id, created_at, input_at
 		FROM keuangan WHERE `+where+` ORDER BY tanggal DESC, id DESC LIMIT ?
 	`, args...)
 	if err != nil {
@@ -269,11 +296,11 @@ func (f *FinanceDB) RekapKeuangan(ctx context.Context, filter FinanceFilter) (Fi
 func (f *FinanceDB) GetKeuangan(ctx context.Context, owner, id string) (*FinanceRow, error) {
 	var r FinanceRow
 	var masuk, keluar sql.NullInt64
-	var reqID sql.NullString
+	var reqID, inputAt sql.NullString
 	err := f.db.QueryRowContext(ctx, `
-		SELECT id, transaksi, masuk, keluar, sumber, tanggal, client_req_id, created_at
+		SELECT id, transaksi, masuk, keluar, sumber, tanggal, client_req_id, created_at, input_at
 		FROM keuangan WHERE owner = ? AND id = ?
-	`, owner, id).Scan(&r.ID, &r.Transaksi, &masuk, &keluar, &r.Sumber, &r.Tanggal, &reqID, &r.CreatedAt)
+	`, owner, id).Scan(&r.ID, &r.Transaksi, &masuk, &keluar, &r.Sumber, &r.Tanggal, &reqID, &r.CreatedAt, &inputAt)
 	if isNoRowsError(err) {
 		return nil, nil
 	}
@@ -290,6 +317,9 @@ func (f *FinanceDB) GetKeuangan(ctx context.Context, owner, id string) (*Finance
 	}
 	if reqID.Valid {
 		r.ClientReqID = reqID.String
+	}
+	if inputAt.Valid {
+		r.InputAt = inputAt.String
 	}
 	return &r, nil
 }
@@ -335,4 +365,128 @@ func (f *FinanceDB) DeleteKeuangan(ctx context.Context, owner, id string) (bool,
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
+}
+
+// FinancePeriode adalah saldo awal + status laporan satu bulan owner.
+type FinancePeriode struct {
+	Owner             string
+	Periode           string // 'YYYY-MM'
+	SaldoAwalKas      int64
+	SaldoAwalRekening int64
+	DilaporkanAt      int64  // unix; 0 = belum dilaporkan
+	ArsipFile         string // path relatif file arsip ("" = belum ada)
+}
+
+// EnsureFinancePeriode memastikan baris periode ada (saldo awal 0 bila baru).
+func (f *FinanceDB) EnsureFinancePeriode(ctx context.Context, owner, periode string) error {
+	_, err := f.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO finance_periode (owner, periode, saldo_awal_kas, saldo_awal_rekening)
+		VALUES (?, ?, 0, 0)
+	`, owner, periode)
+	return err
+}
+
+// GetFinancePeriode mengambil baris periode; found=false bila belum ada.
+func (f *FinanceDB) GetFinancePeriode(ctx context.Context, owner, periode string) (FinancePeriode, bool, error) {
+	var p FinancePeriode
+	var dilaporkan sql.NullInt64
+	var arsip sql.NullString
+	err := f.db.QueryRowContext(ctx, `
+		SELECT owner, periode, saldo_awal_kas, saldo_awal_rekening, dilaporkan_at, arsip_file
+		FROM finance_periode WHERE owner = ? AND periode = ?
+	`, owner, periode).Scan(&p.Owner, &p.Periode, &p.SaldoAwalKas, &p.SaldoAwalRekening, &dilaporkan, &arsip)
+	if isNoRowsError(err) {
+		return p, false, nil
+	}
+	if err != nil {
+		return p, false, err
+	}
+	if dilaporkan.Valid {
+		p.DilaporkanAt = dilaporkan.Int64
+	}
+	if arsip.Valid {
+		p.ArsipFile = arsip.String
+	}
+	return p, true, nil
+}
+
+// SetFinancePeriodeAwal menulis saldo awal periode (upsert tanpa menyentuh
+// status laporan).
+func (f *FinanceDB) SetFinancePeriodeAwal(ctx context.Context, owner, periode string, kas, rekening int64) error {
+	_, err := f.db.ExecContext(ctx, `
+		INSERT INTO finance_periode (owner, periode, saldo_awal_kas, saldo_awal_rekening)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(owner, periode) DO UPDATE SET
+			saldo_awal_kas = excluded.saldo_awal_kas,
+			saldo_awal_rekening = excluded.saldo_awal_rekening
+	`, owner, periode, kas, rekening)
+	return err
+}
+
+// MarkFinancePeriodeReported menandai periode sudah dilaporkan + path arsip.
+func (f *FinanceDB) MarkFinancePeriodeReported(ctx context.Context, owner, periode string, unix int64, arsipFile string) error {
+	_, err := f.db.ExecContext(ctx, `
+		UPDATE finance_periode SET dilaporkan_at = ?, arsip_file = ?
+		WHERE owner = ? AND periode = ?
+	`, unix, arsipFile, owner, periode)
+	return err
+}
+
+// OpenFinancePeriodes mengembalikan periode < before yang belum dilaporkan
+// (untuk catch-up laporan), terurut menaik.
+func (f *FinanceDB) OpenFinancePeriodes(ctx context.Context, owner, before string) ([]FinancePeriode, error) {
+	rows, err := f.db.QueryContext(ctx, `
+		SELECT owner, periode, saldo_awal_kas, saldo_awal_rekening
+		FROM finance_periode
+		WHERE owner = ? AND periode < ? AND dilaporkan_at IS NULL
+		ORDER BY periode ASC
+	`, owner, before)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FinancePeriode
+	for rows.Next() {
+		var p FinancePeriode
+		if err := rows.Scan(&p.Owner, &p.Periode, &p.SaldoAwalKas, &p.SaldoAwalRekening); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ListKeuanganRange mengambil SEMUA baris owner pada rentang tanggal
+// (inklusif), terurut terlama→terbaru — dipakai laporan bulanan (tanpa
+// katup limit 500).
+func (f *FinanceDB) ListKeuanganRange(ctx context.Context, owner, dari, sampai string) ([]FinanceRow, error) {
+	rows, err := f.db.QueryContext(ctx, `
+		SELECT id, transaksi, masuk, keluar, sumber, tanggal, client_req_id, created_at, input_at
+		FROM keuangan WHERE owner = ? AND tanggal >= ? AND tanggal <= ?
+		ORDER BY tanggal ASC, id ASC
+	`, owner, dari, sampai)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FinanceRow
+	for rows.Next() {
+		r, err := scanFinanceRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DeleteKeuanganPeriode menghapus seluruh baris owner pada rentang tanggal
+// (reset bulanan). Mengembalikan jumlah baris terhapus.
+func (f *FinanceDB) DeleteKeuanganPeriode(ctx context.Context, owner, dari, sampai string) (int64, error) {
+	res, err := f.db.ExecContext(ctx, `DELETE FROM keuangan WHERE owner = ? AND tanggal >= ? AND tanggal <= ?`, owner, dari, sampai)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }

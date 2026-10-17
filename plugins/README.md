@@ -110,6 +110,7 @@ Legenda: `•` = command publik, `◇` = helper/modul pendukung (bukan command),
 | `sbpr.go` | `⛭ .sbpr`, `.sbprprofile` — batch private relay |
 | `backup.go` | `⛭ .backup` — backup database (ZIP/`.db`, jadwal otomatis); khusus DM owner |
 | `toexcel.go` | `⛭ .getexcel` — ubah DB `.db`/ZIP backup jadi Excel (`.xlsx`); khusus DM owner |
+| `finance_monthly.go` | (tanpa command) laporan keuangan bulanan otomatis — kirim Excel ke DM owner, arsip di `data/arsip-keuangan/`, lalu reset transaksi bulan itu |
 
 ## Info server
 

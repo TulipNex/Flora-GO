@@ -18,6 +18,7 @@ wabot-go/
 │   ├── textx/                     # helper teks (TruncateRunes, dipakai lintas paket)
 │   ├── identity/                  # normalisasi identitas WhatsApp terpusat (JID/LID/PN: Normalize, ResolvePN/LID, Keys, CanonicalUser, IsBot)
 │   ├── sqlxlsx/                   # ubah database SQLite -> workbook Excel (.xlsx), satu sheet per tabel
+│   ├── finance/                   # helper periode bulanan + rakit laporan Excel keuangan (dipakai penjadwal)
 │   ├── tableimage/                # render tabel teks -> gambar
 │   ├── ai/                        # engine AI (multi-provider, agent loop, sesi, fakta, mood, bubble)
 │   │   ├── types.go               # Content/Part/FunctionCall (format universal internal)
@@ -70,7 +71,7 @@ wabot-go/
 │       ├── summariesdb.go         # ringkasan sesi AI
 │       ├── absensidb.go           # absensi grup (live-location)
 │       ├── crmdb.go               # arsip pesan CRM (.lastchat/.crm/.insp)
-│       ├── financedb.go           # keuangan lokal (pengganti Google Sheet)
+│       ├── financedb.go           # keuangan lokal (pengganti Google Sheet) + kolom waktu input + periode bulanan
 │       ├── moderationdb.go        # antilink + warnlist per grup
 │       ├── scheduledcalls.go      # jadwal panggilan (tahan restart)
 │       ├── reminders.go           # pengingat (tahan restart)
@@ -335,6 +336,8 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 | `.listgrup` | Daftar grup bot + JID (untuk flag `-g`) |
 | `$ <perintah>` | Eksekusi shell di server (async, timeout 120 dtk, output dipotong) |
 | `\ <kode js>` | Eval JavaScript di dalam bot (async, timeout 30 dtk) |
+
+Catatan keuangan (lewat AI): tiap transaksi menyimpan **waktu input** (tanggal + jam, berbeda dari tanggal transaksi). Bulan berjalan ditutup otomatis saat pergantian bulan — bot mengirim **laporan Excel bulanan** ke DM owner, mengarsipkannya di `data/arsip-keuangan/<tahun>/`, lalu mengosongkan transaksi bulan itu dan membawa saldo akhir (kas & rekening) sebagai saldo awal bulan berikutnya.
 
 Panggilan WhatsApp memakai library [meowcaller](https://github.com/purpshell/meowcaller). Data grup (setting, dsb) disimpan di SQLite lewat driver `modernc.org/sqlite` (pure Go, tanpa cgo).
 

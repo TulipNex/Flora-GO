@@ -27,7 +27,7 @@ func init() {
 			"Hanya untuk OWNER (ditolak untuk non-owner). " +
 			"Semua filter opsional dan digabung AND; makin banyak patokan makin sedikit hasil. " +
 			"Kosongkan dari+sampai untuk 30 hari terakhir; limit default 50 (maks 500, terbaru dulu). " +
-			"Hasil berupa baris {id,transaksi,masuk,keluar,sumber,tanggal} — rujuk baris via id.",
+			"Hasil berupa baris {id,transaksi,masuk,keluar,sumber,tanggal,input} — rujuk baris via id.",
 		Parameters: ai.ParameterSchema{
 			Type: "OBJECT",
 			Properties: map[string]ai.PropertySchema{
@@ -122,6 +122,9 @@ func init() {
 			for _, r := range rows {
 				fmt.Fprintf(&sb, "\n%v | %v | masuk:%v keluar:%v | sumber:%v | %v",
 					r.ID, r.Transaksi, numOrDashInt(r.Masuk), numOrDashInt(r.Keluar), r.Sumber, r.Tanggal)
+				if r.InputAt != "" {
+					fmt.Fprintf(&sb, " | input:%v", r.InputAt)
+				}
 			}
 			return sb.String(), nil
 		},
@@ -132,7 +135,8 @@ func init() {
 		Description: "Agregasi TOTAL/SALDO keuangan OWNER dihitung database (TANPA limit baris). " +
 			"Wajib dipakai untuk pertanyaan total/saldo/rekap ('saldo kas berapa?', 'pengeluaran bulan ini berapa?') — " +
 			"JANGAN menjumlahkan manual dari baca_keuangan. Hanya untuk OWNER. " +
-			"Tanggal YYYY-MM-DD; kosongkan dari+sampai untuk SELURUH waktu; filter kategori/sumber opsional.",
+			"Tanggal YYYY-MM-DD; kosongkan dari+sampai untuk saldo BULAN BERJALAN (sudah termasuk saldo awal bulan ini); " +
+			"isi dari/sampai untuk mutasi rentang itu saja (tanpa saldo awal). Filter kategori/sumber opsional.",
 		Parameters: ai.ParameterSchema{
 			Type: "OBJECT",
 			Properties: map[string]ai.PropertySchema{
@@ -166,23 +170,33 @@ func init() {
 			if err := CheckFilterSumber(sumberRaw); err != nil {
 				return "", err
 			}
+			dari := argString(args, "dari")
+			sampai := argString(args, "sampai")
+			sumber := NormSumber(sumberRaw)
 			r, err := store.Finance().RekapKeuangan(actx.Context, store.FinanceFilter{
 				Owner:  owner,
 				Teks:   argString(args, "kategori"),
-				Dari:   argString(args, "dari"),
-				Sampai: argString(args, "sampai"),
-				Sumber: NormSumber(sumberRaw),
+				Dari:   dari,
+				Sampai: sampai,
+				Sumber: sumber,
 			})
 			if err != nil {
 				return "", fmt.Errorf("gagal rekap keuangan: %v", err)
+			}
+			// Rentang terbuka = saldo bulan berjalan → sertakan saldo awal
+			// periode (DB hanya menyimpan transaksi bulan berjalan).
+			if dari == "" && sampai == "" {
+				if p, found, perr := store.Finance().GetFinancePeriode(actx.Context, owner, timex.Now().Format("2006-01")); perr == nil && found {
+					applySaldoAwal(&r, p, sumber)
+				}
 			}
 			var sb strings.Builder
 			fmt.Fprintf(&sb, "Rekap %d transaksi: masuk %d, keluar %d, saldo %d.",
 				r.Count, r.TotalMasuk, r.TotalKeluar, r.Saldo)
 			for _, s := range []string{"kas", "rekening"} {
 				if m, ok := r.PerSumber[s]; ok {
-					fmt.Fprintf(&sb, "\n- %s: %d transaksi, masuk %d, keluar %d.",
-						s, m.Count, m.TotalMasuk, m.TotalKeluar)
+					fmt.Fprintf(&sb, "\n- %s: %d transaksi, masuk %d, keluar %d, saldo %d.",
+						s, m.Count, m.TotalMasuk, m.TotalKeluar, m.Saldo)
 				}
 			}
 			return sb.String(), nil
@@ -377,6 +391,26 @@ func checkNominalArg(n float64) (int64, error) {
 		return 0, fmt.Errorf("nominal terlalu besar (maks 15 digit)")
 	}
 	return int64(n), nil
+}
+
+// applySaldoAwal menambahkan saldo awal periode berjalan ke hasil rekap
+// (dipakai saat rentang terbuka). sumberFilter "" = kas+rekening.
+func applySaldoAwal(r *store.FinanceRekap, p store.FinancePeriode, sumberFilter string) {
+	add := func(sumber string, awal int64) {
+		ps, exists := r.PerSumber[sumber]
+		if awal == 0 && !exists {
+			return
+		}
+		ps.Saldo += awal
+		r.PerSumber[sumber] = ps
+		r.Saldo += awal
+	}
+	if sumberFilter == "" || sumberFilter == "kas" {
+		add("kas", p.SaldoAwalKas)
+	}
+	if sumberFilter == "" || sumberFilter == "rekening" {
+		add("rekening", p.SaldoAwalRekening)
+	}
 }
 
 // ---- Helper ----
