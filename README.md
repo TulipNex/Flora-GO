@@ -16,6 +16,7 @@ wabot-go/
 │   ├── timex/                     # zona waktu aktif bot (WIB/WITA/WIT) + FormatDuration
 │   ├── netx/                      # helper jaringan (IsPublicIP anti-SSRF, dipakai external & plugins)
 │   ├── textx/                     # helper teks (TruncateRunes, dipakai lintas paket)
+│   ├── identity/                  # normalisasi identitas WhatsApp terpusat (JID/LID/PN: Normalize, ResolvePN/LID, Keys, CanonicalUser, IsBot)
 │   ├── tableimage/                # render tabel teks -> gambar
 │   ├── ai/                        # engine AI (multi-provider, agent loop, sesi, fakta, mood, bubble)
 │   │   ├── types.go               # Content/Part/FunctionCall (format universal internal)
@@ -91,7 +92,7 @@ wabot-go/
 │   ├── lrclib.go / shazam.go / spotify_search.go / speedtest.go / het.go / klasemen.go / listgrup.go
 │   ├── absensi.go / crm.go / tictactoe.go / selfcmd.go / replyfmt.go / pending.go
 │   ├── groupmanage.go / groupsetting.go / moderation.go / welcome.go / swgc.go
-│   ├── owneradmin.go / ownerexec.go / ownerget.go / ownerjoin.go / ownerrvo.go / jadibot.go
+│   ├── owneradmin.go / ownerexec.go / ownerget.go / ownerjoin.go / ownerrvo.go / jadibot.go / identity.go
 │   ├── sbpr.go / spr.go           # batch & private reply (owner)
 │   ├── pdfmerge.go / pdflocal.go / docread.go
 │   ├── ai.go / call_voice.go + call_video.go  # admin Flora + panggilan WA (jadwal)
@@ -328,6 +329,7 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 | `.thumbnail` / `.favicon <link>/reset` | Set aset kartu `.menu` |
 | `.lastchat` / `.crm` / `.insp` / `.run` | Arsip pesan (cek metadata/JSON, kirim ulang) |
 | `.backup [list\|get <nama>\|jadwal <interval\|off>]` | Backup database (ZIP semua DB / satu `.db` / jadwal otomatis) — hanya via DM owner |
+| `.id [nomor\|@jid]` | Diagnostik normalisasi identitas: JID mentah, alt, hasil resolve PN/LID, kunci kanonik (owner) |
 | `.listgrup` | Daftar grup bot + JID (untuk flag `-g`) |
 | `$ <perintah>` | Eksekusi shell di server (async, timeout 120 dtk, output dipotong) |
 | `\ <kode js>` | Eval JavaScript di dalam bot (async, timeout 30 dtk) |

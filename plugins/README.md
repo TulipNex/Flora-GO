@@ -99,6 +99,7 @@ Legenda: `•` = command publik, `◇` = helper/modul pendukung (bukan command),
 | File | Isi |
 |---|---|
 | `owner.go` | `• .owner` |
+| `identity.go` | `⛭ .id` — diagnostik normalisasi identitas (JID/LID/PN); owner, tersembunyi |
 | `owneradmin.go` | `⛭ .ban`, `.unban`, `.banlist`, `.bangroup`, `.unbangroup`, `.bangrouplist`, `.mode` |
 | `ownerexec.go` | `⛭ .$`, `.\\` (eksekusi perintah shell) |
 | `ownerget.go` | `⛭ .get` |
