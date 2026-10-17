@@ -490,3 +490,59 @@ func (f *FinanceDB) DeleteKeuanganPeriode(ctx context.Context, owner, dari, samp
 	n, _ := res.RowsAffected()
 	return n, nil
 }
+
+// HasFinancePeriode true bila owner sudah punya minimal satu baris periode
+// (penanda sudah diinisialisasi / sudah pernah "tutup buku").
+func (f *FinanceDB) HasFinancePeriode(ctx context.Context, owner string) (bool, error) {
+	var n int
+	if err := f.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM finance_periode WHERE owner = ?`, owner).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// ListAllKeuangan mengambil SEMUA baris owner (terlama→terbaru) — dipakai
+// untuk arsip pra-fitur (tanpa katup limit).
+func (f *FinanceDB) ListAllKeuangan(ctx context.Context, owner string) ([]FinanceRow, error) {
+	rows, err := f.db.QueryContext(ctx, `
+		SELECT id, transaksi, masuk, keluar, sumber, tanggal, client_req_id, created_at, input_at
+		FROM keuangan WHERE owner = ? ORDER BY tanggal ASC, id ASC
+	`, owner)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FinanceRow
+	for rows.Next() {
+		r, err := scanFinanceRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ResetFinanceOwnerInitial menghapus SEMUA transaksi owner lalu membuat baris
+// periode berjalan dengan saldo awal — satu transaksi atomik. Dipakai saat
+// aktivasi fitur: arsipkan buku lama, mulai ulang dengan saldo awal.
+func (f *FinanceDB) ResetFinanceOwnerInitial(ctx context.Context, owner, periode string, kas, rekening int64) error {
+	tx, err := f.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM keuangan WHERE owner = ?`, owner); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO finance_periode (owner, periode, saldo_awal_kas, saldo_awal_rekening)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(owner, periode) DO UPDATE SET
+			saldo_awal_kas = excluded.saldo_awal_kas,
+			saldo_awal_rekening = excluded.saldo_awal_rekening
+	`, owner, periode, kas, rekening); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

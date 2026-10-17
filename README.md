@@ -337,7 +337,7 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 | `$ <perintah>` | Eksekusi shell di server (async, timeout 120 dtk, output dipotong) |
 | `\ <kode js>` | Eval JavaScript di dalam bot (async, timeout 30 dtk) |
 
-Catatan keuangan (lewat AI): tiap transaksi menyimpan **waktu input** (tanggal + jam, berbeda dari tanggal transaksi). Bulan berjalan ditutup otomatis saat pergantian bulan — bot mengirim **laporan Excel bulanan** ke DM owner, mengarsipkannya di `data/arsip-keuangan/<tahun>/`, lalu mengosongkan transaksi bulan itu dan membawa saldo akhir (kas & rekening) sebagai saldo awal bulan berikutnya.
+Catatan keuangan (lewat AI): tiap transaksi menyimpan **waktu input** (tanggal + jam, berbeda dari tanggal transaksi). **Saat fitur baru aktif**, seluruh transaksi lama diarsipkan (dikirim ke DM owner) lalu buku dimulai ulang dari tanggal aktivasi dengan saldo awal = net transaksi lama. Bulan berjalan ditutup otomatis saat pergantian bulan — bot mengirim **laporan Excel bulanan** ke DM owner, mengarsipkannya di `data/arsip-keuangan/<tahun>/`, lalu mengosongkan transaksi bulan itu dan membawa saldo akhir (kas & rekening) sebagai saldo awal bulan berikutnya.
 
 Panggilan WhatsApp memakai library [meowcaller](https://github.com/purpshell/meowcaller). Data grup (setting, dsb) disimpan di SQLite lewat driver `modernc.org/sqlite` (pure Go, tanpa cgo).
 

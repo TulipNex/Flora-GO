@@ -11,6 +11,10 @@ package plugins
 //   5. bawa saldo akhir jadi saldo awal bulan berikutnya,
 //   6. HAPUS transaksi bulan itu (reset).
 //
+// Saat fitur PERTAMA aktif untuk seorang owner (belum punya baris periode):
+// seluruh transaksi lama diarsipkan + dikirim ke DM owner, lalu buku dimulai
+// ulang dari tanggal aktivasi dengan saldo awal = net transaksi lama.
+//
 // Pemicu: timer yang di-arm ulang ke awal bulan berikutnya (bukan polling),
 // plus catch-up saat startup supaya bulan yang terlewat saat bot mati tetap
 // dilaporkan. Kalau gagal (belum tersambung), percobaan diulang tiap 30 menit.
@@ -98,7 +102,22 @@ func runFinanceMonthlySweep() bool {
 		if owner == "" {
 			continue
 		}
-		// Pastikan periode berjalan punya baris (saldo awal 0 bila baru).
+		// Inisialisasi sekali: belum ada baris periode = owner baru bagi
+		// fitur ini → arsipkan buku lama lalu mulai ulang dengan saldo awal.
+		inited, err := store.Finance().HasFinancePeriode(ctx, owner)
+		if err != nil {
+			logfmt.Warn("finance: gagal cek periode %s: %v\n", owner, err)
+			ok = false
+			continue
+		}
+		if !inited {
+			if err := initializeFinanceOwner(ctx, client, owner, cur); err != nil {
+				logfmt.Warn("finance: gagal inisialisasi %s: %v\n", owner, err)
+				ok = false
+				continue
+			}
+		}
+		// Pastikan periode berjalan punya baris.
 		if err := store.Finance().EnsureFinancePeriode(ctx, owner, cur); err != nil {
 			logfmt.Warn("finance: gagal siapkan periode %s/%s: %v\n", owner, cur, err)
 			ok = false
@@ -132,17 +151,7 @@ func closeFinancePeriode(ctx context.Context, client *whatsmeow.Client, owner st
 	if err != nil {
 		return err
 	}
-	tx := make([]financex.Transaksi, 0, len(rows))
-	for _, r := range rows {
-		tx = append(tx, financex.Transaksi{
-			Tanggal: r.Tanggal,
-			InputAt: r.InputAt,
-			Teks:    r.Transaksi,
-			Sumber:  r.Sumber,
-			Masuk:   r.Masuk,
-			Keluar:  r.Keluar,
-		})
-	}
+	tx := toFinanceTransaksi(rows)
 	awal := financex.Saldo{Kas: p.SaldoAwalKas, Rekening: p.SaldoAwalRekening}
 	data, err := financex.BuildLaporan(financex.Laporan{
 		Owner:     owner,
@@ -156,7 +165,7 @@ func closeFinancePeriode(ctx context.Context, client *whatsmeow.Client, owner st
 	}
 	_, _, akhir := financex.Ringkas(awal, tx)
 
-	arsipRel, err := writeFinanceArchive(owner, p.Periode, data)
+	arsipRel, err := writeFinanceArsip(owner, p.Periode, data)
 	if err != nil {
 		return fmt.Errorf("tulis arsip: %w", err)
 	}
@@ -189,18 +198,83 @@ func closeFinancePeriode(ctx context.Context, client *whatsmeow.Client, owner st
 	return nil
 }
 
-// writeFinanceArchive menulis file laporan ke data/arsip-keuangan/<YYYY>/.
-// Mengembalikan path relatif (disimpan di finance_periode.arsip_file).
-func writeFinanceArchive(owner, periode string, data []byte) (string, error) {
-	year := periode
-	if len(periode) >= 4 {
-		year = periode[:4]
+// initializeFinanceOwner menyiapkan owner saat fitur baru aktif: arsipkan
+// SEMUA transaksi lama → kirim ke DM owner → mulai ulang dengan saldo awal
+// (net transaksi lama). Dijalankan sekali per owner.
+func initializeFinanceOwner(ctx context.Context, client *whatsmeow.Client, owner, periode string) error {
+	rows, err := store.Finance().ListAllKeuangan(ctx, owner)
+	if err != nil {
+		return err
+	}
+	rekap, err := store.Finance().RekapKeuangan(ctx, store.FinanceFilter{Owner: owner})
+	if err != nil {
+		return err
+	}
+	kas := rekap.PerSumber["kas"].Saldo
+	rekening := rekap.PerSumber["rekening"].Saldo
+
+	if len(rows) > 0 {
+		data, err := financex.BuildLaporan(financex.Laporan{
+			Owner:     owner,
+			Periode:   "pra-fitur",
+			Transaksi: toFinanceTransaksi(rows),
+			Dibuat:    timex.Now(),
+		})
+		if err != nil {
+			return fmt.Errorf("rakit arsip pra-fitur: %w", err)
+		}
+		label := "pra-fitur-" + timex.Now().Format("20060102-150405")
+		rel, err := writeFinanceArsip(owner, label, data)
+		if err != nil {
+			return fmt.Errorf("tulis arsip pra-fitur: %w", err)
+		}
+		if jid, perr := types.ParseJID(owner + "@" + types.DefaultUserServer); perr == nil && !jid.IsEmpty() {
+			caption := fmt.Sprintf(
+				"*Arsip keuangan pra-fitur*\n%d transaksi lama diarsipkan.\nBuku baru dimulai %s dengan saldo awal — kas: %d · rekening: %d.",
+				len(rows), timex.Now().Format("02 Jan 2006 15:04"), kas, rekening)
+			if serr := sendDocBytes(ctx, client, jid, filepath.Base(rel), xlsxMIME, data, caption); serr != nil {
+				// Arsip sudah tersimpan di panel — jangan gantung inisialisasi.
+				logfmt.Warn("finance: gagal kirim arsip pra-fitur %s: %v\n", owner, serr)
+			}
+		}
+	}
+
+	if err := store.Finance().ResetFinanceOwnerInitial(ctx, owner, periode, kas, rekening); err != nil {
+		return err
+	}
+	logfmt.Plain("finance: %s diinisialisasi — arsip %d transaksi, saldo awal kas=%d rekening=%d\n", owner, len(rows), kas, rekening)
+	return nil
+}
+
+// toFinanceTransaksi memetakan baris store ke tipe laporan.
+func toFinanceTransaksi(rows []store.FinanceRow) []financex.Transaksi {
+	out := make([]financex.Transaksi, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, financex.Transaksi{
+			Tanggal: r.Tanggal,
+			InputAt: r.InputAt,
+			Teks:    r.Transaksi,
+			Sumber:  r.Sumber,
+			Masuk:   r.Masuk,
+			Keluar:  r.Keluar,
+		})
+	}
+	return out
+}
+
+// writeFinanceArsip menulis file laporan ke data/arsip-keuangan/<tahun>/.
+// label = "YYYY-MM" (bulanan) atau "pra-fitur-<stamp>" (arsip awal).
+// Mengembalikan path relatif (disimpan di finance_periode.arsip_file/log).
+func writeFinanceArsip(owner, label string, data []byte) (string, error) {
+	year := timex.Now().Format("2006")
+	if len(label) >= 4 && label[4] == '-' {
+		year = label[:4]
 	}
 	dir := filepath.Join(financeArsipDir, year)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	name := fmt.Sprintf("keuangan-%s-%s.xlsx", owner, periode)
+	name := fmt.Sprintf("keuangan-%s-%s.xlsx", owner, label)
 	rel := filepath.Join(dir, name)
 	if err := os.WriteFile(rel, data, 0o644); err != nil {
 		return "", err

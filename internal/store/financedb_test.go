@@ -94,3 +94,46 @@ func TestFinancePeriodeLifecycle(t *testing.T) {
 		t.Errorf("masih ada %d baris setelah reset", len(left))
 	}
 }
+
+// TestFinanceResetOwnerInitial menguji inisialisasi fitur: arsipkan (baca
+// semua) lalu mulai ulang dengan saldo awal.
+func TestFinanceResetOwnerInitial(t *testing.T) {
+	dir := t.TempDir()
+	if err := InitFinanceDB(filepath.Join(dir, "finance.db")); err != nil {
+		t.Fatalf("InitFinanceDB: %v", err)
+	}
+	defer Finance().db.Close()
+	ctx := context.Background()
+	in := func(n int64) *int64 { return &n }
+
+	if _, err := Finance().InsertKeuangan(ctx, "A", "628", "gaji", in(5000), nil, "kas", "2026-01-01", ""); err != nil {
+		t.Fatalf("insert A: %v", err)
+	}
+	if _, err := Finance().InsertKeuangan(ctx, "B", "628", "sewa", nil, in(2000), "rekening", "2026-02-01", ""); err != nil {
+		t.Fatalf("insert B: %v", err)
+	}
+
+	has, err := Finance().HasFinancePeriode(ctx, "628")
+	if err != nil || has {
+		t.Fatalf("HasFinancePeriode awal = %v (err=%v), mau false", has, err)
+	}
+	all, err := Finance().ListAllKeuangan(ctx, "628")
+	if err != nil || len(all) != 2 {
+		t.Fatalf("ListAllKeuangan = %d (err=%v), mau 2", len(all), err)
+	}
+
+	if err := Finance().ResetFinanceOwnerInitial(ctx, "628", "2026-10", 3000, -2000); err != nil {
+		t.Fatalf("ResetFinanceOwnerInitial: %v", err)
+	}
+	has, _ = Finance().HasFinancePeriode(ctx, "628")
+	if !has {
+		t.Error("HasFinancePeriode setelah reset harus true")
+	}
+	if all, _ = Finance().ListAllKeuangan(ctx, "628"); len(all) != 0 {
+		t.Errorf("transaksi lama masih ada: %d", len(all))
+	}
+	p, found, _ := Finance().GetFinancePeriode(ctx, "628", "2026-10")
+	if !found || p.SaldoAwalKas != 3000 || p.SaldoAwalRekening != -2000 {
+		t.Errorf("periode setelah reset = %+v found=%v", p, found)
+	}
+}
