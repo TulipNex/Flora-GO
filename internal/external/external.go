@@ -1,7 +1,7 @@
 // Package external adalah kumpulan ADAPTER SUMBER LUAR (port dari koleksi
 // D:\scrape): selain mengunduh media dari platform sosial via API scraper
 // pihak ketiga (tiktok, youtube, instagram, facebook, twitter, pinterest,
-// douyin, spotify, xpvid, omnify, universal), paket ini juga mengambil data
+// spotify, xpvid, omnify, universal), paket ini juga mengambil data
 // NON-media (lirik `lrclib`, identifikasi lagu `shazam`, `flaticon`,
 // `football`, `pihps`, `metadata`). Jadi nama "external" berarti "pengambil
 // dari sumber luar", bukan hanya media.

@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/polymorfa/hypermeow/types"
 )
@@ -109,7 +111,7 @@ func (g *GroupDB) IsGroupBanned(ctx context.Context, chatJID string) (bool, erro
 	err := g.db.QueryRowContext(ctx, `SELECT chat_jid FROM banned_groups WHERE chat_jid = ?`, chatJID).Scan(&jid)
 	if err != nil {
 		// Baris tidak ada = grup tidak di-ban, bukan error.
-		if strings.Contains(err.Error(), "no rows") {
+		if isNoRowsError(err) {
 			return false, nil
 		}
 		return false, err
@@ -140,7 +142,7 @@ func (g *GroupDB) GetBotMode(ctx context.Context) (string, error) {
 	var mode string
 	err := g.db.QueryRowContext(ctx, `SELECT value FROM bot_settings WHERE key = 'mode'`).Scan(&mode)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
+		if isNoRowsError(err) {
 			return BotModePublic, nil
 		}
 		return "", err
@@ -176,7 +178,7 @@ func (g *GroupDB) IsAILocked(ctx context.Context) (bool, error) {
 	var val string
 	err := g.db.QueryRowContext(ctx, `SELECT value FROM bot_settings WHERE key = 'ai_lock'`).Scan(&val)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
+		if isNoRowsError(err) {
 			return false, nil
 		}
 		return false, err
@@ -201,7 +203,7 @@ func (g *GroupDB) IsSelfCommandEnabled(ctx context.Context) (bool, error) {
 	var val string
 	err := g.db.QueryRowContext(ctx, `SELECT value FROM bot_settings WHERE key = 'selfcmd'`).Scan(&val)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
+		if isNoRowsError(err) {
 			return false, nil
 		}
 		return false, err
@@ -233,7 +235,7 @@ func (g *GroupDB) GetMenuThumbURL(ctx context.Context) (string, error) {
 	var v string
 	err := g.db.QueryRowContext(ctx, `SELECT value FROM bot_settings WHERE key = ?`, menuThumbKey).Scan(&v)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
+		if isNoRowsError(err) {
 			return "", nil
 		}
 		return "", err
@@ -257,7 +259,7 @@ func (g *GroupDB) GetMenuFaviconURL(ctx context.Context) (string, error) {
 	var v string
 	err := g.db.QueryRowContext(ctx, `SELECT value FROM bot_settings WHERE key = ?`, menuFaviconKey).Scan(&v)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
+		if isNoRowsError(err) {
 			return "", nil
 		}
 		return "", err
@@ -273,6 +275,66 @@ func (g *GroupDB) SetMenuFaviconURL(ctx context.Context, url string) error {
 		return err
 	}
 	_, err := g.db.ExecContext(ctx, `INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)`, menuFaviconKey, url)
+	return err
+}
+
+// Kunci bot_settings untuk backup database otomatis (lihat plugins/backup.go).
+const (
+	backupIntervalKey = "backup_interval_min"
+	backupLastRunKey  = "backup_last_run"
+)
+
+// GetBackupSchedule mengembalikan interval backup otomatis dalam MENIT
+// (0 = mati). Tahan restart karena disimpan di bot_settings.
+func (g *GroupDB) GetBackupSchedule(ctx context.Context) (int, error) {
+	var v string
+	err := g.db.QueryRowContext(ctx, `SELECT value FROM bot_settings WHERE key = ?`, backupIntervalKey).Scan(&v)
+	if err != nil {
+		if isNoRowsError(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(v))
+	return n, nil
+}
+
+// SetBackupSchedule menyimpan interval backup (menit); <= 0 = matikan
+// (baris dihapus).
+func (g *GroupDB) SetBackupSchedule(ctx context.Context, minutes int) error {
+	if minutes <= 0 {
+		_, err := g.db.ExecContext(ctx, `DELETE FROM bot_settings WHERE key = ?`, backupIntervalKey)
+		return err
+	}
+	_, err := g.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)`,
+		backupIntervalKey, strconv.Itoa(minutes))
+	return err
+}
+
+// GetBackupLastRun mengembalikan waktu backup otomatis terakhir (zero time
+// bila belum pernah / tak ada catatan).
+func (g *GroupDB) GetBackupLastRun(ctx context.Context) (time.Time, error) {
+	var v string
+	err := g.db.QueryRowContext(ctx, `SELECT value FROM bot_settings WHERE key = ?`, backupLastRunKey).Scan(&v)
+	if err != nil {
+		if isNoRowsError(err) {
+			return time.Time{}, nil
+		}
+		return time.Time{}, err
+	}
+	n, _ := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if n <= 0 {
+		return time.Time{}, nil
+	}
+	return time.Unix(n, 0), nil
+}
+
+// SetBackupLastRun mencatat waktu backup otomatis terakhir.
+func (g *GroupDB) SetBackupLastRun(ctx context.Context, t time.Time) error {
+	_, err := g.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)`,
+		backupLastRunKey, strconv.FormatInt(t.Unix(), 10))
 	return err
 }
 

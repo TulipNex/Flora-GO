@@ -35,13 +35,9 @@ func InitGroupDB(path string) error {
 // (database utama) dan GroupsFor (database per clone, schema identik —
 // termasuk tabel clones yang hanya dipakai database utama).
 func openGroupDBFile(path string) (*sql.DB, error) {
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)", path)
-	db, err := sql.Open("sqlite", dsn)
+	db, err := openSQLite(path)
 	if err != nil {
 		return nil, fmt.Errorf("gagal membuka group.db: %w", err)
-	}
-	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("gagal ping group.db: %w", err)
 	}
 
 	schema := `
@@ -122,25 +118,20 @@ func openGroupDBFile(path string) (*sql.DB, error) {
 		created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 	);
 	`
-	if _, err := db.Exec(schema); err != nil {
-		return nil, fmt.Errorf("gagal membuat schema group.db: %w", err)
-	}
-
 	// Migrasi untuk database LAMA yang tabel group_greetings-nya sudah ada
 	// TANPA kolom bye/welcome_msg/bye_msg (dibuat sebelum fitur perpisahan +
 	// template ini ditambahkan). Pola yang sama dengan migrasi kolom
 	// model_nexarouter di aisettingsdb.go: abaikan error "duplicate column".
-	for _, alter := range []string{
+	alters := []string{
 		`ALTER TABLE group_greetings ADD COLUMN bye INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE group_greetings ADD COLUMN welcome_msg TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE group_greetings ADD COLUMN bye_msg TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE group_moderation ADD COLUMN antistatus INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE group_moderation ADD COLUMN invite_code TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE clones ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`,
-	} {
-		if _, err := db.Exec(alter); err != nil && !isDuplicateColumnError(err) {
-			return nil, fmt.Errorf("gagal migrasi group.db: %w", err)
-		}
+	}
+	if err := applySchema(db, "group.db", schema, alters, groupSchemaVersion); err != nil {
+		return nil, err
 	}
 
 	return db, nil

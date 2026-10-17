@@ -26,7 +26,7 @@ func init() {
 }
 
 // RegisterSPR mendaftarkan command ".spr" (Send Private Reply, owner-only).
-// Seperti .call, command ini masuk CategoryOwner: otomatis hidden dari menu
+// Seperti .voicecall, command ini masuk CategoryOwner: otomatis hidden dari menu
 // non-owner dan diblokir di clone (jadibot).
 func RegisterSPR(r *Registry) {
 	r.Register(Command{

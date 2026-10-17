@@ -7,12 +7,12 @@
 # di-STOP (upload menimpa binary yang sedang jalan berisiko). Lewati dengan
 # switch -y bila dijalankan otomatis:  .\scripts\deploy.ps1 -y
 #
-# Versi: OTOMATIS ditentukan dari file yang berubah sejak deploy terakhir
-# (version-bump.ps1, tanpa flag). -Bump hanya override manual darurat
-# (auto|major|minor|patch|none, default auto).
+# Versi: OTOMATIS dari tanggal deploy + urutan deploy hari itu (CalVer
+# v<bulan>.<tanggal>.<urut>), hanya naik bila ada file kode/tooling berubah
+# sejak deploy terakhir (version-bump.ps1). -Bump = override darurat:
+# auto (default, hitung dari tanggal) | none (tetap) | vX.Y.Z (paksa).
 param(
     [switch]$y,
-    [ValidateSet("auto", "major", "minor", "patch", "none")]
     [string]$Bump = "auto"
 )
 
@@ -127,7 +127,7 @@ $BotVersion = $ver.NewVersion
 if ($ver.Level -eq "none") {
     Write-Ok "Versi tetap $($ver.OldVersion) (tidak ada perubahan kode)"
 } else {
-    Write-Ok "Versi $($ver.OldVersion) -> $($ver.NewVersion) [$($ver.Level)]"
+    Write-Ok "Versi $($ver.OldVersion) -> $($ver.NewVersion) (CalVer)"
     Write-Host "  Alasan: $($ver.Reason)" -ForegroundColor DarkGray
 }
 

@@ -70,17 +70,19 @@ const (
 var (
 	// BotVersion mengikuti versi rilis bot ini.
 	//
+	// Format CalVer: v<bulan>.<tanggal>.<urut> — tanggal deploy (waktu lokal)
+	// + urutan deploy hari itu, mis. v10.18.1. Ditentukan otomatis oleh
+	// scripts/version-bump.ps1 saat deploy.
+	//
 	// Nilai di bawah adalah fallback untuk build manual (mis. `go run .`).
 	// Build resmi via deploy.ps1 / version-bump.ps1 menyuntik versi aktif
 	// dari file VERSION lewat linker flag:
 	//   go build -ldflags "-X wabot-go/internal/config.BotVersion=vX.Y.Z" .
 	// sehingga const sengaja dijadikan var agar bisa di-override saat build.
 	//
-	// CATATAN: nilai fallback ini hanya untuk build manual (`go run .`).
-	// Saat rilis resmi, deploy.ps1 menyuntik versi dari file VERSION. Jaga
-	// agar nilainya tetap sinkron dengan VERSION (dulu tertinggal di v5.1.1
-	// sementara VERSION sudah v7.13.0).
-	BotVersion = "v7.13.0"
+	// CATATAN: versi rilis ditentukan dari tanggal deploy, jadi fallback ini
+	// sengaja berupa placeholder dev, bukan angka rilis yang perlu disinkronkan.
+	BotVersion = "v0.0.0-dev"
 )
 
 // ==========================

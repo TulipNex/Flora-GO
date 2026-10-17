@@ -25,8 +25,8 @@ func InitFactsDB() error {
 		updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 	);
 	`
-	if _, err := aiDB.db.Exec(schema); err != nil {
-		return fmt.Errorf("gagal membuat schema user_facts: %w", err)
+	if err := ensureSchema(aiDB.db, "ai.db", schema, nil); err != nil {
+		return err
 	}
 	return nil
 }
@@ -40,7 +40,7 @@ func (a *AIDB) GetFacts(ctx context.Context, senderJID string) (string, error) {
 		SELECT facts_json FROM user_facts WHERE sender_jid = ?
 	`, senderJID).Scan(&factsJSON)
 	if err != nil {
-		if err.Error() == "sql: no rows in result set" {
+		if isNoRowsError(err) {
 			return "", nil
 		}
 		return "", err

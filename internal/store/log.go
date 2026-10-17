@@ -216,6 +216,14 @@ func displayID(ctx context.Context, client *whatsmeow.Client, jid, alt types.JID
 	return jid.String()
 }
 
+// DisplayID mengekspor displayID untuk tampilan di luar log (mis. arsip
+// .lastchat/.crm): nomor HP bila JID-nya PN, hasil resolve LID→PN bila
+// pemetaannya tersimpan, atau "<user>/lid" bila nomornya belum diketahui.
+// Dipanggil tanpa JID alt (arsip hanya menyimpan satu JID per baris).
+func DisplayID(ctx context.Context, client *whatsmeow.Client, jid types.JID) string {
+	return displayID(ctx, client, jid, types.JID{})
+}
+
 // describeMessage menentukan tipe + ringkasan isi pesan untuk log. Mencakup
 // tipe yang sebelumnya jatuh ke "other"/"(tanpa teks": audio, stiker,
 // lokasi, reaksi, polling, undangan grup, dan revoke/protokol.

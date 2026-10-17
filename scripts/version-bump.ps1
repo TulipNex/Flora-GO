@@ -1,20 +1,19 @@
-# version-bump.ps1 - penentu & penaik versi otomatis berbasis file yang berubah.
+# version-bump.ps1 - penentu versi otomatis berbasis tanggal deploy (CalVer).
 #
 # Dipakai oleh deploy.ps1 sebelum build. Logika: bandingkan kondisi kerja
 # saat ini (commit + worktree + untracked) dengan snapshot deploy terakhir
-# (.last-deploy-state), lalu tentukan level dari file yang BENAR-BENAR BARU
-# berubah sejak snapshot itu. Deploy ulang tanpa perubahan => level none
-# (VERSION tidak disentuh, tidak ada bump ganda).
+# (.last-deploy-state). Kalau TIDAK ADA file kode/tooling yang berubah, versi
+# dibiarkan (tidak ada bump ganda). Kalau ADA perubahan, versi baru dibuat
+# dari tanggal hari ini + nomor urut deploy hari itu:
 #
-# Klasifikasi (level tertinggi menang):
-#   major : penghapusan file command/tool (plugins/*.go, internal/ai/tools/**),
-#           baris `go 1.x` di go.mod berubah, atau pesan commit mengandung
-#           BREAKING / major!
-#   minor : file .go BARU (untracked / staged-new / committed-A) di plugins/,
-#           internal/, atau root; .env.example diubah; dependensi baru di go.mod
-#   patch : perubahan kode/tooling lain (.go edit, .ps1, .sh, config, dsb)
-#   none  : hanya file non-binary (README, data/, wabot-tmp/, .env, binary,
-#           qr.png, VERSION/state itu sendiri, apps-script/, test-env.ps1)
+#     v<bulan>.<tanggal>.<urut>     contoh: v10.18.1, lalu v10.18.2
+#
+# Tanggal memakai waktu lokal mesin, tanpa nol di depan. Nomor urut reset
+# tiap ganti hari (besok: v10.19.1).
+#
+# Hanya perubahan file kode/tooling yang dihitung. Perubahan yang HANYA
+# menyentuh dokumen/data (README, AGENTS, data/, .env, VERSION, state,
+# binary, dll) tidak menaikkan versi — lihat Test-Excluded.
 #
 # Cara pakai langsung (dry-run, tanpa menulis apa pun):
 #   .\scripts\version-bump.ps1 -NoUpdate
@@ -22,7 +21,6 @@
 #   . .\scripts\version-bump.ps1
 #   $v = Invoke-VersionBump -Override auto
 param(
-    [ValidateSet("auto", "major", "minor", "patch", "none")]
     [string]$Override = "auto",
     [string]$VersionFile = "VERSION",
     [string]$StateFile = ".last-deploy-state",
@@ -89,19 +87,23 @@ function Read-CurrentVersion {
     return "v0.1.0"
 }
 
-function Add-BumpedVersion {
-    param([string]$Version, [string]$Level)
-    $v = $Version -replace '^v', ''
-    $parts = $v -split '\.'
-    $major = [int]$parts[0]; $minor = [int]$parts[1]; $patch = [int]$parts[2]
-    switch ($Level) {
-        "major" { $major++; $minor = 0; $patch = 0 }
-        "minor" { $minor++; $patch = 0 }
-        "patch" { $patch++ }
+# New-DeployVersion membuat versi CalVer dari waktu lokal: v<bulan>.<tanggal>.<urut>
+# tanpa nol di depan. Kalau versi lama bertanggal sama (bulan.tanggal sama),
+# urutannya dilanjutkan; kalau beda hari (atau versi lama bukan format ini),
+# mulai dari 1.
+function New-DeployVersion {
+    param([string]$OldVersion)
+    $now = Get-Date
+    $n = 1
+    if ($OldVersion -match '^v?(\d+)\.(\d+)\.(\d+)$') {
+        $om = [int]$Matches[1]; $od = [int]$Matches[2]; $on = [int]$Matches[3]
+        if ($om -eq $now.Month -and $od -eq $now.Day) { $n = $on + 1 }
     }
-    return "v$major.$minor.$patch"
+    return "v$($now.Month).$($now.Day).$n"
 }
 
+# File yang TIDAK dihitung sebagai pemicu versi: dokumen, data sesi/state,
+# .env, binary build, file temp/db. Perubahan hanya di sini => versi tetap.
 function Test-Excluded {
     param([string]$Rel)
     $p = $Rel -replace '\\', '/'
@@ -114,7 +116,6 @@ function Test-Excluded {
 
 function Invoke-VersionBump {
     param(
-        [ValidateSet("auto", "major", "minor", "patch", "none")]
         [string]$Override = "auto",
         [string]$VersionFile = "VERSION",
         [string]$StateFile = ".last-deploy-state",
@@ -153,24 +154,14 @@ function Invoke-VersionBump {
     }
     if ($gitOk) {
         foreach ($f in (Get-GitLines -GitArgs @("diff", "--name-only", "HEAD"))) { $changed[$f] = $true }
-        foreach ($f in (Get-GitLines -GitArgs @("diff", "--cached", "--name-only", "--diff-filter=A", "HEAD"))) { $changed["STAGED_NEW:$f"] = $true }
-        foreach ($f in (Get-GitLines -GitArgs @("ls-files", "--others", "--exclude-standard"))) { $changed["UNTRACKED:$f"] = $true }
+        foreach ($f in (Get-GitLines -GitArgs @("diff", "--cached", "--name-only", "--diff-filter=A", "HEAD"))) { $changed[$f] = $true }
+        foreach ($f in (Get-GitLines -GitArgs @("ls-files", "--others", "--exclude-standard"))) { $changed[$f] = $true }
     }
 
-    # Normalisasi: pisahkan marker, hitung hash kondisi saat ini.
+    # Hitung hash kondisi saat ini untuk setiap file berubah (DELETED bila hilang).
     $current = @{}
-    $stagedNew = @()
-    $untrackedGo = @()
-    $deletedGo = @()
     foreach ($key in $changed.Keys) {
-        $rel = $key
-        $isNew = $false
-        if ($rel -match '^STAGED_NEW:(.+)$') { $rel = $matches[1]; $isNew = $true }
-        elseif ($rel -match '^UNTRACKED:(.+)$') {
-            $rel = $matches[1]; $isNew = $true
-            if ($rel -match '\.go$') { $untrackedGo += $rel }
-        }
-        $rel = $rel -replace '\\', '/'
+        $rel = $key -replace '\\', '/'
         $full = Join-Path $Root $rel
         if (Test-Path $full -PathType Leaf) {
             $h = Get-GitText -GitArgs @("hash-object", "--", $rel)
@@ -181,16 +172,6 @@ function Invoke-VersionBump {
             $current[$rel] = $h
         } else {
             $current[$rel] = "DELETED"
-            if ($rel -match '\.go$') { $deletedGo += $rel }
-        }
-        if ($isNew -and ($rel -match '\.go$')) { $stagedNew += $rel }
-    }
-
-    # File committed-A (baru masuk lewat commit sejak baseline) untuk sinyal minor.
-    $committedNew = @()
-    if ($haveBase) {
-        foreach ($f in (Get-GitLines -GitArgs @("diff", "--name-only", "--diff-filter=A", $baseCommit, $head))) {
-            $committedNew += (($f -replace '\\', '/'))
         }
     }
 
@@ -204,77 +185,30 @@ function Invoke-VersionBump {
 
     $relevant = @($newFiles | Where-Object { -not (Test-Excluded $_) })
 
-    # Tentukan level.
+    # Versi: naik hanya kalau ada file kode/tooling berubah.
+    $newVersion = $oldVersion
     $level = "none"
     $reasons = @()
     if ($relevant.Count -gt 0) {
-        $level = "patch"
-        $reasons += "$($relevant.Count) file kode/tooling berubah"
-
-        # Penghapusan file command/tool = breaking => major.
-        $majDel = @($deletedGo | Where-Object { $_ -match '^(plugins/[^/]+\.go|internal/ai/tools/.+)$' })
-        if ($majDel.Count -gt 0) {
-            $level = "major"
-            $reasons += "hapus command/tool: $($majDel -join ', ')"
-        }
-
-        # go.mod: naik baris `go 1.x` => major; dependensi baru => minor.
-        if ($relevant -contains "go.mod") {
-            $gomodDiff = Get-GitText -GitArgs @("diff", $baseCommit, "--", "go.mod")
-            $gomodDiff += "`n" + (Get-GitText -GitArgs @("diff", "--", "go.mod"))
-            if ($gomodDiff -match '(?m)^[+-]go 1\.\d+') {
-                $level = "major"
-                $reasons += "versi Go di go.mod berubah"
-            } elseif ($gomodDiff -match '(?m)^\+\s+[a-z0-9][a-z0-9./_-]*\s+v\d') {
-                if ($level -ne "major") { $level = "minor" }
-                $reasons += "dependensi baru di go.mod"
-            }
-        }
-
-        # File .go baru di area fitur => minor.
-        $newGo = @($relevant | Where-Object {
-            $_ -match '\.go$' -and ($_ -match '^(plugins/|internal/|[^/]+\.go$)')
-        })
-        $explicitNew = @($stagedNew + $untrackedGo + $committedNew | ForEach-Object { $_ -replace '\\', '/' })
-        $minorNew = @($newGo | Where-Object { $explicitNew -contains $_ })
-        if ($minorNew.Count -gt 0 -and $level -eq "patch") {
-            $level = "minor"
-            $reasons += "file Go baru: $($minorNew -join ', ')"
-        } elseif ($minorNew.Count -gt 0) {
-            $reasons += "file Go baru: $($minorNew -join ', ')"
-        }
-        if (($relevant -contains ".env.example") -and $level -eq "patch") {
-            $level = "minor"
-            $reasons += ".env.example berubah (variabel env baru)"
-        }
-
-        # Pesan commit sejak baseline sebagai penegas (tak wajib, repo ini
-        # historisnya berkomitmen generik sehingga default tetap heuristik path).
-        if ($haveBase) {
-            $msgs = Get-GitText -GitArgs @("log", "--format=%s%n%b", "$baseCommit..$head")
-            if ($msgs -match 'BREAKING[ -]CHANGE|breaking|major!') {
-                $level = "major"
-                $reasons += "pesan commit menandai breaking"
-            } elseif (($msgs -match '(?im)^feat(\(.+\))?[:!]') -and $level -eq "patch") {
-                $level = "minor"
-                $reasons += "pesan commit bertipe feat"
-            }
-        }
-
-        if (-not $gitOk) {
-            $level = "patch"
-            $reasons = @("git tak tersedia - default patch (aman)")
-        }
+        $newVersion = New-DeployVersion -OldVersion $oldVersion
+        $level = "calver"
+        $reasons += "$($relevant.Count) file berubah"
     }
 
-    if ($Override -ne "auto") {
-        $reasons += "override manual: $Override"
-        $level = $Override
-    }
-
-    $newVersion = $oldVersion
-    if ($level -ne "none") {
-        $newVersion = Add-BumpedVersion -Version $oldVersion -Level $level
+    # Override: auto (hitung) | none (tetap) | vX.Y.Z (paksa untuk darurat).
+    if ($Override -eq "none") {
+        $reasons += "override: tetap"
+        $newVersion = $oldVersion
+        $level = "none"
+    } elseif ($Override -and $Override -ne "auto") {
+        if ($Override -match '^v?\d+\.\d+\.\d+$') {
+            $lit = $Override; if ($lit -notmatch '^v') { $lit = "v$lit" }
+            $reasons += "override manual: $lit"
+            $newVersion = $lit
+            $level = "calver"
+        } else {
+            throw "Nilai -Override tidak valid: '$Override' (pakai auto | none | vX.Y.Z)"
+        }
     }
 
     if (-not $NoUpdate) {

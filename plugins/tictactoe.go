@@ -218,7 +218,7 @@ func ttAnswerChallengeLocked(ctx context.Context, mctx *store.MessageContext, g 
 // dijawab dalam ttChallengeTimeout = otomatis batal + umumkan ke chat.
 // Cek pointer (ttGames[key] != g) mengabaikan timer basi — mis. tantangan
 // sudah dijawab/dihentikan sebelum timer menyala (pola armScheduledCall
-// di call.go). Pengumuman lewat store.SendText (bukan ReplyText) karena
+// di call_voice.go). Pengumuman lewat store.SendText (bukan ReplyText) karena
 // timer tidak punya pesan asal untuk di-quote.
 func ttArmChallengeTimeout(client *whatsmeow.Client, chat types.JID, key string, g *ttGame) {
 	time.AfterFunc(ttChallengeTimeout, func() {

@@ -78,13 +78,9 @@ var absensiDB *AbsensiDB
 // InitAbsensiDB membuka (atau membuat) data/absensi.db + tabel-tabelnya.
 // Dipanggil sekali di main.go; error membuat main lanjut tanpa absensi.
 func InitAbsensiDB(path string) error {
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)", path)
-	db, err := sql.Open("sqlite", dsn)
+	db, err := openSQLite(path)
 	if err != nil {
 		return fmt.Errorf("gagal membuka absensi.db: %w", err)
-	}
-	if err := db.Ping(); err != nil {
-		return fmt.Errorf("gagal ping absensi.db: %w", err)
 	}
 	schema := `
 	CREATE TABLE IF NOT EXISTS absensi_config (
@@ -127,17 +123,15 @@ func InitAbsensiDB(path string) error {
 		updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 	);
 	`
-	if _, err := db.Exec(schema); err != nil {
-		return fmt.Errorf("gagal migrasi absensi.db: %w", err)
-	}
 	// Migrasi DB lama (dibuat sebelum kolom radius_m / default_durasi_min
 	// ada): SQLite tak punya ADD COLUMN IF NOT EXISTS — toleransi error
-	// duplicate column (pola aisettingsdb.go).
-	if _, err := db.Exec(`ALTER TABLE absensi_config ADD COLUMN radius_m REAL NOT NULL DEFAULT 20`); err != nil && !isDuplicateColumnError(err) {
-		return fmt.Errorf("gagal migrasi radius absensi.db: %w", err)
+	// duplicate column ditangani applySchema (pola sama di semua DB bot).
+	alters := []string{
+		`ALTER TABLE absensi_config ADD COLUMN radius_m REAL NOT NULL DEFAULT 20`,
+		`ALTER TABLE absensi_config ADD COLUMN default_durasi_min INTEGER NOT NULL DEFAULT 60`,
 	}
-	if _, err := db.Exec(`ALTER TABLE absensi_config ADD COLUMN default_durasi_min INTEGER NOT NULL DEFAULT 60`); err != nil && !isDuplicateColumnError(err) {
-		return fmt.Errorf("gagal migrasi durasi absensi.db: %w", err)
+	if err := applySchema(db, "absensi.db", schema, alters, absensiSchemaVersion); err != nil {
+		return err
 	}
 	absensiDB = &AbsensiDB{db: db}
 	return nil
@@ -157,7 +151,7 @@ func (a *AbsensiDB) GetConfig(chat string) (*AbsensiConfig, error) {
 	err := a.db.QueryRow(
 		`SELECT chat, lat, long, name, radius_m, default_durasi_min FROM absensi_config WHERE chat = ?`, chat,
 	).Scan(&c.Chat, &c.Lat, &c.Long, &c.Name, &c.RadiusM, &c.DefaultDurasi)
-	if err == sql.ErrNoRows {
+	if isNoRowsError(err) {
 		return nil, nil
 	}
 	if err != nil {
@@ -258,7 +252,7 @@ func (a *AbsensiDB) ActiveSession(chat string) (*AbsensiSession, error) {
 		 FROM absensi_sessions WHERE chat = ? AND status = 'open'
 		 ORDER BY id DESC LIMIT 1`, chat,
 	).Scan(&s.ID, &s.Chat, &s.StartTS, &s.EndTS, &s.Status, &auto, &s.CreatedBy)
-	if err == sql.ErrNoRows {
+	if isNoRowsError(err) {
 		return nil, nil
 	}
 	if err != nil {
@@ -416,7 +410,7 @@ func (a *AbsensiDB) LatestSession(chat string) (*AbsensiSession, error) {
 		`SELECT id, chat, start_ts, end_ts, status, auto, created_by
 		 FROM absensi_sessions WHERE chat = ? ORDER BY id DESC LIMIT 1`, chat,
 	).Scan(&s.ID, &s.Chat, &s.StartTS, &s.EndTS, &s.Status, &auto, &s.CreatedBy)
-	if err == sql.ErrNoRows {
+	if isNoRowsError(err) {
 		return nil, nil
 	}
 	if err != nil {
@@ -494,7 +488,7 @@ func (a *AbsensiDB) GetSchedule(chat string) (*AbsensiSchedule, error) {
 	err := a.db.QueryRow(
 		`SELECT chat, days, start_min, end_min, enabled FROM absensi_schedules WHERE chat = ?`, chat,
 	).Scan(&s.Chat, &s.Days, &s.StartMin, &s.EndMin, &enabled)
-	if err == sql.ErrNoRows {
+	if isNoRowsError(err) {
 		return nil, nil
 	}
 	if err != nil {

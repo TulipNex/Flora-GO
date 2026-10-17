@@ -26,6 +26,15 @@ type MessageContext struct {
 	RawArgs string
 }
 
+// archiveOutgoingIfMain memusatkan guard "hanya bot utama" + pengiriman teks
+// keluar ke antrian arsip async, supaya tak diulang di setiap helper teks.
+// Arsip kini non-blocking di sisi store, jadi TIDAK perlu `go` di sini.
+func archiveOutgoingIfMain(mctx *MessageContext, msgID string, msg *waE2E.Message) {
+	if mctx != nil && IsMainClient(mctx.Client) {
+		ArchiveOutgoingMessage(mctx.Chat.String(), msgID, msg)
+	}
+}
+
 // ReplyText adalah helper supaya plugin tidak perlu menulis ulang boilerplate
 // SendMessage tiap kali membalas pesan teks biasa.
 func ReplyText(ctx context.Context, mctx *MessageContext, text string) error {
@@ -50,7 +59,7 @@ func ReplyText(ctx context.Context, mctx *MessageContext, text string) error {
 		TrackBotMessageID(resp.ID, text)
 		// Arsip keluar FIORA/CRM: async fire-and-forget supaya latensi
 		// reply nol; fail-soft di dalam bila DB arsip mati.
-		if IsMainClient(mctx.Client) { go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg) }
+		archiveOutgoingIfMain(mctx, string(resp.ID), outMsg)
 	}
 	return err
 }
@@ -74,7 +83,7 @@ func ReplyTextAgent(ctx context.Context, mctx *MessageContext, text string) erro
 		// Sama seperti ReplyText: catat ID agar reply ke bubble ini
 		// dikenali trigger AI.
 		TrackBotMessageID(resp.ID, text)
-		if IsMainClient(mctx.Client) { go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg) }
+		archiveOutgoingIfMain(mctx, string(resp.ID), outMsg)
 	}
 	return err
 }
@@ -109,7 +118,7 @@ func ReplyTextWithMentions(ctx context.Context, mctx *MessageContext, text strin
 	if err == nil {
 		LogOutgoing(mctx, "text-mention", text)
 		TrackBotMessageID(resp.ID, text)
-		if IsMainClient(mctx.Client) { go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg) }
+		archiveOutgoingIfMain(mctx, string(resp.ID), outMsg)
 	}
 	return err
 }
@@ -126,7 +135,7 @@ func SendTextAgent(ctx context.Context, mctx *MessageContext, text string) error
 	if err == nil {
 		LogOutgoingAgent(mctx, "text", text)
 		TrackBotMessageID(resp.ID, text)
-		if IsMainClient(mctx.Client) { go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg) }
+		archiveOutgoingIfMain(mctx, string(resp.ID), outMsg)
 	}
 	return err
 }
@@ -153,7 +162,7 @@ func SendTextWithMentions(ctx context.Context, mctx *MessageContext, text string
 	if err == nil {
 		LogOutgoing(mctx, "text-mention", text)
 		TrackBotMessageID(resp.ID, text)
-		if IsMainClient(mctx.Client) { go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg) }
+		archiveOutgoingIfMain(mctx, string(resp.ID), outMsg)
 	}
 	return err
 }
@@ -172,7 +181,7 @@ func SendText(ctx context.Context, mctx *MessageContext, text string) error {
 	if err == nil {
 		LogOutgoing(mctx, "text", text)
 		TrackBotMessageID(resp.ID, text)
-		if IsMainClient(mctx.Client) { go ArchiveOutgoingMessage(mctx.Chat.String(), string(resp.ID), outMsg) }
+		archiveOutgoingIfMain(mctx, string(resp.ID), outMsg)
 	}
 	return err
 }

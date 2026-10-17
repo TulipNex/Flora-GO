@@ -29,26 +29,12 @@ func InitAISettingsDB() error {
 		voice_reply       INTEGER NOT NULL DEFAULT 0
 	);
 	`
-	if _, err := aiDB.db.Exec(createSchema); err != nil {
-		return fmt.Errorf("gagal membuat schema ai_settings: %w", err)
-	}
-
-	// Langkah 2: migrasi ringan untuk deployment LAMA.
-	// (a) Kolom model_nexarouter / model_ciora / voice_reply belum ada di
-	// tabel yang dibuat sebelum provider ini ditambahkan — tambahkan bila
-	// belum ada. SQLite tidak punya "ADD COLUMN IF NOT EXISTS" bawaan, jadi
-	// errornya ditangani manual: kalau errornya "duplicate column", abaikan.
-	// (b) Baris yang masih memakai provider lama (google/openrouter) yang
-	// sudah dihapus dipindahkan ke ciora (provider utama) supaya bot tidak
-	// error "provider tidak dikenal" saat start berikutnya.
-	for _, alter := range []string{
+	if err := ensureSchema(aiDB.db, "ai.db", createSchema, []string{
 		`ALTER TABLE ai_settings ADD COLUMN model_nexarouter TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE ai_settings ADD COLUMN model_ciora TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE ai_settings ADD COLUMN voice_reply INTEGER NOT NULL DEFAULT 0`,
-	} {
-		if _, err := aiDB.db.Exec(alter); err != nil && !isDuplicateColumnError(err) {
-			return fmt.Errorf("gagal migrasi ai_settings (%s): %w", alter, err)
-		}
+	}); err != nil {
+		return err
 	}
 
 	if _, err := aiDB.db.Exec(`UPDATE ai_settings SET active_provider = 'ciora' WHERE active_provider IN ('google', 'openrouter')`); err != nil {
@@ -155,25 +141,6 @@ func InitAISettingsDB() error {
 	}
 
 	return nil
-}
-
-// isDuplicateColumnError mengecek apakah error dari ALTER TABLE ADD COLUMN
-// disebabkan kolom yang sudah ada (aman diabaikan), bukan error lain.
-func isDuplicateColumnError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return len(msg) > 0 && (contains(msg, "duplicate column") || contains(msg, "already exists"))
-}
-
-func contains(s, substr string) bool {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 // AISettings adalah snapshot pengaturan provider/model aktif saat ini.

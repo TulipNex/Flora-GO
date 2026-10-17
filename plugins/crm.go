@@ -11,6 +11,7 @@ import (
 
 	whatsmeow "github.com/polymorfa/hypermeow"
 	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/types"
 	"github.com/polymorfa/hypermeow/types/events"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -79,15 +80,9 @@ func ArchiveIncoming(client *whatsmeow.Client, evt *events.Message) {
 	if chat == "" {
 		return
 	}
-	go func() {
-		_ = store.CRM().SaveIncoming(
-			chat,
-			evt.Info.ID,
-			evt.Info.Sender.String(),
-			evt.Info.Timestamp.Unix(),
-			msg,
-		)
-	}()
+	// Async via antrian arsip terpusat (bukan goroutine per pesan; jalur
+	// panas tak pernah menunggu I/O SQLite).
+	store.ArchiveIncomingMessage(chat, evt.Info.ID, evt.Info.Sender.String(), evt.Info.Timestamp.Unix(), msg)
 }
 
 // crmRowidRe mengenali argumen "#123" (lookup via rowid SQLite).
@@ -152,7 +147,7 @@ func handleCRM(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	meta := fmt.Sprintf(
 		"*CRM %s*\nTipe: %s\nChat: %s\nPengirim: %s\nWaktu: %s\nID: %s\nUkuran: %d bytes\nIsi: %s",
-		src, tipe, shortJID(row.Chat), shortJID(row.Sender),
+		src, tipe, crmChatLabel(row.Chat), crmSenderName(ctx, mctx.Client, row.Sender),
 		formatCRMTime(row.TS), row.ID, len(row.Data),
 		truncateCRMLine(ringkasan, 150),
 	)
@@ -217,12 +212,12 @@ func handleLastChat(ctx context.Context, mctx *store.MessageContext) error {
 	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
 		rows[i], rows[j] = rows[j], rows[i]
 	}
+	// Resolve LID→PN di-cache per pengirim (bisa sampai 100 baris).
+	labels := make(map[string]string)
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "*LAST CHAT (%d pesan)*\n", len(rows))
 	for i, row := range rows {
-		sender := shortJID(row.Sender)
-		if row.Sender == "bot" {
-			sender = "Bot"
+		if i > 0 {
+			sb.WriteString("\n\n")
 		}
 		tipe, preview := "-", "-"
 		if decoded, derr := row.Message(); derr == nil {
@@ -230,28 +225,66 @@ func handleLastChat(ctx context.Context, mctx *store.MessageContext) error {
 		} else {
 			preview = "(gagal decode)"
 		}
-		fmt.Fprintf(&sb, "\n%02d. %s | %s\n%s • #%d\n%s",
-			i+1, formatCRMTime(row.TS), sender,
-			tipe, row.Rowid, truncateCRMLine(preview, 150))
+		fmt.Fprintf(&sb, "[%02d] #%d | %s\n%s • %s\n",
+			i+1, row.Rowid, formatCRMTime(row.TS),
+			crmSenderCached(ctx, mctx.Client, row.Sender, labels),
+			tipe)
+		sb.WriteString(crmItalicLine(truncateCRMLine(preview, 150)))
 	}
-	return store.ReplyText(ctx, mctx, strings.TrimRight(sb.String(), "\n"))
+	return store.ReplyText(ctx, mctx, sb.String())
 }
 
-// shortJID memendekkan "628xx@s.whatsapp.net" jadi "628xx" untuk tampilan
-// (LID ...@lid dibiarkan utuh supaya tidak dikira nomor HP).
-func shortJID(jid string) string {
-	if i := strings.Index(jid, "@s.whatsapp.net"); i >= 0 {
-		return jid[:i]
+// crmSenderName menampilkan identitas pengirim baris arsip: "Bot" untuk
+// keluaran bot, nomor HP bila JID-nya PN, atau LID yang di-resolve ke nomor
+// HP lewat pemetaan whatsmeow (store.DisplayID). LID yang belum diketahui
+// nomornya ditandai "/lid" supaya tidak disangka nomor HP.
+func crmSenderName(ctx context.Context, client *whatsmeow.Client, sender string) string {
+	if sender == "bot" {
+		return "Bot"
 	}
-	if strings.TrimSpace(jid) == "" {
+	jid, err := types.ParseJID(sender)
+	if err != nil || jid.IsEmpty() {
+		return sender
+	}
+	return store.DisplayID(ctx, client, jid)
+}
+
+// crmSenderCached sama seperti crmSenderName tapi menyinggahkan hasil per
+// pengirim (satu .lastchat bisa memuat sampai 100 baris dari orang yang sama).
+func crmSenderCached(ctx context.Context, client *whatsmeow.Client, sender string, cache map[string]string) string {
+	if v, ok := cache[sender]; ok {
+		return v
+	}
+	v := crmSenderName(ctx, client, sender)
+	cache[sender] = v
+	return v
+}
+
+// crmChatLabel memendekkan JID chat untuk metadata .crm: nomor HP dipangkas,
+// grup ("@g.us") dan bentuk lain dibiarkan utuh supaya konteksnya jelas.
+func crmChatLabel(chat string) string {
+	if i := strings.Index(chat, "@s.whatsapp.net"); i >= 0 {
+		return chat[:i]
+	}
+	if strings.TrimSpace(chat) == "" {
 		return "-"
 	}
-	return jid
+	return chat
+}
+
+// crmItalicLine membungkus preview dengan italic WhatsApp (_teks_). Bila isi
+// preview mengandung "_", italic dibatalkan (ditampilkan polos) supaya
+// penanda tidak mengacak format pesan.
+func crmItalicLine(s string) string {
+	if strings.Contains(s, "_") {
+		return s
+	}
+	return "_" + s + "_"
 }
 
 // formatCRMTime menulis epoch ke "HH:MM:SS" zona aktif bot (WIB/WITA/WIT
 // via env BOT_TIMEZONE, lihat internal/timex) — konsisten dengan jam
-// penjadwalan .call dan label zona lain di bot. Sebelumnya fungsi ini
+// penjadwalan .voicecall dan label zona lain di bot. Sebelumnya fungsi ini
 // mengunci Asia/Jakarta (WIB) sehingga arsip .lastchat/.crm/.insp
 // menyimpang saat bot diset WITA/WIT.
 func formatCRMTime(ts int64) string {

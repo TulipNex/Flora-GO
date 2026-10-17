@@ -28,9 +28,9 @@ import (
 	"wabot-go/internal/ai/tools/bridge"
 	_ "wabot-go/internal/ai/tools/native"
 
-	qrcode "github.com/skip2/go-qrcode"
 	whatsmeow "github.com/polymorfa/hypermeow"
 	"github.com/polymorfa/hypermeow/types"
+	qrcode "github.com/skip2/go-qrcode"
 	_ "modernc.org/sqlite"
 
 	"github.com/polymorfa/hypermeow/store/sqlstore"
@@ -177,6 +177,11 @@ func main() {
 	// berhenti saat main return (tak pernah, kecuali shutdown).
 	ai.StartSummarySweeper(context.Background())
 
+	// Muat sesi AI yang tersimpan di ai.db ke memori supaya penyapu di atas
+	// ikut menangani sesi yang terhenti saat bot restart (tanpa ini,
+	// barisnya menetap sampai kunci-nya diakses lagi).
+	ai.AdoptPersistedSessions(context.Background())
+
 	// Status warna log (diagnostik NO_COLOR/FORCE_COLOR — kondisi langsung
 	// terlihat di console, tak perlu menebak kenapa header polos).
 	fmt.Printf("warna log: %s\n", logfmt.ColorStatus())
@@ -229,6 +234,10 @@ func main() {
 	// 2b3. Pasang client untuk timer absensi (reminder H-5, tutup otomatis,
 	//     rekap) + ticker jadwal harian. Sama posisinya dengan di atas.
 	plugins.InitAbsensiScheduler(client)
+
+	// 2b4. Pasang client untuk backup database otomatis (ticker interval;
+	//     hasil dikirim ke DM owner). Sama posisinya dengan di atas.
+	plugins.InitBackupScheduler(client)
 
 	// ==========================================================
 	// 2c. Jaga nomor bot tampil "online" (bukan "terakhir dilihat").

@@ -42,7 +42,6 @@ Legenda: `•` = command publik, `◇` = helper/modul pendukung (bukan command),
 |---|---|---|
 | `downloader.go` (+ `downloader_ytdlp.go`, `downloader_send.go`) | `• .tiktok/.tt`, `• .youtube/.yt`, `• .youtubemp3/.ytmp3`, `• .instagram/.ig`, `• .twitter/.x/.tw`, `• .facebook/.fb`, `• .pinterest/.pin`, `• .spotify/.sp`, `• .autodownload` | Engine unduh multi-platform. `.tt` = tiktok (regression-tested). `_ytdlp` = jalur yt-dlp; `_send` = pengirim media (video/audio/gambar/webp) |
 | `spotify_search.go` | `◇` | Pencarian Spotify + pending pick (dipakai `downloader`, `shazam`, `lrclib`) |
-| `douyin.go` | `• .douyin` | |
 | `bk.go` | `• .bk` / `• .po` | Unduh video embed |
 | `insthumb.go` | `• .insthumb` | Thumbnail Instagram |
 | `flaticon.go` | `• .flaticon` | Cari ikon |
@@ -68,7 +67,7 @@ Legenda: `•` = command publik, `◇` = helper/modul pendukung (bukan command),
 | File | Isi | Catatan |
 |---|---|---|
 | `ai.go` (+ `ai_trust.go`, `ai_runtime.go`) | `• .agent` | Sesi AI (provider/model runtime di SQLite). `_trust` = subcommand trust; `_runtime` = mesin percakapan (HandleAIMessage, bubble, suara) |
-| `call.go` | `• .call` | Panggilan WhatsApp (jadwal) |
+| `call_voice.go` + `call_video.go` + `call_assets.go` | `• .voicecall` (alias `.call`), `• .videocall` (alias `.vcall`) | Panggilan suara/video WhatsApp (jadwal + aset `#keyword`) |
 | `docread.go` | `◇` | Ekstrak teks PDF/DOCX/XLSX/plain + ringkas untuk AI; `sanitizeFileName` dipakai PDF |
 
 ## Grup
@@ -108,6 +107,7 @@ Legenda: `•` = command publik, `◇` = helper/modul pendukung (bukan command),
 | `jadibot.go` | `⛭ .jadibot` |
 | `spr.go` (+ `spr_args.go`) | `⛭ .spr` — private reply grup per-target | `_args` = parsing argumen & helper target (dipakai sbpr juga) |
 | `sbpr.go` | `⛭ .sbpr`, `.sbprprofile` — batch private relay |
+| `backup.go` | `⛭ .backup` — backup database (ZIP/`.db`, jadwal otomatis); khusus DM owner |
 
 ## Info server
 
@@ -128,8 +128,7 @@ Legenda: `•` = command publik, `◇` = helper/modul pendukung (bukan command),
 | File | Isi |
 |---|---|
 | `dev_booktest.go` | `✓ .booktest` |
-| `dev_qtest.go` | `✓ .qtest` |
-| `dev_btntest.go` | `✓ .btntest` (Hidden) |
+| `dev_btntest.go` | `✓ .btntest` |
 
 ## Berkas uji (Go test)
 

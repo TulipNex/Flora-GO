@@ -2,7 +2,7 @@ package timex
 
 // File ini adalah SATU-SATUNYA sumber kebenaran waktu zona Indonesia di
 // repo (menggantikan 3 definisi WITA duplikat yang dulu tersebar di
-// plugins/call.go, bridge/reminder.go, native/finance.go — nilai sama,
+// plugins/call_voice.go, bridge/reminder.go, native/finance.go — nilai sama,
 // variabel terpisah, rawan menyimpang saat diubah satu).
 //
 // Zona dipilih lewat env BOT_TIMEZONE=WIB/WITA/WIT (default WITA bila

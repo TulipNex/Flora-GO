@@ -47,13 +47,12 @@ wabot-go/
 │   │   ├── linkcard.go            # kartu link preview + thumbnail mini inline + dukungan mention
 │   │   ├── mediathumb.go          # thumbnail inline mini (~1-3KB, agar preview tampil, bukan abu-abu)
 │   │   ├── videonorm.go           # validasi + normalisasi video (MP4/H.264/AAC, transcode bila perlu)
-│   │   ├── sendurl.go             # kirim hasil fetch URL (media/dokumen)
 │   │   └── album.go               # pengiriman album media (association + induk counts)
 │   ├── external/                  # adapter unduhan/API per platform (rantai fallback, tanpa yt-dlp)
 │   │   ├── external.go            # tipe ScrapeItem/ScrapeResult, HTTP client API + unduhan (cap 100MB)
 │   │   ├── universal.go / omnify.go # fallback universal 45+ platform + metadata
 │   │   ├── tiktok.go / instagram.go / twitter.go / facebook.go / pinterest.go
-│   │   ├── youtube.go / spotify.go / spotify_search.go / douyin.go
+│   │   ├── youtube.go / spotify.go / spotify_search.go
 │   │   ├── lrclib.go / shazam.go  # lirik + kenali lagu
 │   │   ├── flaticon.go / xpvid.go # ikon + video X
 │   │   ├── football.go / pihps.go # klasemen + harga pangan (het)
@@ -87,7 +86,7 @@ wabot-go/
 │   ├── menu.go / menucard.go      # .menu berkartu + .thumbnail/.favicon (aset kartu menu)
 │   ├── ping.go / owner.go / delete.go / tourl.go
 │   ├── downloader.go              # .tiktok/.youtube/.instagram/.twitter/.facebook/.pinterest/.spotify + album + WebP + batas ukuran/durasi
-│   ├── douyin.go / bk.go / insthumb.go / flaticon.go
+│   ├── bk.go / insthumb.go / flaticon.go
 │   ├── sticker.go / stickerwatermark.go / smeme.go / brat.go / tomedia.go / setpp.go / tts.go
 │   ├── lrclib.go / shazam.go / spotify_search.go / speedtest.go / het.go / klasemen.go / listgrup.go
 │   ├── absensi.go / crm.go / tictactoe.go / selfcmd.go / replyfmt.go / pending.go
@@ -95,9 +94,9 @@ wabot-go/
 │   ├── owneradmin.go / ownerexec.go / ownerget.go / ownerjoin.go / ownerrvo.go / jadibot.go
 │   ├── sbpr.go / spr.go           # batch & private reply (owner)
 │   ├── pdfmerge.go / pdflocal.go / docread.go
-│   ├── ai.go / call.go            # admin Flora + panggilan WA (jadwal)
+│   ├── ai.go / call_voice.go + call_video.go  # admin Flora + panggilan WA (jadwal)
 │   ├── serverinfo.go (+serverinfo_sys_linux.go/_other.go) / osinfo.go / rssinfo.go
-│   └── booktest.go / qtest.go / buttontest.go   # command uji (owner/hidden, bukan fitur publik)
+│   └── booktest.go / buttontest.go   # command uji (owner/hidden, bukan fitur publik)
 ├── data/                          # session WhatsApp & database SQLite (dibuat otomatis, JANGAN dihapus)
 ├── wabot-tmp/                     # temp kerja bot (dibuat otomatis, JANGAN dihapus, gitignored)
 ├── greeting.mp3                   # audio yang diputar saat panggilan (aset runtime, upload manual ke panel)
@@ -192,7 +191,7 @@ Source code hanya hidup di laptop. Panel hanya menerima **hasil compile** (binar
 
 1. Edit kode di laptop (folder project, disarankan lewat VS Code dengan terminal bawaan PowerShell).
 2. Stop bot lewat panel (web).
-3. Jalankan `.\scripts\deploy.ps1` — script ini menentukan **versi otomatis** dari file yang berubah sejak deploy terakhir (`version-bump.ps1`: file Go baru = minor, hapus command/tool atau naik Go = major, edit lain = patch, hanya README/data = tetap; snapshot di `.last-deploy-state`), menulisnya ke `VERSION`, menyuntik ke binary via ldflags, lalu build + `rclone copyto` binary ke root panel.
+3. Jalankan `.\scripts\deploy.ps1` — script ini menentukan **versi otomatis** (`version-bump.ps1`: format CalVer `v<bulan>.<tanggal>.<urut>` = tanggal deploy lokal + urutan deploy hari itu, hanya naik bila ada file kode/tooling berubah sejak deploy terakhir; README/data saja = tetap; snapshot di `.last-deploy-state`), menulisnya ke `VERSION`, menyuntik ke binary via ldflags, lalu build + `rclone copyto` binary ke root panel.
 4. Start bot lagi lewat panel (web).
 
 **Setup rclone (sekali saja):**
@@ -254,8 +253,8 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 | Command | Keterangan |
 |---|---|
 | `.tiktok` / `.tt`, `.youtube` / `.yt`, `.instagram` / `.ig`, `.twitter` / `.x`, `.facebook` / `.fb`, `.pinterest` / `.pin`, `.spotify` / `.sp` + `<url>` | Download via scraper API per platform (YouTube primer yt-dlp; lainnya scraper-first + fallback) |
-| `.douyin` / `.dy` + `<url/judul>` | Download TikTok gaya Baileys: foto satu-per-satu, video + caption, audio mp3 |
 | `.bk` `<link> [d]` | Download video embed |
+| `.gitclone` / `.gh` + `<owner/repo[@branch]>` | Download repo GitHub publik sebagai ZIP (maks 100MB) |
 | `.youtubemp3` / `.ytmp3`, `.youtube --mp3` | Audio saja |
 | `.shazam` + reply VN/audio | Kenali lagu |
 | `.lrclib` / `.lrc`, `.lrclibs` / `.lrcs` + `<judul>` | Cari lirik plain / synced |
@@ -304,6 +303,7 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 |---|---|
 | `.het` | Harga pangan Sultra 7 hari |
 | `.klasemen` / `.liga [liga]` | Klasemen liga top Eropa |
+| `.jadwal [liga]` / `.hasil [liga]` | Jadwal pekan berjalan + hasil pekan selesai (onefootball) |
 | `.flaticon <id/link>` | Link CDN ikon |
 
 ### Dokumen
@@ -317,13 +317,17 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 |---|---|
 | `.server` / `.si`, `.os`, `.rss` | Info server, OS + jaringan, memori proses |
 | `.jadibot qr/list/stop/start/hapus` | Kelola bot clone via scan QR (stop=start ulang tanpa QR, hapus=total + arsip grup) |
-| `.call <target>[\|<jam>]` | Panggilan WhatsApp keluar / terjadwal (zona aktif bot, tersimpan di SQLite) |
+| `.voicecall <target>[\|<jam>] [#kw]` (alias `.call`) | Panggilan suara WhatsApp keluar / terjadwal (zona aktif bot, tersimpan di SQLite) |
+| `.voicecall save\|del\|list` · `.voicecall jadwal` · `.voicecall cancel <id>` | Kelola aset suara (`#keyword`) & jadwal panggilan |
+| `.videocall <target> [#kw]` (alias `.vcall`) | Video call WhatsApp keluar (sumber: reply video atau aset `#keyword`) |
+| `.videocall save\|del\|list` | Kelola aset video (`#keyword`) |
 | `.ban` / `.unban` / `.bangroup` / `.unbangroup` / `.banlist` / `.bangrouplist` | Ban user & grup |
 | `.mode` / `.join` / `.leave` | Mode self/public, keluar-masuk grup via link |
 | `.sbpr @a <pesan>` | Batch private relay 1 ID (mis. `.sbpr @a Halo {nama}! \| sapa`) |
 | `.spr @target <pesan> [\| decoy]` | Kirim private reply grup per-target |
 | `.thumbnail` / `.favicon <link>/reset` | Set aset kartu `.menu` |
 | `.lastchat` / `.crm` / `.insp` / `.run` | Arsip pesan (cek metadata/JSON, kirim ulang) |
+| `.backup [list\|get <nama>\|jadwal <interval\|off>]` | Backup database (ZIP semua DB / satu `.db` / jadwal otomatis) — hanya via DM owner |
 | `.listgrup` | Daftar grup bot + JID (untuk flag `-g`) |
 | `$ <perintah>` | Eksekusi shell di server (async, timeout 120 dtk, output dipotong) |
 | `\ <kode js>` | Eval JavaScript di dalam bot (async, timeout 30 dtk) |

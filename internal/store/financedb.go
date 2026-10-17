@@ -39,13 +39,9 @@ var financeDB *FinanceDB
 // InitFinanceDB membuka (atau membuat) data/finance.db beserta tabel +
 // indeks. Dipanggil sekali di main.go (setelah InitGroupDB).
 func InitFinanceDB(path string) error {
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)", path)
-	db, err := sql.Open("sqlite", dsn)
+	db, err := openSQLite(path)
 	if err != nil {
 		return fmt.Errorf("gagal membuka finance.db: %w", err)
-	}
-	if err := db.Ping(); err != nil {
-		return fmt.Errorf("gagal ping finance.db: %w", err)
 	}
 	schema := `
 	CREATE TABLE IF NOT EXISTS keuangan (
@@ -62,8 +58,8 @@ func InitFinanceDB(path string) error {
 	CREATE INDEX IF NOT EXISTS idx_keuangan_owner_tanggal ON keuangan(owner, tanggal);
 	CREATE INDEX IF NOT EXISTS idx_keuangan_owner_sumber ON keuangan(owner, sumber);
 	`
-	if _, err := db.Exec(schema); err != nil {
-		return fmt.Errorf("gagal siapkan skema finance.db: %w", err)
+	if err := applySchema(db, "finance.db", schema, nil, financeSchemaVersion); err != nil {
+		return err
 	}
 	financeDB = &FinanceDB{db: db}
 	return nil
@@ -278,7 +274,7 @@ func (f *FinanceDB) GetKeuangan(ctx context.Context, owner, id string) (*Finance
 		SELECT id, transaksi, masuk, keluar, sumber, tanggal, client_req_id, created_at
 		FROM keuangan WHERE owner = ? AND id = ?
 	`, owner, id).Scan(&r.ID, &r.Transaksi, &masuk, &keluar, &r.Sumber, &r.Tanggal, &reqID, &r.CreatedAt)
-	if err == sql.ErrNoRows {
+	if isNoRowsError(err) {
 		return nil, nil
 	}
 	if err != nil {

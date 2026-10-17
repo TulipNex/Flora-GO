@@ -25,13 +25,9 @@ var aiDB *AIDB
 // dibutuhkan. Dipanggil sekali di main.go sebelum client.Connect(),
 // sejajar dengan InitGroupDB.
 func InitAIDB(path string) error {
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)", path)
-	db, err := sql.Open("sqlite", dsn)
+	db, err := openSQLite(path)
 	if err != nil {
 		return fmt.Errorf("gagal membuka ai.db: %w", err)
-	}
-	if err := db.Ping(); err != nil {
-		return fmt.Errorf("gagal ping ai.db: %w", err)
 	}
 
 	schema := `
@@ -44,8 +40,8 @@ func InitAIDB(path string) error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_ai_history_session ON ai_history(session_key, id);
 	`
-	if _, err := db.Exec(schema); err != nil {
-		return fmt.Errorf("gagal membuat schema ai.db: %w", err)
+	if err := applySchema(db, "ai.db", schema, nil, aiSchemaVersion); err != nil {
+		return err
 	}
 
 	aiDB = &AIDB{db: db}
@@ -62,11 +58,31 @@ func AI() *AIDB {
 	return aiDB
 }
 
-// AppendHistory menambahkan satu giliran percakapan ke histori sebuah sesi.
+// aiHistoryMaxPerSession adalah batas baris ai_history per kunci sesi.
+//
+// Ini jaring pengaman untuk dua kasus yang tak tertutup pembersihan idle
+// normal: (a) provider AI mati/belum diset sehingga ringkasan sesi selalu
+// GAGAL (riwayat sengaja dipertahankan), dan (b) bot restart saat sesi masih
+// berjalan sehingga baris lamanya tak tersentuh penyapu. Nilai 100 jauh di
+// atas historyLoadLimit (20) dan summaryBackstopTurns (40) supaya konteks
+// yang benar-benar dipakai tak pernah ikut terpangkas.
+const aiHistoryMaxPerSession = 100
+
+// AppendHistory menambahkan satu giliran percakapan ke histori sebuah sesi,
+// lalu memangkasnya ke aiHistoryMaxPerSession baris terbaru.
 func (a *AIDB) AppendHistory(ctx context.Context, sessionKey, role, content string) error {
-	_, err := a.db.ExecContext(ctx, `
+	if _, err := a.db.ExecContext(ctx, `
 		INSERT INTO ai_history (session_key, role, content) VALUES (?, ?, ?)
-	`, sessionKey, role, content)
+	`, sessionKey, role, content); err != nil {
+		return err
+	}
+	// FIFO per kunci (indeks idx_ai_history_session menopangnya).
+	_, err := a.db.ExecContext(ctx, `
+		DELETE FROM ai_history
+		WHERE session_key = ? AND id NOT IN (
+			SELECT id FROM ai_history WHERE session_key = ? ORDER BY id DESC LIMIT ?
+		)
+	`, sessionKey, sessionKey, aiHistoryMaxPerSession)
 	return err
 }
 
@@ -116,6 +132,28 @@ func (a *AIDB) LoadHistory(ctx context.Context, sessionKey string, limit int) ([
 func (a *AIDB) ClearHistory(ctx context.Context, sessionKey string) error {
 	_, err := a.db.ExecContext(ctx, `DELETE FROM ai_history WHERE session_key = ?`, sessionKey)
 	return err
+}
+
+// ListHistorySessionKeys mengembalikan semua kunci sesi yang masih punya
+// baris di ai_history. Dipakai saat startup (AdoptPersistedSessions) supaya
+// sesi yang tersimpan ikut diproses penyapu idle — tanpa ini, baris milik
+// sesi yang tak lagi diakses setelah bot restart akan menetap selamanya.
+func (a *AIDB) ListHistorySessionKeys(ctx context.Context) ([]string, error) {
+	rows, err := a.db.QueryContext(ctx, `SELECT DISTINCT session_key FROM ai_history ORDER BY session_key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		out = append(out, key)
+	}
+	return out, rows.Err()
 }
 
 // Close menutup koneksi database, dipanggil saat bot shutdown (opsional).

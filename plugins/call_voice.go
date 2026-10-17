@@ -42,6 +42,12 @@ func InitCallClient(wa *whatsmeow.Client) {
 	callClient.OnIncomingCall(func(call *meowcaller.Call) {
 		logfmt.Call("Panggilan masuk dari %s\n", call.Peer().String())
 
+		// Video: daftarkan call + pasang sisi terima (perekam bila sudah
+		// video sejak awal, auto-accept upgrade mid-call peer). Lihat
+		// attachVideoReception di call_video.go.
+		entry := trackVideoCall(call, normPhoneDigits(call.Peer().String()))
+		attachVideoReception(entry)
+
 		if err := call.Answer(); err != nil {
 			logfmt.Error("Gagal menjawab panggilan: %v\n", err)
 			return
@@ -55,20 +61,26 @@ func InitCallClient(wa *whatsmeow.Client) {
 
 		call.OnEnd(func(reason string) {
 			logfmt.Call("Panggilan berakhir: %s\n", reason)
+			releaseVideoCall(call.ID())
 		})
 	})
 }
 
-// RegisterCall mendaftarkan command ".call" KHUSUS OWNER untuk melakukan
-// panggilan WhatsApp. Target bisa mention (@user), reply pesan target, atau
-// nomor langsung (bebas format: 628xxx, 0822..., +62 822-1111-2222).
-// Bentuk ".call <target>|<jam>" (mis. "12.50", zona waktu bot) menjadwalkan panggilan
-// pada jam tersebut hari ini (atau besok kalau jam itu sudah lewat).
+// RegisterCall mendaftarkan command ".voicecall" (alias ".call") KHUSUS
+// OWNER untuk melakukan panggilan suara WhatsApp. Target bisa mention
+// (@user), reply pesan target, atau nomor langsung (bebas format: 628xxx,
+// 0822..., +62 822-1111-2222).
+// Bentuk ".voicecall <target>|<jam>" (mis. "12.50", zona waktu bot)
+// menjadwalkan panggilan pada jam tersebut hari ini (atau besok kalau jam
+// itu sudah lewat).
+// Aset suara tersimpan bisa dipanggil dengan "#keyword": ".voicecall @user
+// #intro" (kelola via ".voicecall save|del|list").
 // Jadwal disimpan in-memory saja — hilang kalau bot restart.
 func RegisterCall(r *Registry) {
 	r.Register(Command{
-		Name:        "call",
-		Description: "Panggil WhatsApp (owner). .call @user / 628xxx (+|jam jadwal, +list, +cancel <id>)",
+		Name:        "voicecall",
+		Aliases:     []string{"call"},
+		Description: "Panggil suara WhatsApp (owner). .voicecall @user / 628xxx (+|<jam> jadwal, +<save|del|list> <kw>)",
 		Category:    CategoryOwner,
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			if msg := requireOwner(mctx); msg != "" {
@@ -78,15 +90,22 @@ func RegisterCall(r *Registry) {
 				return store.ReplyText(ctx, mctx, "Fitur call belum aktif.")
 			}
 
-			// Subcommand manajemen jadwal: ".call list" dan ".call cancel
-			// <id>" dicek SEBELUM resolve target supaya kata-katanya tidak
-			// dianggap nomor telepon.
+			// Subcommand manajemen jadwal: ".voicecall jadwal" dan
+			// ".voicecall cancel <id>" dicek SEBELUM resolve target supaya
+			// kata-katanya tidak dianggap nomor telepon. ".voicecall list"
+			// = daftar ASET suara (lihat call_assets.go).
 			if len(mctx.Args) > 0 {
 				switch strings.ToLower(strings.TrimSpace(mctx.Args[0])) {
-				case "list":
+				case "jadwal":
 					return handleCallList(ctx, mctx)
 				case "cancel":
 					return handleCallCancel(ctx, mctx)
+				case "save":
+					return handleVoiceAssetSave(ctx, mctx)
+				case "del":
+					return handleCallAssetDel(ctx, mctx, callAssetAudio, "voicecall")
+				case "list":
+					return handleCallAssetList(ctx, mctx, callAssetAudio, "voicecall")
 				}
 			}
 
@@ -96,17 +115,32 @@ func RegisterCall(r *Registry) {
 			if raw == "" && len(mctx.Args) > 0 {
 				raw = strings.Join(mctx.Args, " ")
 			}
+			// Penanda aset "#keyword" diambil dulu supaya tidak ikut
+			// dianggap bagian nomor telepon.
+			raw, keyword := splitAssetKeyword(raw)
 			parts := strings.SplitN(raw, "|", 2)
 			targetText := strings.TrimSpace(parts[0])
 
+			// Tanpa target apa pun (bukan mention/reply/nomor) -> bantuan,
+			// bukan pesan "format salah" yang terkesan error.
+			if noCallTarget(mctx, targetText) {
+				return store.ReplyText(ctx, mctx, voiceCallHelp())
+			}
+
 			target, err := resolveCallTarget(ctx, mctx, targetText)
 			if err != nil {
-				return store.ReplyText(ctx, mctx, fmt.Sprintf("Format salah: %v. Contoh: .call @user, .call 628123456789, .call +62 822-1111-2222", err))
+				return store.ReplyText(ctx, mctx, ErrMsg("Voice Call", err.Error()))
 			}
 
 			// Tidak ada "|" -> panggil langsung dengan progres satu bubble
 			if len(parts) == 1 {
-				return doCall(ctx, mctx, target)
+				return doCall(ctx, mctx, target, keyword)
+			}
+
+			// Aset suara belum didukung untuk panggilan terjadwal (fase 2:
+			// butuh kolom di tabel scheduled_calls).
+			if keyword != "" {
+				return store.ReplyText(ctx, mctx, ErrMsg("Voice Call", "Aset #keyword belum didukung untuk panggilan terjadwal — panggil langsung tanpa |jam."))
 			}
 
 			// Ada "|<jam>" -> jadwalkan PERSISTEN (tahan restart, lihat
@@ -114,7 +148,7 @@ func RegisterCall(r *Registry) {
 			// chat ini saat waktunya tiba.
 			at, err := ParseJam(strings.TrimSpace(parts[1]))
 			if err != nil {
-				return store.ReplyText(ctx, mctx, fmt.Sprintf("Format jam salah (%v). Contoh: .call 628123456789|12.50", err))
+				return store.ReplyText(ctx, mctx, ErrMsg("Voice Call", fmt.Sprintf("Format jam salah: %v. Contoh: .voicecall 628123456789|12.50", err)))
 			}
 			if _, err := ScheduleCall(mctx.Chat, target, at); err != nil {
 				return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal menyimpan jadwal: %v", err))
@@ -128,13 +162,49 @@ func RegisterCall(r *Registry) {
 	})
 }
 
+// noCallTarget true bila tidak ada target yang bisa dipakai sama sekali:
+// teks kosong, tanpa mention, dan bukan reply. Dipakai menampilkan blok
+// bantuan (bukan error) saat command dipanggil tanpa argumen.
+func noCallTarget(mctx *store.MessageContext, targetText string) bool {
+	return strings.TrimSpace(targetText) == "" &&
+		len(mctx.MentionedJIDs()) == 0 &&
+		mctx.QuotedParticipant() == ""
+}
+
+// voiceCallHelp adalah blok bantuan command .voicecall.
+func voiceCallHelp() string {
+	return "*Voice Call*\n\n" +
+		"`Call`\n" +
+		"Format : .voicecall <target> <asset>\n\n" +
+		"```Target : @user • number • reply\n" +
+		"Asset : #keyword • reply```\n\n" +
+		"`Jadwal`\n" +
+		"Format : .voicecall <target>|<waktu>\n\n" +
+		"```Waktu : HH.MM```\n\n" +
+		"`Asset`\n" +
+		"Format : .voicecall <action> [keyword]\n\n" +
+		"```Action : save • del • list\n" +
+		"Keyword : random word```"
+}
+
 // resolveCallTarget menentukan nomor HP tujuan panggilan. Prioritas:
-// mention langsung, lalu reply pesan target, terakhir teks nomor mentah.
+// mention langsung, lalu nomor yang DIKETIK, baru reply pesan target.
 // Mengembalikan nomor bersih (digit + kode negara, mis. "62822...").
+//
+// Nomor ketikan sengaja menang atas quoted participant: pada .videocall
+// pengguna hampir selalu reply sebuah video (sumber gambar) sambil mengetik
+// nomor tujuan — penulis video itu (sering bot sendiri) tidak boleh menimpa
+// target, karena dulu memicu false "tidak bisa menelepon diri sendiri".
+// Reply-pesan-tanpa-nomor (mis. .voicecall) tetap menelpon penulisnya.
 func resolveCallTarget(ctx context.Context, mctx *store.MessageContext, targetText string) (string, error) {
 	if mentioned := mctx.MentionedJIDs(); len(mentioned) > 0 {
 		if jid, err := types.ParseJID(mentioned[0]); err == nil {
 			return ResolveCallPhone(ctx, mctx, jid)
+		}
+	}
+	if targetText != "" {
+		if jid, err := ParsePhoneToJID(targetText); err == nil {
+			return jid.User, nil
 		}
 	}
 	if quoted := mctx.QuotedParticipant(); quoted != "" {
@@ -154,7 +224,7 @@ func resolveCallTarget(ctx context.Context, mctx *store.MessageContext, targetTe
 
 // ResolveCallPhone mengubah JID target (hasil mention/reply, bisa PN maupun
 // LID) menjadi nomor HP yang bisa dihubungi meowcaller. Dipakai command
-// .call DAN tool AI make_call supaya aturannya identik: PN langsung dipakai,
+// .voicecall DAN tool AI make_call supaya aturannya identik: PN langsung dipakai,
 // LID di-resolve dulu via participant grup, lalu via pemetaan LID↔PN
 // whatsmeow. Gagal resolve = error jelas, bukan nomor ngawur yang ditelpon.
 func ResolveCallPhone(ctx context.Context, mctx *store.MessageContext, target types.JID) (string, error) {
@@ -197,7 +267,10 @@ func normPhoneDigits(s string) string {
 }
 
 // IsBotPhoneTarget true bila nomor target adalah nomor bot sendiri (nomor
-// login di Store.ID). Dipakai menolak telepon-diri-sendiri yang sia-sia.
+// login di Store.ID, ATAU LID bot di Store.LID) — memakai identitas ganda
+// seperti store.IsBotJID supaya akun LID-based ikut terdeteksi (false-negative
+// lebih baik ditangkap), dan mencatat log alasan penolakan supaya kasus
+// "kenapa ditolak" gampang didiagnosis.
 // Fail-open bila identitas bot belum diketahui (belum login): loloskan +
 // catat, jangan blokir buta.
 func IsBotPhoneTarget(client *whatsmeow.Client, phone string) bool {
@@ -208,19 +281,29 @@ func IsBotPhoneTarget(client *whatsmeow.Client, phone string) bool {
 	if client == nil || client.Store == nil {
 		return false
 	}
-	id := client.Store.ID
-	if id == nil {
-		logfmt.Warn("IsBotPhoneTarget: Store.ID nil, lewatkan cek nomor bot.\n")
+	var botPN, botLID string
+	if id := client.Store.ID; id != nil {
+		botPN = normPhoneDigits(id.ToNonAD().User)
+	}
+	if lid := client.Store.LID; !lid.IsEmpty() {
+		botLID = normPhoneDigits(lid.ToNonAD().User)
+	}
+	if botPN == "" && botLID == "" {
+		logfmt.Warn("IsBotPhoneTarget: identitas bot belum diketahui, lewatkan cek nomor bot.\n")
 		return false
 	}
-	return normPhoneDigits(id.ToNonAD().User) == want
+	if want == botPN || (botLID != "" && want == botLID) {
+		logfmt.Warn("IsBotPhoneTarget: MENOLAK %s — sama dengan identitas bot (PN=%s LID=%s).\n", want, botPN, botLID)
+		return true
+	}
+	return false
 }
 
 // ParseJam mem-parsing format "HH.MM" (mis. "12.50") menjadi waktu absolut
 // dalam zona aktif timex (WIB/WITA/WIT via env BOT_TIMEZONE). Kalau jam itu
 // sudah lewat hari ini, dijadwalkan untuk besok.
 // Di-export supaya tool AI make_call memakai aturan jadwal yang SAMA PERSIS
-// dengan command .call (tidak ada duplikasi parsing jam).
+// dengan command .voicecall (tidak ada duplikasi parsing jam).
 // (Dahulu bernama ParseJamWITA — nama lama menyesatkan karena zona tidak
 // lagi terpaku WITA.)
 func ParseJam(jamStr string) (time.Time, error) {
@@ -260,6 +343,9 @@ type callProgress struct {
 	phone      string
 	acceptedAt time.Time
 	ended      bool
+	// audioKeyword adalah aset suara "#keyword" yang diputar menggantikan
+	// greeting.mp3 saat target mengangkat. Kosong = greeting.
+	audioKeyword string
 	// endKind adalah klasifikasi akhir panggilan (audit eskalasi-ditolak):
 	// diisi di onEnd supaya pemanggil yang menunggu (CallAndWait) bisa
 	// membedakan "ditolak" (user merespons → berhenti) dari "tak terjawab".
@@ -305,7 +391,8 @@ func (p *callProgress) onRinging() {
 	}
 }
 
-// onAccept dipanggil saat target MENGANGKAT: catat waktu, kabari, putar greeting.
+// onAccept dipanggil saat target MENGANGKAT: catat waktu, kabari, putar aset
+// suara (#keyword) bila ada, kalau tidak greeting.mp3.
 func (p *callProgress) onAccept(call *meowcaller.Call) {
 	p.mu.Lock()
 	if p.ended {
@@ -314,10 +401,19 @@ func (p *callProgress) onAccept(call *meowcaller.Call) {
 	}
 	p.acceptedAt = time.Now()
 	phone := p.phone
+	keyword := p.audioKeyword
 	p.mu.Unlock()
 
 	logfmt.Call("Panggilan ke %s diterima\n", phone)
 	p.edit(context.Background(), "Terhubung dengan "+phone+"...")
+	if keyword != "" {
+		if src, err := openVoiceAsset(keyword); err != nil {
+			logfmt.Warn("Gagal buka aset suara #%s: %v (fallback greeting)\n", keyword, err)
+		} else {
+			call.Play(src)
+			return
+		}
+	}
 	if mp3, err := meowcaller.MP3File("greeting.mp3"); err != nil {
 		logfmt.Error("Gagal membuka/decode greeting.mp3: %v\n", err)
 	} else {
@@ -385,15 +481,22 @@ func classifyCallEnd(reason string) string {
 // CallWithProgress melakukan panggilan WhatsApp keluar ke nomor HP target
 // dan melaporkan SELURUH progresnya (memanggil → berdering → terhubung →
 // berakhir + durasi / ditolak / tidak dijawab) dalam SATU bubble di chat
-// yang diedit tiap status berubah. Dipakai command .call, jadwal tersimpan,
-// DAN tool AI make_call — satu implementasi, tiga pintu masuk.
+// yang diedit tiap status berubah. Dipakai command .voicecall, jadwal tersimpan,
+// DAN tool AI make_call — satu implementasi, tiga pintu masuk (aset suara
+// kosong).
 func CallWithProgress(ctx context.Context, client *whatsmeow.Client, chat types.JID, target string) error {
+	return CallWithProgressAsset(ctx, client, chat, target, "")
+}
+
+// CallWithProgressAsset sama seperti CallWithProgress tapi dengan aset suara
+// opsional (#keyword) yang menggantikan greeting.mp3 saat target mengangkat.
+func CallWithProgressAsset(ctx context.Context, client *whatsmeow.Client, chat types.JID, target, keyword string) error {
 	if callClient == nil {
 		return fmt.Errorf("fitur call belum aktif")
 	}
 	// Audit telepon-diri: menolak menelepon nomor bot sendiri (sia-sia).
 	if IsBotPhoneTarget(client, target) {
-		return fmt.Errorf("tidak bisa menelepon nomor bot sendiri")
+		return fmt.Errorf("nomor %s adalah nomor bot sendiri", target)
 	}
 	resp, err := client.SendMessage(ctx, chat, &waE2E.Message{
 		ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String("Memanggil " + target + "...")},
@@ -401,7 +504,7 @@ func CallWithProgress(ctx context.Context, client *whatsmeow.Client, chat types.
 	if err != nil {
 		return fmt.Errorf("gagal kirim bubble progres: %w", err)
 	}
-	p := &callProgress{client: client, chat: chat, msgID: resp.ID, phone: target}
+	p := &callProgress{client: client, chat: chat, msgID: resp.ID, phone: target, audioKeyword: keyword}
 
 	call, err := callClient.Call(ctx, target)
 	if err != nil {
@@ -502,20 +605,20 @@ func CallAndWait(ctx context.Context, client *whatsmeow.Client, chat types.JID, 
 	return answered, kind, nil
 }
 
-// doCall adalah pembungkus CallWithProgress untuk command .call.
-func doCall(ctx context.Context, mctx *store.MessageContext, target string) error {
-	return CallWithProgress(ctx, mctx.Client, mctx.Chat, target)
+// doCall adalah pembungkus CallWithProgress untuk command .voicecall.
+func doCall(ctx context.Context, mctx *store.MessageContext, target, keyword string) error {
+	return CallWithProgressAsset(ctx, mctx.Client, mctx.Chat, target, keyword)
 }
 
-// handleCallList menangani ".call list": semua jadwal pending di semua chat,
-// terurut waktu terdekat, masing-masing dengan ID untuk .call cancel.
+// handleCallList menangani ".voicecall jadwal": semua jadwal pending di semua
+// chat, terurut waktu terdekat, masing-masing dengan ID untuk .voicecall cancel.
 func handleCallList(ctx context.Context, mctx *store.MessageContext) error {
 	pending, err := store.Groups().ListPendingCalls(ctx)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca jadwal: %v", err))
 	}
 	if len(pending) == 0 {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Tidak ada jadwal panggilan. Buat via `.call <target>|<jam>` (%s).", timex.Name()))
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Tidak ada jadwal panggilan. Buat via `.voicecall <target>|<jam>` (%s).", timex.Name()))
 	}
 	var sb strings.Builder
 	sb.WriteString("Jadwal panggilan:\n")
@@ -532,20 +635,20 @@ func handleCallList(ctx context.Context, mctx *store.MessageContext) error {
 		fmt.Fprintf(&sb, "#%d: %s @ %s (%s lagi) [%s]\n",
 			c.ID, c.TargetPhone, at.Format("02 Jan 15:04"), left, chat)
 	}
-	sb.WriteString("Batalkan via `.call cancel <id>`.")
+	sb.WriteString("Batalkan via `.voicecall cancel <id>`.")
 	return store.ReplyText(ctx, mctx, sb.String())
 }
 
-// handleCallCancel menangani ".call cancel <id>": jadwal pending jadi
+// handleCallCancel menangani ".voicecall cancel <id>": jadwal pending jadi
 // cancelled — timer yang sudah terpasang tidak akan menelpon karena
 // armScheduledCall mengecek status saat menyala.
 func handleCallCancel(ctx context.Context, mctx *store.MessageContext) error {
 	if len(mctx.Args) < 2 {
-		return store.ReplyText(ctx, mctx, "Sertakan ID jadwal. Contoh: .call cancel 3 (lihat ID via `.call list`).")
+		return store.ReplyText(ctx, mctx, "Sertakan ID jadwal. Contoh: .voicecall cancel 3 (lihat ID via `.voicecall jadwal`).")
 	}
 	id, err := strconv.ParseInt(strings.TrimSpace(mctx.Args[1]), 10, 64)
 	if err != nil || id <= 0 {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("ID tidak valid: %q. Lihat ID via `.call list`.", mctx.Args[1]))
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("ID tidak valid: %q. Lihat ID via `.voicecall jadwal`.", mctx.Args[1]))
 	}
 	removed, err := store.Groups().CancelScheduledCall(ctx, id)
 	if err != nil {
@@ -563,7 +666,7 @@ func handleCallCancel(ctx context.Context, mctx *store.MessageContext) error {
 // Menolak jadwal ke nomor bot sendiri (audit telepon-diri).
 func ScheduleCall(chat types.JID, phone string, at time.Time) (int64, error) {
 	if waClientForCalls != nil && IsBotPhoneTarget(waClientForCalls, phone) {
-		return 0, fmt.Errorf("tidak bisa menelepon nomor bot sendiri")
+		return 0, fmt.Errorf("nomor %s adalah nomor bot sendiri", phone)
 	}
 	ctx := context.Background()
 	id, err := store.Groups().AddScheduledCall(ctx, phone, chat.String(), at.Unix())
@@ -576,7 +679,7 @@ func ScheduleCall(chat types.JID, phone string, at time.Time) (int64, error) {
 
 // armScheduledCall memasang timer in-memory untuk satu jadwal. Saat timer
 // menyala, status dibaca ULANG dari DB — jadwal yang keburu di-cancel
-// (.call cancel) dilewati diam-diam (timer tak bisa ditarik mundur, tapi
+// (.voicecall cancel) dilewati diam-diam (timer tak bisa ditarik mundur, tapi
 // panggilan tidak jalan). Status ditulis "done" SEBELUM eksekusi (lihat
 // MarkCallStatus) supaya jadwal yang sama tidak pernah jalan dobel.
 func armScheduledCall(id int64, chat types.JID, phone string, delay time.Duration) {

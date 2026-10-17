@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 )
 
@@ -165,4 +166,44 @@ func (s *SessionStore) Reset(key string) {
 	delete(s.sessions, key)
 	_ = store.AI().ClearHistory(context.Background(), key)
 	_ = store.AI().ClearSessionSummaries(context.Background(), key)
+}
+
+// AdoptPersistedSessions memuat kunci sesi yang masih tersimpan di SQLite
+// ke cache in-memory saat startup. Penyapu idle (sweepIdleSessions) HANYA
+// memeriksa sesi yang ada di memori, jadi tanpa adopsi ini sesi yang aktif
+// tepat sebelum bot restart tidak pernah diringkas/dibersihkan kecuali
+// orangnya chat lagi ke kunci yang sama — barisnya menetap selamanya.
+//
+// Setelah dimuat, penyapu yang sudah berjalan menangani sisanya (ringkas →
+// bersih) persis seperti sesi normal. Hidrasi memakai hydrateFromDB yang
+// mengambil lastActiveAt dari baris terakhir, sehingga sesi yang sudah lewat
+// IdleTimeout langsung diringkas pada tick berikutnya.
+func AdoptPersistedSessions(ctx context.Context) {
+	keys, err := store.AI().ListHistorySessionKeys(ctx)
+	if err != nil {
+		logfmt.Warn("gagal memuat kunci sesi AI tersimpan: %v\n", err)
+		return
+	}
+	if len(keys) == 0 {
+		return
+	}
+
+	s := GlobalSession
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	adopted := 0
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if _, ok := s.sessions[key]; ok {
+			continue
+		}
+		s.sessions[key] = s.hydrateFromDB(key)
+		adopted++
+	}
+	if adopted > 0 {
+		logfmt.Info("adopsi %d sesi AI tersimpan untuk penyapuan idle.\n", adopted)
+	}
 }

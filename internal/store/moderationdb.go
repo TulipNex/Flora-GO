@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"strings"
 )
 
 // File ini berisi penyimpanan moderasi grup: saklar antilink per grup dan
@@ -258,29 +257,4 @@ func (g *GroupDB) SetInviteCode(ctx context.Context, chatJID, code string) error
 		return nil
 	}
 	return err
-}
-
-// isNoSuchColumnError mengecek error "no such column" (database lama yang
-// migrasinya belum jalan / gagal sebagian) — pemanggil menganggap fitur
-// mati, bukan error fatal.
-func isNoSuchColumnError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "no such column")
-}
-
-// isNoRowsError mengecek error "no rows in result set" dari database/sql
-// tanpa import errors — pola yang sama dipakai di ownerdb.go.
-func isNoRowsError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	for i := 0; i+len("no rows") <= len(msg); i++ {
-		if msg[i:i+len("no rows")] == "no rows" {
-			return true
-		}
-	}
-	return false
 }

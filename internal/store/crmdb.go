@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/polymorfa/hypermeow/proto/waE2E"
@@ -20,8 +21,13 @@ import (
 // Batasan sadar: tabel messages SAJA (tanpa tabel nodes mentah WS —
 // whatsmeow tidak mengekspos node mentah ke handler, jadi tidak ada yang
 // bisa disimpan), retensi 200 baris GLOBAL terbaru (keputusan owner),
-// dan kiriman media langsung bot tidak ikut terarsip (hanya 4 helper teks
-// terpusat yang memanggil ArchiveOutgoingMessage).
+// dan kiriman media langsung bot tidak ikut terarsip (hanya helper teks
+// terpusat yang menulis lewat antrian arsip async).
+//
+// Penulisan dipusatkan: pesan masuk & keluar sama-sama masuk SATU antrian
+// yang dilayani satu worker (lihat startArchiveWorker), bukan goroutine baru
+// per pesan — jalur panas tak pernah menunggu I/O dan tak menumbuhkan
+// goroutine tanpa batas saat pesan banjir.
 //
 // Fail-soft total: Init gagal = arsip mati, bot tetap jalan (CRM() nil,
 // semua method nil-guard). Arsip forensik tidak boleh membunuh bot.
@@ -43,13 +49,9 @@ var crmDB *CRMDB
 // sekali di main.go. Error dikembalikan ke main yang memutuskan fail-soft
 // (Warn + lanjut tanpa arsip), TIDAK panic seperti DB operasional.
 func InitCRMDB(path string) error {
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)", path)
-	db, err := sql.Open("sqlite", dsn)
+	db, err := openSQLite(path)
 	if err != nil {
 		return fmt.Errorf("gagal membuka crm.db: %w", err)
-	}
-	if err := db.Ping(); err != nil {
-		return fmt.Errorf("gagal ping crm.db: %w", err)
 	}
 	schema := `
 	CREATE TABLE IF NOT EXISTS crm_messages (
@@ -63,14 +65,16 @@ func InitCRMDB(path string) error {
 	CREATE INDEX IF NOT EXISTS idx_crm_chat_ts ON crm_messages(chat, ts);
 	CREATE INDEX IF NOT EXISTS idx_crm_id ON crm_messages(id);
 	`
-	if _, err := db.Exec(schema); err != nil {
-		return fmt.Errorf("gagal migrasi crm.db: %w", err)
+	if err := applySchema(db, "crm.db", schema, nil, crmSchemaVersion); err != nil {
+		return err
 	}
 	crmDB = &CRMDB{db: db}
 	// Sapu startup: pastikan tidak melebihi cap sejak awal (mis. DB lama).
 	if err := crmDB.Prune(); err != nil {
 		return fmt.Errorf("gagal prune awal crm.db: %w", err)
 	}
+	// Nyalakan satu worker arsip yang melayani seluruh penulisan berikutnya.
+	startArchiveWorker(crmDB)
 	return nil
 }
 
@@ -100,8 +104,22 @@ func (r *CRMRow) Message() (*waE2E.Message, error) {
 	return &msg, nil
 }
 
-// save menyimpan satu pesan + memangkas ke cap. Jalur dalam (sync, cepat);
-// pemanggil dari jalur panas memakai goroutine sendiri.
+// saveRaw menyimpan satu pesan (byte proto yang SUDAH di-marshal) + memangkas
+// ke cap. Hanya dipanggil worker arsip (lihat startArchiveWorker).
+func (c *CRMDB) saveRaw(chat, id, sender string, ts int64, raw []byte) error {
+	if c == nil || c.db == nil || len(raw) == 0 || id == "" || chat == "" {
+		return nil
+	}
+	if _, err := c.db.ExecContext(context.Background(),
+		`INSERT INTO crm_messages (id, chat, sender, ts, data) VALUES (?, ?, ?, ?, ?)`,
+		id, chat, sender, ts, raw); err != nil {
+		return err
+	}
+	return c.Prune()
+}
+
+// save menyimpan satu pesan secara SINKRON (marshal + saveRaw). Dipakai jalur
+// non-panas / pengujian; jalur pesan biasa memakai antrian (enqueueArchive).
 func (c *CRMDB) save(chat, id, sender string, ts int64, msg *waE2E.Message) error {
 	if c == nil || c.db == nil || msg == nil || id == "" || chat == "" {
 		return nil
@@ -110,28 +128,69 @@ func (c *CRMDB) save(chat, id, sender string, ts int64, msg *waE2E.Message) erro
 	if err != nil {
 		return err
 	}
-	ctx := context.Background()
-	if _, err := c.db.ExecContext(ctx,
-		`INSERT INTO crm_messages (id, chat, sender, ts, data) VALUES (?, ?, ?, ?, ?)`,
-		id, chat, sender, ts, raw); err != nil {
-		return err
-	}
-	return c.Prune()
+	return c.saveRaw(chat, id, sender, ts, raw)
 }
 
-// SaveIncoming mengarsipkan satu pesan MASUK (sudah di-unwrap pemanggil).
-func (c *CRMDB) SaveIncoming(chat, id, sender string, ts int64, msg *waE2E.Message) error {
-	return c.save(chat, id, sender, ts, msg)
+// --- Penulisan arsip terpusat (antrian + satu worker) ---
+
+// archiveQueueSize adalah kapasitas antrian arsip. Cukup untuk melancarkan
+// lonjakan sesaat; lebih dari ini arsip sengaja ketinggalan (best-effort).
+const archiveQueueSize = 256
+
+// archiveJob menyimpan byte proto yang SUDAH di-marshal supaya worker tidak
+// memegang pointer protobuf milik evt/pesan yang bisa dipakai ulang whatsmeow.
+type archiveJob struct {
+	chat, id, sender string
+	ts               int64
+	raw              []byte
 }
 
-// ArchiveOutgoingMessage mengarsipkan satu pesan TEKS KELUAR bot. Dipanggil
-// dari 4 helper teks terpusat (ReplyText dkk) dengan `go` di depan supaya
-// non-blocking — pengirim dicatat literal "bot".
-func ArchiveOutgoingMessage(chatJID, msgID string, msg *waE2E.Message) {
-	if CRM() == nil {
+var (
+	archiveCh   chan archiveJob
+	archiveOnce sync.Once
+)
+
+// startArchiveWorker menyalakan worker singleton arsip sekali saja. Satu
+// worker = penulisan terserialisasi (tak ada rebutan write-lock WAL antar
+// pesan) dan jumlah goroutine tetap, apa pun laju pesan.
+func startArchiveWorker(c *CRMDB) {
+	archiveOnce.Do(func() {
+		archiveCh = make(chan archiveJob, archiveQueueSize)
+		go func() {
+			for job := range archiveCh {
+				_ = c.saveRaw(job.chat, job.id, job.sender, job.ts, job.raw)
+			}
+		}()
+	})
+}
+
+// enqueueArchive memasukkan satu job tanpa memblokir. Marshal gagal atau
+// antrian penuh = job dibuang (arsip best-effort, tak pernah fatal).
+func enqueueArchive(chat, id, sender string, ts int64, msg *waE2E.Message) {
+	if crmDB == nil || archiveCh == nil || msg == nil || id == "" || chat == "" {
 		return
 	}
-	_ = CRM().save(chatJID, msgID, "bot", nowUnix(), msg)
+	raw, err := proto.Marshal(msg)
+	if err != nil {
+		return
+	}
+	select {
+	case archiveCh <- archiveJob{chat: chat, id: id, sender: sender, ts: ts, raw: raw}:
+	default:
+	}
+}
+
+// ArchiveIncomingMessage mengarsipkan satu pesan MASUK (sudah di-unwrap
+// pemanggil) lewat antrian — non-blocking, aman di jalur handler.
+func ArchiveIncomingMessage(chat, id, sender string, ts int64, msg *waE2E.Message) {
+	enqueueArchive(chat, id, sender, ts, msg)
+}
+
+// ArchiveOutgoingMessage mengarsipkan satu pesan TEKS KELUAR bot lewat
+// antrian — non-blocking, jadi pemanggil TIDAK perlu lagi membungkusnya
+// dengan `go`. Pengirim dicatat literal "bot".
+func ArchiveOutgoingMessage(chatJID, msgID string, msg *waE2E.Message) {
+	enqueueArchive(chatJID, msgID, "bot", nowUnix(), msg)
 }
 
 // Prune memangkas tabel ke crmMaxRows terbaru (global, semua chat).

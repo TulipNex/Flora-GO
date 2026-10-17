@@ -23,8 +23,15 @@ func init() {
 }
 
 const (
-	// bratAPIBase adalah endpoint generator brat Sawit API. Skemanya sama
-	// untuk image dan video, yang membedakan hanya query type=nya.
+	// bratFaaBase adalah endpoint generator brat faa (primer): me-return
+	// bytes media LANGSUNG (PNG untuk /brat, GIF animasi untuk /bratvid)
+	// — tanpa perantara JSON seperti Sawit. Terverifikasi: teks biasa +
+	// emoji ke-render (emoji full color), background putih solid.
+	bratFaaBase = "https://api-faa.my.id/faa"
+
+	// bratAPIBase adalah endpoint generator brat Sawit API (fallback).
+	// Skemanya sama untuk image dan video, yang membedakan hanya query
+	// type=nya; respons JSON berisi URL media yang lalu diunduh.
 	bratAPIBase = "https://api.sawit.biz.id/api/maker/brat"
 
 	// bratMaxText membatasi panjang teks supaya URL query tetap wajar
@@ -49,7 +56,8 @@ type bratVariant struct {
 	aliases []string
 	kind    string // nilai query type= dan ekspektasi result.type dari API
 	desc    string
-	isVideo bool // true = hasil di-convert jadi stiker animasi
+	title   string // judul balasan standar (Title-Case), mis. "Brat"
+	isVideo bool   // true = hasil di-convert jadi stiker animasi
 }
 
 // bratVariants adalah SEMUA varian brat — dipakai pendaftaran command
@@ -61,6 +69,7 @@ var bratVariants = []bratVariant{
 		aliases: []string{"br"},
 		kind:    "image",
 		desc:    "Bikin stiker brat dari teks (.brat <teks> atau reply pesan)",
+		title:   "Brat",
 		isVideo: false,
 	},
 	{
@@ -68,6 +77,7 @@ var bratVariants = []bratVariant{
 		aliases: []string{"bratvid"},
 		kind:    "video",
 		desc:    "Bikin stiker brat video (.bratvideo <teks> atau reply pesan)",
+		title:   "Brat Video",
 		isVideo: true,
 	},
 }
@@ -95,19 +105,22 @@ func RegisterBrat(r *Registry) {
 func handleBrat(ctx context.Context, mctx *store.MessageContext, v bratVariant) error {
 	text := bratInputText(mctx)
 	if text == "" {
-		return store.ReplyText(ctx, mctx,
-			fmt.Sprintf("Tulis teksnya dulu, contoh: `.%s apa kabar` — atau reply pesan teks lalu ketik `.%s`.", v.command, v.command))
+		return store.ReplyText(ctx, mctx, Block(v.title,
+			Row("Cara", fmt.Sprintf(".%s <teks> / reply pesan", v.command)),
+			Row("Contoh", fmt.Sprintf(".%s apa kabar", v.command)),
+		))
 	}
 	if utf8.RuneCountInString(text) > bratMaxText {
-		return store.ReplyText(ctx, mctx,
-			fmt.Sprintf("Teksnya kepanjangan (maks %d karakter).", bratMaxText))
+		return store.ReplyText(ctx, mctx, ErrMsg(v.title,
+			fmt.Sprintf("Teks kepanjangan (maks %d karakter).", bratMaxText)))
 	}
 
 	go func() {
 		bg := context.Background()
 		if err := bratGenerate(bg, mctx, text, v); err != nil {
 			logfmt.Warn("brat(%s): %v\n", v.kind, err)
-			_ = store.ReplyText(bg, mctx, "Gagal bikin brat: "+err.Error())
+			_ = store.ReplyText(bg, mctx, ErrMsg(v.title,
+				fmt.Sprintf("Gagal (%v, coba lagi sebentar.)", err)))
 		}
 	}()
 	return nil
@@ -184,10 +197,39 @@ type bratAPIResponse struct {
 	} `json:"result"`
 }
 
-// fetchBratMedia memanggil API generator lalu mengunduh media hasilnya.
-// Unduh lewat external.DownloadBytes supaya kena tameng SSRF + cap 100MB
-// yang sama dengan media dari API pihak ketiga lain.
+// fetchBratMedia mengambil media brat via faa (primer, bytes langsung),
+// fallback Sawit (JSON → URL → unduh) bila faa gagal. Keduanya support
+// emoji; error gabungan menyebut keduanya supaya diagnosis jelas.
 func fetchBratMedia(ctx context.Context, text, kind string) ([]byte, error) {
+	if data, err := fetchBratFaa(ctx, text, kind); err == nil {
+		return data, nil
+	} else {
+		errFaa := err
+		data, serr := fetchBratSawit(ctx, text, kind)
+		if serr != nil {
+			return nil, fmt.Errorf("faa: %v; sawit: %v", errFaa, serr)
+		}
+		return data, nil
+	}
+}
+
+// fetchBratFaa mengunduh bytes brat langsung dari faa: /brat (image/PNG)
+// atau /bratvid (video/GIF animasi). Unduh lewat external.DownloadBytes
+// supaya kena tameng SSRF + cap 100MB yang sama dengan media API lain.
+func fetchBratFaa(ctx context.Context, text, kind string) ([]byte, error) {
+	ep := "brat"
+	if kind == "video" {
+		ep = "bratvid"
+	}
+	query := url.Values{}
+	query.Set("text", text)
+	return external.DownloadBytes(ctx, bratFaaBase+"/"+ep+"?"+query.Encode())
+}
+
+// fetchBratSawit memanggil API generator Sawit lalu mengunduh media
+// hasilnya. Unduh lewat external.DownloadBytes supaya kena tameng SSRF +
+// cap 100MB yang sama dengan media dari API pihak ketiga lain.
+func fetchBratSawit(ctx context.Context, text, kind string) ([]byte, error) {
 	query := url.Values{}
 	query.Set("text", text)
 	query.Set("type", kind)

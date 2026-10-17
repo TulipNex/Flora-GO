@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// File ini menyimpan JADWAL PANGGILAN (.call <target>|<jam> dan tool AI
+// File ini menyimpan JADWAL PANGGILAN (.voicecall <target>|<jam> dan tool AI
 // make_call terjadwal) supaya TAHAN RESTART — beda dari implementasi lama
 // yang in-memory dan hilang kalau proses mati. Tabel dibuat di InitGroupDB
 // (groupdb.go), reuse koneksi group.db.

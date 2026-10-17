@@ -35,7 +35,7 @@ var selfCallWords = map[string]bool{
 }
 
 // normCallDigits menormalkan nomor ke digit kanonis (awalan 0 lokal jadi 62)
-// untuk perbandingan self-call. Cermin normPhoneDigits di plugins/call.go
+// untuk perbandingan self-call. Cermin normPhoneDigits di plugins/call_voice.go
 // yang tidak diekspor.
 func normCallDigits(s string) string {
 	var b strings.Builder
@@ -107,7 +107,7 @@ func init() {
 			} else {
 				// Validasi format dulu (sekaligus normalisasi +/spasi/strip dan
 				// 0 lokal jadi 62). Lalu resolve LID→nomor HP lewat jalur yang
-				// SAMA dengan command .call — AI sering menyerahkan LID dari
+				// SAMA dengan command .voicecall — AI sering menyerahkan LID dari
 				// mention, yang tidak bisa langsung ditelpon.
 				cleaned, err := plugins.ParsePhoneToJID(phoneRaw)
 				if err != nil {

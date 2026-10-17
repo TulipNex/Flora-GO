@@ -52,7 +52,7 @@ var (
 const syncBurstWindow = 2 * time.Minute
 
 // dayPeriod menentukan periode waktu Indonesia berdasarkan jam (zona aktif
-// timex, konsisten dengan penjadwalan .call): pagi 04–10, siang 11–14,
+// timex, konsisten dengan penjadwalan .voicecall): pagi 04–10, siang 11–14,
 // sore 15–17, malam 18–03.
 func dayPeriod(t time.Time) string {
 	switch h := t.Hour(); {
@@ -378,7 +378,7 @@ func HandleGroupJoin(client *whatsmeow.Client, evt *events.GroupInfo) {
 	}
 
 	// Periode & jam untuk variabel @periode/@time — zona aktif timex (WIB/
-	// WITA/WIT via env BOT_TIMEZONE), sama dengan jam penjadwalan .call.
+	// WITA/WIT via env BOT_TIMEZONE), sama dengan jam penjadwalan .voicecall.
 	now := timex.Now()
 	periode := dayPeriod(now)
 	timeStr := now.Format("15:04:05")

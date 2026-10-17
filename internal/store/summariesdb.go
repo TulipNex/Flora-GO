@@ -24,7 +24,7 @@ func InitSummariesDB() error {
 	if aiDB == nil {
 		return fmt.Errorf("store.InitSummariesDB() dipanggil sebelum store.InitAIDB()")
 	}
-	_, err := aiDB.db.Exec(`
+	schema := `
 	CREATE TABLE IF NOT EXISTS ai_session_summaries (
 		id          INTEGER PRIMARY KEY AUTOINCREMENT,
 		session_key TEXT NOT NULL,
@@ -32,9 +32,9 @@ func InitSummariesDB() error {
 		created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 	);
 	CREATE INDEX IF NOT EXISTS idx_ai_summaries_session ON ai_session_summaries(session_key, id);
-	`)
-	if err != nil {
-		return fmt.Errorf("gagal siapkan tabel ringkasan: %w", err)
+	`
+	if err := ensureSchema(aiDB.db, "ai.db", schema, nil); err != nil {
+		return err
 	}
 	return nil
 }

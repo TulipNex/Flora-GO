@@ -37,7 +37,7 @@ const (
 // waClientForReminders adalah client whatsmeow untuk pengiriman DM + telepon
 // eskalasi dari goroutine timer (yang tidak punya mctx). Diisi sekali via
 // InitReminderClient di main.go, pola sama seperti waClientForCalls milik
-// fitur call (plugins/call.go).
+// fitur call (plugins/call_voice.go).
 var waClientForReminders *whatsmeow.Client
 
 // InitReminderClient memasang client untuk scheduler reminder. WAJIB
