@@ -162,21 +162,30 @@ func Keys(ctx context.Context, client *whatsmeow.Client, jid, alt types.JID) []s
 	return out
 }
 
-// Strings mengembalikan bentuk JID bare (tanpa AD) dari jid dan alternatifnya,
-// sudah dinormalisasi dan tanpa duplikat. Dipakai untuk mencocokkan nilai
-// tersimpan yang berbentuk JID penuh (mis. banned_users.user_jid).
-func Strings(jid, alt types.JID) []string {
-	seen := make(map[string]bool, 2)
-	out := make([]string, 0, 2)
-	for _, j := range []types.JID{jid, alt} {
+// Strings mengembalikan bentuk JID bare (tanpa AD) dari jid, alternatifnya,
+// dan hasil resolve LID↔PN (bila client tersedia) — sudah dinormalisasi dan
+// tanpa duplikat. Dipakai untuk mencocokkan nilai tersimpan yang berbentuk
+// JID penuh (mis. banned_users.user_jid) maupun key kanonik.
+func Strings(ctx context.Context, client *whatsmeow.Client, jid, alt types.JID) []string {
+	seen := make(map[string]bool, 4)
+	out := make([]string, 0, 4)
+	add := func(j types.JID) {
 		n := Normalize(j)
 		if n.IsEmpty() || n.User == "" {
-			continue
+			return
 		}
 		if s := n.String(); !seen[s] {
 			seen[s] = true
 			out = append(out, s)
 		}
+	}
+	add(jid)
+	add(alt)
+	if pn, ok := ResolvePN(ctx, client, jid, alt); ok {
+		add(pn)
+	}
+	if lid, ok := ResolveLID(ctx, client, jid, alt); ok {
+		add(lid)
 	}
 	return out
 }

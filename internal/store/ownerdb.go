@@ -65,7 +65,7 @@ func (g *GroupDB) IsUserTrusted(ctx context.Context, sender, senderAlt types.JID
 // trusted_users). table HANYA boleh konstanta internal (bukan input user).
 func (g *GroupDB) userListMatches(ctx context.Context, table string, sender, senderAlt types.JID) (bool, error) {
 	full := make(map[string]bool, 2)
-	for _, s := range identity.Strings(sender, senderAlt) {
+	for _, s := range identity.Strings(ctx, nil, sender, senderAlt) {
 		full[s] = true
 	}
 	part := make(map[string]bool, 2)

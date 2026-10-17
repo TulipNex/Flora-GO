@@ -9,6 +9,7 @@ import (
 	"github.com/polymorfa/hypermeow/types"
 
 	"wabot-go/internal/ai"
+	"wabot-go/internal/identity"
 	"wabot-go/internal/store"
 )
 
@@ -174,15 +175,7 @@ func resolveResetMemoryTarget(mctx *store.MessageContext) (types.JID, bool, erro
 // adanya dalam bentuk PN atau LID, jadi dicoba semua bentuk yang bisa
 // diturunkan; kalau tetap meleset, pemanggil melaporkan 0 baris.
 func memoryCandidateKeys(ctx context.Context, mctx *store.MessageContext, target types.JID) []string {
-	keys := []string{target.String()}
-	if mctx.Client != nil && mctx.Client.Store != nil {
-		if alt, err := mctx.Client.Store.GetAltJID(ctx, target); err == nil && !alt.IsEmpty() {
-			if s := alt.ToNonAD().String(); s != keys[0] {
-				keys = append(keys, s)
-			}
-		}
-	}
-	return keys
+	return identity.Strings(ctx, mctx.Client, target, types.JID{})
 }
 
 // handleProviderSubcommand menangani ".agent provider" (tampilkan daftar),

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"wabot-go/internal/identity"
 	"wabot-go/internal/store"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
@@ -377,20 +378,7 @@ func ttSamePlayer(stored, sender, alt types.JID) bool {
 	if stored.IsEmpty() {
 		return false
 	}
-	s := stored.ToNonAD()
-	for _, c := range []types.JID{sender, alt} {
-		if c.IsEmpty() {
-			continue
-		}
-		c = c.ToNonAD()
-		if c.String() == s.String() {
-			return true
-		}
-		if c.User != "" && s.User != "" && c.User == s.User {
-			return true
-		}
-	}
-	return false
+	return identity.Candidate{JID: sender, Alt: alt}.Matches(stored)
 }
 
 // ttParsePos mengubah "1"-"9" jadi indeks 0-8.

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"wabot-go/internal/external"
+	"wabot-go/internal/identity"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 
@@ -55,23 +56,15 @@ func pendingAltSenders(mctx *store.MessageContext) []string {
 	if !mctx.Sender.IsEmpty() {
 		primary = mctx.Sender.ToNonAD().String()
 	}
-	seen := map[string]bool{primary: true}
-	var out []string
-	add := func(j types.JID) {
-		if j.IsEmpty() {
-			return
-		}
-		if s := j.ToNonAD().String(); s != "" && !seen[s] {
-			seen[s] = true
-			out = append(out, s)
-		}
-	}
+	var alt types.JID
 	if mctx.RawEvt != nil {
-		add(mctx.RawEvt.Info.SenderAlt)
+		alt = mctx.RawEvt.Info.SenderAlt
 	}
-	if mctx.Client != nil && mctx.Client.Store != nil && !mctx.Sender.IsEmpty() {
-		if alt, err := mctx.Client.Store.GetAltJID(context.Background(), mctx.Sender.ToNonAD()); err == nil {
-			add(alt)
+	all := identity.Strings(context.Background(), mctx.Client, mctx.Sender, alt)
+	out := make([]string, 0, len(all))
+	for _, s := range all {
+		if s != primary {
+			out = append(out, s)
 		}
 	}
 	return out

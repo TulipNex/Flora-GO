@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"wabot-go/internal/identity"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 	"wabot-go/internal/timex"
@@ -577,28 +578,13 @@ func CheckAbsensiCheckin(client *whatsmeow.Client, evt *events.Message) {
 	// Kunci identitas kanonis (bare, tanpa device) + semua bentuk alt
 	// (SenderAlt event, resolve store LID↔PN): first-valid-wins berlaku
 	// lintas format, flip format antar update live-location tidak mencatat
-	// orang yang sama dua kali.
+	// orang yang sama dua kali. Lihat internal/identity.
+	bg := context.Background()
 	canonical := evt.Info.Sender.ToNonAD().String()
-	altKeys := []string{}
-	if alt := evt.Info.SenderAlt; !alt.IsEmpty() {
-		if s := alt.ToNonAD().String(); s != "" && s != canonical {
-			altKeys = append(altKeys, s)
-		}
-	}
-	if client.Store != nil {
-		if alt, err := client.Store.GetAltJID(context.Background(), evt.Info.Sender.ToNonAD()); err == nil && !alt.IsEmpty() {
-			if s := alt.ToNonAD().String(); s != "" && s != canonical {
-				dup := false
-				for _, k := range altKeys {
-					if k == s {
-						dup = true
-						break
-					}
-				}
-				if !dup {
-					altKeys = append(altKeys, s)
-				}
-			}
+	var altKeys []string
+	for _, k := range identity.Strings(bg, client, evt.Info.Sender, evt.Info.SenderAlt) {
+		if k != canonical {
+			altKeys = append(altKeys, k)
 		}
 	}
 	for _, k := range append([]string{canonical}, altKeys...) {

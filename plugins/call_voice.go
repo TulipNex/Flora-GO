@@ -8,12 +8,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/purpshell/meowcaller"
 	whatsmeow "github.com/polymorfa/hypermeow"
 	"github.com/polymorfa/hypermeow/proto/waE2E"
 	"github.com/polymorfa/hypermeow/types"
+	"github.com/purpshell/meowcaller"
 	"google.golang.org/protobuf/proto"
 
+	"wabot-go/internal/identity"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 	"wabot-go/internal/timex"
@@ -244,8 +245,8 @@ func ResolveCallPhone(ctx context.Context, mctx *store.MessageContext, target ty
 			}
 		}
 	}
-	if pn, err := mctx.Client.Store.GetAltJID(ctx, bare); err == nil && pn.ToNonAD().Server == types.DefaultUserServer {
-		return pn.ToNonAD().User, nil
+	if pn, ok := identity.ResolvePN(ctx, mctx.Client, target, types.JID{}); ok {
+		return pn.User, nil
 	}
 	return "", fmt.Errorf("nomor HP target tidak ditemukan (hanya %s yang tersedia)", bare.User)
 }

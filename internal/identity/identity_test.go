@@ -170,6 +170,28 @@ func TestKeys(t *testing.T) {
 	}
 }
 
+func TestStrings(t *testing.T) {
+	ctx := context.Background()
+	client := newClient(fakeLID{
+		byLID: map[string]string{lidNum: pnNum},
+		byPN:  map[string]string{pnNum: lidNum},
+	}, nil, types.JID{})
+
+	got := Strings(ctx, client, types.NewJID(lidNum, types.HiddenUserServer), types.JID{})
+	want := map[string]bool{
+		lidNum + "@lid":           true,
+		pnNum + "@s.whatsapp.net": true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Strings = %v, mau %d entri unik", got, len(want))
+	}
+	for _, s := range got {
+		if !want[s] {
+			t.Errorf("string tak terduga: %s", s)
+		}
+	}
+}
+
 func TestIsBot(t *testing.T) {
 	client := newClient(fakeLID{}, ptr(types.NewJID(botPN, types.DefaultUserServer)), types.NewJID(botLID, types.HiddenUserServer))
 
