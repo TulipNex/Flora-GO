@@ -225,7 +225,7 @@ func handleLastChat(ctx context.Context, mctx *store.MessageContext) error {
 		} else {
 			preview = "(gagal decode)"
 		}
-		fmt.Fprintf(&sb, "[%02d] #%d | %s\n%s • %s\n",
+		fmt.Fprintf(&sb, "`[%02d] #%d | %s`\n%s • %s\n",
 			i+1, row.Rowid, formatCRMTime(row.TS),
 			crmSenderCached(ctx, mctx.Client, row.Sender, labels),
 			tipe)
