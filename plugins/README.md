@@ -41,12 +41,12 @@ Legenda: `•` = command publik, `◇` = helper/modul pendukung (bukan command),
 | File | Isi | Catatan |
 |---|---|---|
 | `downloader.go` (+ `downloader_ytdlp.go`, `downloader_send.go`) | `• .tiktok/.tt`, `• .youtube/.yt`, `• .youtubemp3/.ytmp3`, `• .instagram/.ig`, `• .twitter/.x/.tw`, `• .facebook/.fb`, `• .pinterest/.pin`, `• .spotify/.sp`, `• .autodownload` | Engine unduh multi-platform. `.tt` = tiktok (regression-tested). `_ytdlp` = jalur yt-dlp; `_send` = pengirim media (video/audio/gambar/webp) |
-| `spotify_search.go` | `◇` | Pencarian Spotify + pending pick (dipakai `downloader`, `shazam`, `lrclib`) |
+| `spotify_search.go` | `◇` | Pencarian Spotify + pending pick (dipakai `downloader`, `lrclib`) |
 | `bk.go` | `• .bk` / `• .po` | Unduh video embed |
 | `insthumb.go` | `• .insthumb` | Thumbnail Instagram |
 | `flaticon.go` | `• .flaticon` | Cari ikon |
 | `lrclib.go` | `• .lrclib`, `• .lrclibs` | Lirik |
-| `shazam.go` | `• .shazam` | Kenali lagu |
+| `shazam.go` | `• .shazam` | Kenali lagu (kartu hasil bertombol: Unduh / Buka Spotify) |
 | `het.go` | `• .het` | Harga pangan (PIHPS) |
 | `klasemen.go` | `• .klasemen` | Klasemen liga |
 | `listgrup.go` | `• .listgrup` | |

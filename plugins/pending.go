@@ -8,7 +8,7 @@ import (
 )
 
 // pending.go — satu implementasi peta pilihan-sementara (pending pick) yang
-// dipakai ulang oleh .lrc/.lrcs, .shazam, .sp, dan "unduh" Shazam.
+// dipakai ulang oleh .lrc/.lrcs dan .sp.
 //
 // Sebelumnya tiap modul menyalin pola mutex + map + TTL (Key/Set/Peek/
 // Consume + sapu entri basi) — empat salinan yang rawan menyimpang. Kini
@@ -37,7 +37,7 @@ func newPendingStore[T any](ttl time.Duration) *pendingStore[T] {
 // parsePlainPickIndex menafsir teks sebagai angka pilihan polos: tanpa spasi,
 // berupa bilangan bulat. ok=false bila bukan angka pilihan yang sah (teks
 // kosong, ada spasi, atau bukan angka). Dipakai bersama oleh semua interceptor
-// pilih-nomor (.lrc/.shazam/.sp) supaya guard-nya identik.
+// pilih-nomor (.lrc/.sp) supaya guard-nya identik.
 func parsePlainPickIndex(numText string) (n int, ok bool) {
 	t := strings.TrimSpace(numText)
 	if t == "" || strings.Contains(t, " ") {

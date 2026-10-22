@@ -311,8 +311,7 @@ func CheckSpotifyPick(client *whatsmeow.Client, evt *events.Message, text string
 		return false // bukan untuk kita — biar AI/moderasi yang urus
 	}
 	// Pending lain yang lebih baru menang — biar angkanya ke sana.
-	if lrcNewerThanSpotify(evt.Info.Chat.String(), evt.Info.Sender.String()) ||
-		shNewerThanSpotify(evt.Info.Chat.String(), evt.Info.Sender.String()) {
+	if lrcNewerThanSpotify(evt.Info.Chat.String(), evt.Info.Sender.String()) {
 		return false
 	}
 	track := pend.tracks[n-1]

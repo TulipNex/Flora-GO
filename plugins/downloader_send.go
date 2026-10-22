@@ -142,30 +142,11 @@ func sendDlBytesImage(ctx context.Context, mctx *store.MessageContext, data []by
 // sendDlBytesImageAlbum adalah varian album dari sendDlBytesImage (lihat
 // sendDlBytesVideoAlbum untuk arti msgID/assoc).
 func sendDlBytesImageAlbum(ctx context.Context, mctx *store.MessageContext, data []byte, caption string, msgID types.MessageID, assoc *waE2E.MessageAssociation) error {
-	if err := messaging.CheckMediaBytes(data); err != nil {
-		return err
-	}
-	uploaded, err := mctx.Client.Upload(ctx, data, whatsmeow.MediaImage)
+	im, err := messaging.UploadImageMessage(ctx, mctx.Client, data)
 	if err != nil {
 		return err
 	}
-	thumb := messaging.InlineThumbForImage(data)
-	im := &waE2E.ImageMessage{
-		URL:               proto.String(uploaded.URL),
-		DirectPath:        proto.String(uploaded.DirectPath),
-		MediaKey:          uploaded.MediaKey,
-		MediaKeyTimestamp: proto.Int64(time.Now().Unix()),
-		Mimetype:          proto.String(detectDlImageMIME(data)),
-		FileEncSHA256:     uploaded.FileEncSHA256,
-		FileSHA256:        uploaded.FileSHA256,
-		FileLength:        proto.Uint64(uploaded.FileLength),
-		Caption:           proto.String(caption),
-		JPEGThumbnail:     thumb,
-	}
-	if cfg, _, cerr := image.DecodeConfig(bytes.NewReader(data)); cerr == nil && cfg.Width > 0 {
-		im.Width = proto.Uint32(uint32(cfg.Width))
-		im.Height = proto.Uint32(uint32(cfg.Height))
-	}
+	im.Caption = proto.String(caption)
 	msg := &waE2E.Message{ImageMessage: im}
 	if assoc != nil {
 		msg.MessageContextInfo = &waE2E.MessageContextInfo{MessageAssociation: assoc}

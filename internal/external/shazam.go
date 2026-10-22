@@ -12,7 +12,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"os/exec"
 	"sort"
 	"strings"
@@ -41,13 +40,10 @@ const (
 	shazamMagic2       = 0x94119C00
 	shazamFixedValue   = (15 << 19) + 0x40000
 	shazamDiscoveryURL = "https://amp.shazam.com/discovery/v5/%s/%s/android/-/tag/%s/%s?sync=true&webv3=true&sampling=true&connected=&shazamapiversion=v3&sharehub=true&video=v3"
-	shazamTrackURL     = "https://amp.shazam.com/discovery/v5/%s/%s/iphone/-/track/%s?shazamapiversion=v3&video=v3"
-	shazamA2STURL      = "https://www.shazam.com/services/sd/s/a2st/%s/%s/%s"
-	shazamITunesURL    = "https://itunes.apple.com/search"
 	shazamUA           = "Shazam/14.1.0 (iPhone; iOS 14.4; Scale/3.00)"
 )
 
-// ShazamTrack adalah hasil normalisasi recognize/getTrack/search.
+// ShazamTrack adalah hasil normalisasi recognize.
 type ShazamTrack struct {
 	ID          string
 	Title       string
@@ -62,10 +58,6 @@ type ShazamTrack struct {
 	SpotifyURL  string
 	HasLyrics   bool
 	Lyrics      string
-	// Search-only:
-	AppleID    int64
-	DurationMs int64
-	PreviewURL string
 }
 
 // shazamFreqBand adalah pita frekuensi signature Apple.
@@ -507,148 +499,4 @@ func RecognizeShazam(ctx context.Context, samples []int16) (*ShazamTrack, error)
 		return nil, fmt.Errorf("%s: lagu tidak ditemukan di database Shazam", engine)
 	}
 	return normalizeShazamTrack(r.Track), nil
-}
-
-// GetShazamTrack mengambil detail track by ID (tanpa signature).
-func GetShazamTrack(ctx context.Context, trackID string) (*ShazamTrack, error) {
-	const engine = "shazam"
-	trackID = strings.TrimSpace(trackID)
-	if trackID == "" {
-		return nil, fmt.Errorf("%s: id kosong", engine)
-	}
-	api := fmt.Sprintf(shazamTrackURL, "id-ID", "ID", url.PathEscape(trackID))
-	tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(tctx, http.MethodGet, api, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", shazamUA)
-	req.Header.Set("X-Shazam-Platform", "IPHONE")
-	req.Header.Set("X-Shazam-AppVersion", "14.1.0")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Language", "id_ID")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", engine, err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", engine, err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%s: HTTP %d", engine, resp.StatusCode)
-	}
-	var t shazamTrackRaw
-	if err := json.Unmarshal(raw, &t); err != nil {
-		return nil, fmt.Errorf("%s: JSON invalid: %w", engine, err)
-	}
-	return normalizeShazamTrack(&t), nil
-}
-
-// SearchShazam mencari lagu via iTunes Search + peta Apple→Shazam.
-func SearchShazam(ctx context.Context, query string, limit int) ([]ShazamTrack, error) {
-	const engine = "shazam"
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return nil, fmt.Errorf("%s: kata kunci kosong", engine)
-	}
-	if limit <= 0 || limit > 15 {
-		limit = 5
-	}
-	q := url.Values{}
-	q.Set("term", query)
-	q.Set("entity", "song")
-	q.Set("country", "ID")
-	q.Set("limit", fmt.Sprint(limit))
-	tctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(tctx, http.MethodGet, shazamITunesURL+"?"+q.Encode(), nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", scraperUA)
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", engine, err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", engine, err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%s: HTTP %d", engine, resp.StatusCode)
-	}
-	var ir struct {
-		Results []struct {
-			TrackID        int64  `json:"trackId"`
-			TrackName      string `json:"trackName"`
-			ArtistName     string `json:"artistName"`
-			CollectionName string `json:"collectionName"`
-			ReleaseDate    string `json:"releaseDate"`
-			TrackTimeMs    int64  `json:"trackTimeMillis"`
-			Genre          string `json:"primaryGenreName"`
-			PreviewURL     string `json:"previewUrl"`
-			Artwork100     string `json:"artworkUrl100"`
-			TrackViewURL   string `json:"trackViewUrl"`
-		} `json:"results"`
-	}
-	if err := json.Unmarshal(raw, &ir); err != nil {
-		return nil, fmt.Errorf("%s: JSON invalid: %w", engine, err)
-	}
-	if len(ir.Results) == 0 {
-		return nil, fmt.Errorf("%s: tidak ditemukan", engine)
-	}
-	// Peta Apple ID → Shazam ID (best-effort; gagal = lanjut tanpa ID).
-	shazamMap := map[string]string{}
-	var ids []string
-	for _, r := range ir.Results {
-		ids = append(ids, fmt.Sprint(r.TrackID))
-	}
-	func() {
-		tctx2, cancel2 := context.WithTimeout(ctx, 20*time.Second)
-		defer cancel2()
-		mreq, err := http.NewRequestWithContext(tctx2, http.MethodGet,
-			fmt.Sprintf(shazamA2STURL, "ID", "id-ID", strings.Join(ids, ",")), nil)
-		if err != nil {
-			return
-		}
-		mreq.Header.Set("User-Agent", "Mozilla/5.0")
-		mresp, err := httpClient.Do(mreq)
-		if err != nil {
-			return
-		}
-		defer mresp.Body.Close()
-		mraw, err := io.ReadAll(io.LimitReader(mresp.Body, 1<<20))
-		if err != nil || mresp.StatusCode < 200 || mresp.StatusCode >= 300 {
-			return
-		}
-		_ = json.Unmarshal(mraw, &shazamMap)
-	}()
-	var out []ShazamTrack
-	for i, r := range ir.Results {
-		if i >= limit {
-			break
-		}
-		year := ""
-		if len(r.ReleaseDate) >= 4 {
-			year = r.ReleaseDate[:4]
-		}
-		out = append(out, ShazamTrack{
-			ID:          shazamMap[fmt.Sprint(r.TrackID)],
-			Title:       r.TrackName,
-			Artist:      r.ArtistName,
-			Album:       r.CollectionName,
-			ReleaseYear: year,
-			Genres:      r.Genre,
-			Cover:       strings.Replace(r.Artwork100, "100x100bb", "800x800bb", 1),
-			AppleID:     r.TrackID,
-			DurationMs:  r.TrackTimeMs,
-			PreviewURL:  r.PreviewURL,
-			AppleURL:    r.TrackViewURL,
-		})
-	}
-	return out, nil
 }

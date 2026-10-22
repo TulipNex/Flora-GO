@@ -242,13 +242,8 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 		return
 	}
 
-	// Pilihan angka hasil pencarian Shazam (.shazam search → balas 1-5).
-	if text != "" && plugins.CheckShazamPick(client, evt, text) {
-		return
-	}
-
-	// Kata "unduh" setelah kartu hasil Shazam (download lagu pending).
-	if text != "" && plugins.CheckShazamDownload(client, evt, text) {
+	// Tap tombol "Unduh" pada kartu hasil Shazam (id "shazam:dl:<trackID>").
+	if plugins.CheckShazamButtonTap(client, evt) {
 		return
 	}
 

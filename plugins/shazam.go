@@ -2,14 +2,15 @@ package plugins
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
-	"time"
 
 	"wabot-go/internal/external"
 	"wabot-go/internal/logfmt"
+	"wabot-go/internal/messaging"
 	"wabot-go/internal/store"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
@@ -23,52 +24,14 @@ func init() {
 
 // Batas audio Shazam (fingerprint hanya butuh ±12 detik, tapi decode
 // butuh file utuh — tolak raksasa sebelum buang waktu/CPU).
-const (
-	shazamMaxMediaBytes = 100 << 20
-	shazamSearchLimit   = 5
-	shazamPickTTL       = 5 * time.Minute
-)
+const shazamMaxMediaBytes = 100 << 20
 
-type shPendingResult struct {
-	songs []external.ShazamTrack
-	query string
-}
+// Prefix id tombol kartu hasil. Track ID Spotify ditanam di id tombol supaya
+// tap tidak bergantung pending store/TTL (22 karakter, jauh di bawah batas id).
+const shazamTapPrefix = "shazam:dl:"
 
-var shPending = newPendingStore[*shPendingResult](shazamPickTTL)
-
-func shPendingSet(chat, sender string, songs []external.ShazamTrack, query string) {
-	shPending.Set(chat, sender, &shPendingResult{songs: songs, query: query})
-}
-
-func shPendingPeek(chat, sender string) (*shPendingResult, time.Time) {
-	v, at, _ := shPending.Peek(chat, sender)
-	return v, at
-}
-
-func shPendingConsume(chat, sender string) *shPendingResult {
-	v, _ := shPending.Consume(chat, sender)
-	return v
-}
-
-// shNewerThanSpotify true bila pending Shazam lebih baru (aturan terbaru menang).
-func shNewerThanSpotify(chat, sender string) bool {
-	hp, hpAt := shPendingPeek(chat, sender)
-	sp, spAt := spPendingPeek(chat, sender)
-	if hp == nil || sp == nil {
-		return false
-	}
-	return hpAt.After(spAt)
-}
-
-// shNewerThanLrc true bila pending Shazam lebih baru dari pending lirik.
-func shNewerThanLrc(chat, sender string) bool {
-	hp, hpAt := shPendingPeek(chat, sender)
-	lp, lpAt := lrcPendingPeek(chat, sender)
-	if hp == nil || lp == nil {
-		return false
-	}
-	return hpAt.After(lpAt)
-}
+// shazamHeaderSide = sisi maksimum cover yang diunggah sebagai header kartu.
+const shazamHeaderSide = 640
 
 func RegisterShazam(r *Registry) {
 	r.Register(Command{
@@ -80,45 +43,11 @@ func RegisterShazam(r *Registry) {
 	})
 }
 
+// handleShazam hanya mendeteksi lagu: reply VN/audio/video/dokumen. Semua
+// jalur pencarian teks (.shazam search/track) sudah dihapus.
 func handleShazam(ctx context.Context, mctx *store.MessageContext) error {
-	// `.shazam <angka>` saat ada pending = pilih hasil.
-	if len(mctx.Args) == 1 {
-		if handled, msg := tryShazamNumberPick(mctx, mctx.Args[0]); handled {
-			if msg != "" {
-				return store.ReplyText(ctx, mctx, msg)
-			}
-			return nil
-		}
-	}
-	if len(mctx.Args) > 0 {
-		switch sub := strings.ToLower(strings.TrimSpace(mctx.Args[0])); sub {
-		case "search", "cari":
-			query := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(mctx.RawArgs), mctx.Args[0]))
-			if query == "" {
-				return store.ReplyText(ctx, mctx, "Sertakan judul. Contoh: .shazam search bohemian rhapsody")
-			}
-			return shazamRunAsync(ctx, mctx, "Mencari lagu, tunggu sebentar...", func(bg context.Context) {
-				shazamDoSearch(bg, mctx, query)
-			})
-		case "track":
-			if len(mctx.Args) < 2 || strings.TrimSpace(mctx.Args[1]) == "" {
-				return store.ReplyText(ctx, mctx, "Sertakan ID track. Contoh: .shazam track 123456789")
-			}
-			id := strings.TrimSpace(mctx.Args[1])
-			return shazamRunAsync(ctx, mctx, "Mengambil detail lagu, tunggu sebentar...", func(bg context.Context) {
-				shazamDoTrack(bg, mctx, id)
-			})
-		case "unduh", "download", "dl":
-			rawURL := shDlPendingConsume(mctx.Chat.String(), mctx.Sender.String())
-			if rawURL == "" {
-				return store.ReplyText(ctx, mctx, "Tidak ada lagu yang bisa diunduh (hasil Shazam kedaluwarsa >5 menit). Kenali/cari lagunya dulu.")
-			}
-			go shazamDoDownloadUnduh(context.Background(), mctx, rawURL)
-			return nil
-		}
-	}
 	if !shazamHasAudio(mctx) {
-		return store.ReplyText(ctx, mctx, "Reply VN/audio/video dengan .shazam untuk mengenali lagunya.\nContoh lain: .shazam search <judul> | .shazam track <id>")
+		return store.ReplyText(ctx, mctx, "Reply VN/audio/video dengan .shazam untuk mengenali lagunya.")
 	}
 	return shazamRunAsync(ctx, mctx, "Mengenali lagu, tunggu sebentar...", func(bg context.Context) {
 		shazamDoRecognize(bg, mctx)
@@ -210,94 +139,8 @@ func shazamDoRecognize(ctx context.Context, mctx *store.MessageContext) {
 	shazamSendTrack(ctx, mctx, track)
 }
 
-func shazamDoSearch(ctx context.Context, mctx *store.MessageContext, query string) {
-	songs, err := external.SearchShazam(ctx, query, shazamSearchLimit)
-	if err != nil {
-		_ = store.ReplyText(ctx, mctx, fmt.Sprintf("Pencarian gagal: %v", err))
-		return
-	}
-	shPendingSet(mctx.Chat.String(), mctx.Sender.String(), songs, query)
-	for _, alt := range pendingAltSenders(mctx) {
-		shPendingSet(mctx.Chat.String(), alt, songs, query)
-	}
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Hasil pencarian untuk \"%s\" :\n\n", query)
-	for i, s := range songs {
-		artist := strings.TrimSpace(s.Artist)
-		if artist == "" {
-			artist = "-"
-		}
-		dur := ""
-		if s.DurationMs > 0 {
-			dur = fmt.Sprintf(" • %d:%02d", s.DurationMs/60000, (s.DurationMs%60000)/1000)
-		}
-		fmt.Fprintf(&sb, "*[%d] %s*\n> Artis : %s%s\n", i+1, s.Title, artist, dur)
-	}
-	sb.WriteString("\n_Ketik nomor urut untuk detail._")
-	_ = store.ReplyText(ctx, mctx, sb.String())
-}
-
-// tryShazamNumberPick menafsir arg/angka sebagai pilihan hasil pencarian.
-// Mode pick eksplisit (.shazam N). (ditangani, pesanError).
-func tryShazamNumberPick(mctx *store.MessageContext, numText string) (bool, string) {
-	n, ok := parsePlainPickIndex(numText)
-	if !ok {
-		return false, ""
-	}
-	pend, _ := shPendingPeek(mctx.Chat.String(), mctx.Sender.String())
-	if pend == nil {
-		return false, ""
-	}
-	if n < 1 || n > len(pend.songs) {
-		return true, fmt.Sprintf("Pilih angka 1-%d dari hasil \"%s\".", len(pend.songs), pend.query)
-	}
-	song := pend.songs[n-1]
-	shPendingConsume(mctx.Chat.String(), mctx.Sender.String())
-	go shazamSendSearchPick(context.Background(), mctx, song)
-	return true, ""
-}
-
-// shazamSendSearchPick mengirim detail lagu pilihan pencarian.
-func shazamSendSearchPick(ctx context.Context, mctx *store.MessageContext, song external.ShazamTrack) {
-	if strings.TrimSpace(song.ID) != "" {
-		shazamDoTrack(ctx, mctx, strings.TrimSpace(song.ID))
-		return
-	}
-	// Tanpa ID Shazam (peta a2st gagal): tampilkan kartu dari data iTunes.
-	shazamSendTrack(ctx, mctx, &song)
-}
-
-// CheckShazamPick mencegat angka polos saat ada pending pencarian Shazam.
-// true = ditangani (setop, jangan ke AI).
-func CheckShazamPick(client *whatsmeow.Client, evt *events.Message, text string) bool {
-	n, ok := parsePlainPickIndex(text)
-	if !ok {
-		return false
-	}
-	chat, sender := evt.Info.Chat.String(), evt.Info.Sender.String()
-	pend, pendAt := shPendingPeek(chat, sender)
-	if pend == nil {
-		return false
-	}
-	if n < 1 || n > len(pend.songs) {
-		return false
-	}
-	// Pending lain yang lebih baru menang.
-	if sp, spAt := spPendingPeek(chat, sender); sp != nil && spAt.After(pendAt) {
-		return false
-	}
-	if lp, lpAt := lrcPendingPeek(chat, sender); lp != nil && lpAt.After(pendAt) {
-		return false
-	}
-	song := pend.songs[n-1]
-	shPendingConsume(chat, sender)
-	mctx := &store.MessageContext{Client: client, Chat: evt.Info.Chat, Sender: evt.Info.Sender, RawEvt: evt}
-	go shazamSendSearchPick(context.Background(), mctx, song)
-	return true
-}
-
-// shazamDoDownloadUnduh mengunduh URL track pending via jalur Spotify
-// (cover+caption+audio — identik .sp <url>).
+// shazamDoDownloadUnduh mengunduh URL track via jalur Spotify (cover+caption+
+// audio — identik .sp <url>). Dipanggil dari tombol "Unduh".
 func shazamDoDownloadUnduh(ctx context.Context, mctx *store.MessageContext, rawURL string) {
 	p := spotifyPlatform()
 	if p == nil {
@@ -322,39 +165,19 @@ func shazamDoDownloadUnduh(ctx context.Context, mctx *store.MessageContext, rawU
 	}
 }
 
-// CheckShazamDownload mencegat kata "unduh" polos saat ada pending hasil
-// Shazam dari pengirim yang sama. true = ditangani (setop, jangan ke AI).
-func CheckShazamDownload(client *whatsmeow.Client, evt *events.Message, text string) bool {
-	if !strings.EqualFold(strings.TrimSpace(text), "unduh") {
-		return false
-	}
-	chat, sender := evt.Info.Chat.String(), evt.Info.Sender.String()
-	rawURL := shDlPendingPeek(chat, sender)
-	if rawURL == "" {
-		return false
-	}
-	shDlPendingConsume(chat, sender)
-	mctx := &store.MessageContext{Client: client, Chat: evt.Info.Chat, Sender: evt.Info.Sender, RawEvt: evt}
-	go shazamDoDownloadUnduh(context.Background(), mctx, rawURL)
-	return true
-}
+var (
+	shazamSpotifyTrackRe = regexp.MustCompile(`spotify:track:([A-Za-z0-9]+)`)
+	shazamTrackIDRe      = regexp.MustCompile(`^[A-Za-z0-9]{1,64}$`)
+)
 
-// shDlPendingPeek melihat pending tanpa menghapus (untuk interceptor).
-func shDlPendingPeek(chat, sender string) string {
-	v, _, _ := shDlPending.Peek(chat, sender)
-	return v
-}
-
-func shazamDoTrack(ctx context.Context, mctx *store.MessageContext, id string) {
-	track, err := external.GetShazamTrack(ctx, id)
-	if err != nil {
-		_ = store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal ambil track: %v", err))
-		return
+// shazamSpotifySearchURL = halaman pencarian Spotify untuk judul+artis.
+func shazamSpotifySearchURL(title, artist string) string {
+	query := strings.TrimSpace(strings.TrimSpace(title) + " " + strings.TrimSpace(artist))
+	if query == "" {
+		return ""
 	}
-	shazamSendTrack(ctx, mctx, track)
+	return "https://open.spotify.com/search/" + url.PathEscape(query)
 }
-
-var shazamSpotifyTrackRe = regexp.MustCompile(`spotify:track:([A-Za-z0-9]+)`)
 
 // shazamSpotifyLink menyelesaikan link Spotify yang bisa dipakai.
 // Apple kadang memberi URI skema (spotify:search:/spotify:track:), bukan
@@ -376,35 +199,42 @@ func shazamSpotifyLink(ctx context.Context, t *external.ShazamTrack) (string, bo
 	if res, err := external.SearchSpotify(ctx, query, 1); err == nil && len(res) > 0 && strings.TrimSpace(res[0].ID) != "" {
 		return "https://open.spotify.com/track/" + strings.TrimSpace(res[0].ID), true
 	}
-	return "https://open.spotify.com/search/" + url.PathEscape(query), false
+	return shazamSpotifySearchURL(t.Title, t.Artist), false
 }
 
-// shazamTrackCaption membangun kartu hasil: hint, baris kosong, lalu link.
-// direct=true berarti link berupa URL track (bisa .sp / unduh langsung).
-func shazamTrackCaption(t *external.ShazamTrack, link string, direct bool) string {
+// shazamTrackButton memilih tombol kartu hasil:
+//   - track Spotify ada → quick_reply "Unduh" (id membawa track ID),
+//   - tidak ada → cta_url "Buka Spotify" ke halaman pencarian.
+//
+// ok=false bila link kosong (kartu dikirim tanpa tombol).
+func shazamTrackButton(link string, direct bool) (messaging.NFButton, bool) {
+	if direct {
+		id := strings.TrimPrefix(link, "https://open.spotify.com/track/")
+		if link == "https://open.spotify.com/track/"+id && shazamTrackIDRe.MatchString(id) {
+			return messaging.QuickReply(shazamTapPrefix+id, "Unduh"), true
+		}
+		// Link "langsung" tapi bentuknya rusak: jangan kirim tombol mati.
+		return messaging.NFButton{}, false
+	}
+	if strings.TrimSpace(link) == "" {
+		return messaging.NFButton{}, false
+	}
+	return messaging.CTAURL("Buka Spotify", link), true
+}
+
+// shazamTrackCaption membangun isi kartu hasil (tanpa link Spotify — link
+// sudah diwakili tombol).
+func shazamTrackCaption(t *external.ShazamTrack) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "*%s*\n", firstNonEmptyShazam(t.Title, "-"))
-	fmt.Fprintf(&sb, "> Artis : %s\n", firstNonEmptyShazam(t.Artist, "-"))
-	fmt.Fprintf(&sb, "> Album : %s\n", firstNonEmptyShazam(t.Album, "-"))
-	fmt.Fprintf(&sb, "> Tahun : %s\n", firstNonEmptyShazam(t.ReleaseYear, "-"))
+	fmt.Fprintf(&sb, "*%s*\n", firstNonEmptyShazam(t.Title))
+	fmt.Fprintf(&sb, "> Artis : %s\n", firstNonEmptyShazam(t.Artist))
+	fmt.Fprintf(&sb, "> Album : %s\n", firstNonEmptyShazam(t.Album))
+	fmt.Fprintf(&sb, "> Tahun : %s\n", firstNonEmptyShazam(t.ReleaseYear))
 	if strings.TrimSpace(t.Genres) != "" {
 		fmt.Fprintf(&sb, "> Genre : %s\n", t.Genres)
 	}
-	if link == "" {
-		if t.HasLyrics {
-			sb.WriteString("_Lirik tersedia — cari via .lrc <judul>_")
-		}
-		return strings.TrimRight(sb.String(), "\n")
-	}
-	fmt.Fprintf(&sb, "> Spotify : %s\n", link)
-	sb.WriteString("\n")
-	if direct {
-		sb.WriteString("_Ketik \"unduh\" atau via .spotify <url> untuk download lagu_\n")
-	} else {
-		sb.WriteString("_Buka link, salin URL lagunya, lalu .sp <url>_\n")
-	}
 	if t.HasLyrics {
-		sb.WriteString("_Lirik tersedia — cari via .lrc <judul>_")
+		sb.WriteString("\n_Lirik tersedia — cari via .lrc <judul>_")
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
@@ -418,41 +248,132 @@ func firstNonEmptyShazam(ss ...string) string {
 	return "-"
 }
 
-// shDlPending menyimpan URL track hasil Shazam untuk perintah "unduh".
-const shDlPickTTL = 5 * time.Minute
-
-var shDlPending = newPendingStore[string](shDlPickTTL)
-
-func shDlPendingSet(chat, sender, rawURL string) {
-	shDlPending.Set(chat, sender, rawURL)
+// shazamFetchCover mengembalikan cover yang SUDAH dinormalkan (JPEG baseline
+// ≤640px). Rantai: cover Apple → cover Spotify (oEmbed) → nil (kartu tanpa
+// gambar). Cover gagal bukan alasan menggagalkan kartu.
+func shazamFetchCover(ctx context.Context, coverURL, spotifyID string) []byte {
+	if u := strings.TrimSpace(coverURL); u != "" {
+		if b := shazamCoverBytes(ctx, "apple", u); len(b) > 0 {
+			return b
+		}
+	}
+	if id := strings.TrimSpace(spotifyID); id != "" && shazamTrackIDRe.MatchString(id) {
+		if u, err := shazamSpotifyOEmbedCover(ctx, id); err != nil {
+			logfmt.Warn("shazam: cover spotify oembed gagal (%v)\n", err)
+		} else if u != "" {
+			if b := shazamCoverBytes(ctx, "spotify", u); len(b) > 0 {
+				return b
+			}
+		}
+	}
+	logfmt.Warn("shazam: tidak ada cover yang bisa dipakai, kartu tanpa gambar\n")
+	return nil
 }
 
-func shDlPendingConsume(chat, sender string) string {
-	v, _ := shDlPending.Consume(chat, sender)
-	return v
+// shazamCoverBytes mengunduh cover (default → paksa IPv4 bila gagal) lalu
+// menormalkannya. IPv4 dipaksa karena CDN Apple memutus transfer IPv6 di
+// tengah body dari jaringan owner (lihat external.DownloadBytesIPv4).
+func shazamCoverBytes(ctx context.Context, label, rawURL string) []byte {
+	data, err := external.DownloadBytes(ctx, rawURL)
+	if err != nil {
+		logfmt.Warn("shazam: cover %s gagal (%v), ulang via IPv4\n", label, err)
+		data, err = external.DownloadBytesIPv4(ctx, rawURL)
+		if err != nil {
+			logfmt.Warn("shazam: cover %s gagal juga via IPv4 (%v)\n", label, err)
+			return nil
+		}
+		logfmt.Info("shazam: cover %s via IPv4 berhasil (%d byte)\n", label, len(data))
+	}
+	norm := messaging.HeaderJPEG(data, shazamHeaderSide, 85)
+	if len(norm) == 0 {
+		logfmt.Warn("shazam: cover %s tidak bisa dinormalkan (%d byte)\n", label, len(data))
+		return nil
+	}
+	return norm
 }
 
-// shazamSendTrack resolve link, simpan pending unduh (bila langsung),
-// lalu kirim cover + caption; gagal cover = teks saja.
+// shazamOEmbedURL = endpoint oEmbed Spotify (publik, tanpa auth) yang
+// mengembalikan thumbnail_url cover sebuah track.
+func shazamOEmbedURL(trackID string) string {
+	return "https://open.spotify.com/oembed?url=" + url.QueryEscape("https://open.spotify.com/track/"+trackID)
+}
+
+// shazamSpotifyOEmbedCover mengambil URL cover dari oEmbed Spotify.
+func shazamSpotifyOEmbedCover(ctx context.Context, trackID string) (string, error) {
+	u := shazamOEmbedURL(trackID)
+	data, err := external.DownloadBytes(ctx, u)
+	if err != nil {
+		if data, err = external.DownloadBytesIPv4(ctx, u); err != nil {
+			return "", err
+		}
+	}
+	var r struct {
+		ThumbnailURL string `json:"thumbnail_url"`
+	}
+	if err := json.Unmarshal(data, &r); err != nil {
+		return "", fmt.Errorf("JSON oembed invalid: %w", err)
+	}
+	return strings.TrimSpace(r.ThumbnailURL), nil
+}
+
+// shazamSendTrack mengirim kartu hasil sebagai SATU bubble bertombol dengan
+// cover sebagai header gambar (ImageMessage hasil upload). Fail-soft tetap
+// satu bubble: header gagal → bubble teks + tombol yang sama; bubble gagal
+// total → teks saja.
 func shazamSendTrack(ctx context.Context, mctx *store.MessageContext, track *external.ShazamTrack) {
 	link, direct := shazamSpotifyLink(ctx, track)
-	if direct && link != "" {
-		shDlPendingSet(mctx.Chat.String(), mctx.Sender.String(), link)
-		for _, alt := range pendingAltSenders(mctx) {
-			shDlPendingSet(mctx.Chat.String(), alt, link)
-		}
+	caption := shazamTrackCaption(track)
+
+	var spotifyID string
+	if direct {
+		spotifyID = strings.TrimPrefix(link, "https://open.spotify.com/track/")
 	}
-	caption := shazamTrackCaption(track, link, direct)
-	if strings.TrimSpace(track.Cover) != "" {
-		if data, err := external.DownloadBytes(ctx, strings.TrimSpace(track.Cover)); err == nil && len(data) > 0 {
-			if serr := sendDlBytesImage(ctx, mctx, data, caption); serr == nil {
-				return
+	cover := shazamFetchCover(ctx, track.Cover, spotifyID)
+
+	if btn, ok := shazamTrackButton(link, direct); ok {
+		send := func(t messaging.NFText) error {
+			return messaging.SendNativeFlow(ctx, mctx, t, "shazam-track", caption, btn)
+		}
+		t := messaging.NFText{Body: caption, Footer: "Flora Go"}
+		if len(cover) > 0 {
+			// Header native_flow harus ImageMessage hasil upload; JPEGThumbnail
+			// saja diabaikan klien (header jadi kosong).
+			if im, err := messaging.UploadImageMessage(ctx, mctx.Client, cover); err == nil {
+				t.HeaderImage = im
 			} else {
-				logfmt.Warn("shazam: kirim cover gagal (%v)\n", serr)
+				logfmt.Warn("shazam: upload cover gagal (%v)\n", err)
 			}
-		} else if err != nil {
-			logfmt.Warn("shazam: unduh cover gagal (%v)\n", err)
+		}
+		if err := send(t); err == nil {
+			return
+		} else {
+			logfmt.Warn("shazam: kirim bubble tombol gagal (%v)\n", err)
+		}
+		// Ulang tanpa header gambar: tombol tetap sampai ke user.
+		if t.HeaderImage != nil {
+			if err := send(messaging.NFText{Body: caption, Footer: "Flora Go"}); err == nil {
+				return
+			}
 		}
 	}
+
 	_ = store.ReplyText(ctx, mctx, caption)
+}
+
+// CheckShazamButtonTap mencegat tap tombol kartu hasil ("shazam:dl:<trackID>")
+// lalu menjalankan unduhan. true = ditangani (setop, jangan ke AI).
+func CheckShazamButtonTap(client *whatsmeow.Client, evt *events.Message) bool {
+	id, ok := nativeFlowTapID(evt)
+	if !ok || !strings.HasPrefix(id, shazamTapPrefix) {
+		return false
+	}
+	trackID := strings.TrimSpace(strings.TrimPrefix(id, shazamTapPrefix))
+	ctx := context.Background()
+	mctx := &store.MessageContext{Client: client, Chat: evt.Info.Chat, Sender: evt.Info.Sender, RawEvt: evt}
+	if !shazamTrackIDRe.MatchString(trackID) {
+		_ = store.ReplyText(ctx, mctx, "Tombol unduh tidak valid, kenali lagunya ulang.")
+		return true
+	}
+	go shazamDoDownloadUnduh(ctx, mctx, "https://open.spotify.com/track/"+trackID)
+	return true
 }

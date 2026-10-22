@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"wabot-go/internal/messaging"
 	"wabot-go/internal/store"
 
 	"github.com/pdfcpu/pdfcpu/pkg/api"
@@ -131,43 +132,27 @@ func pdfSendMenu(ctx context.Context, mctx *store.MessageContext) error {
 // btnTestBizExtra di buttontest.go) — node ganda = error 479, nama
 // turunan = error 473/405.
 func pdfSendButtons(ctx context.Context, mctx *store.MessageContext, title, body string, buttons []pdfButton) error {
-	btns := make([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, 0, len(buttons))
+	nf := make([]messaging.NFButton, 0, len(buttons))
 	for _, b := range buttons {
-		params, _ := json.Marshal(map[string]string{"display_text": b.display, "id": b.id})
-		btns = append(btns, &waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
-			Name:             proto.String("quick_reply"),
-			ButtonParamsJSON: proto.String(string(params)),
-		})
+		nf = append(nf, messaging.QuickReply(b.id, b.display))
 	}
-	msg := &waE2E.Message{
-		InteractiveMessage: &waE2E.InteractiveMessage{
-			Header: &waE2E.InteractiveMessage_Header{
-				Title: proto.String(title),
-			},
-			Body:   &waE2E.InteractiveMessage_Body{Text: proto.String(body)},
-			Footer: &waE2E.InteractiveMessage_Footer{Text: proto.String("Flora Go • PDFMerge")},
-			InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
-				NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
-					Buttons: btns,
-				},
-			},
-		},
-	}
-	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, msg,
-		whatsmeow.SendRequestExtra{ID: whatsmeow.GenerateMessageID()})
+	err := messaging.SendNativeFlow(ctx, mctx, messaging.NFText{
+		Title:  title,
+		Body:   body,
+		Footer: "Flora Go • PDFMerge",
+	}, "pdfmerge-menu", "pdfmerge: "+title, nf...)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal kirim menu tombol: %v", err))
 	}
-	store.LogOutgoing(mctx, "pdfmerge-menu", title)
-	store.TrackBotMessageID(resp.ID, "pdfmerge: "+title)
 	return nil
 }
 
-// pdfTapID mengekstrak ID tombol dari tap. Fakta live: tap quick_reply
-// pada bubble native_flow kembali sebagai TemplateButtonReplyMessage
-// (selectedID utuh); jalur InteractiveResponseMessage/paramsJson
-// dipertahankan sebagai fallback (single_select).
-func pdfTapID(evt *events.Message) (string, bool) {
+// nativeFlowTapID mengekstrak ID tombol dari tap bubble native_flow (dipakai
+// pdfmerge, jpgpdf, shazam). Fakta live: tap quick_reply kembali sebagai
+// TemplateButtonReplyMessage (selectedID utuh); jalur
+// InteractiveResponseMessage/paramsJson dipertahankan sebagai fallback
+// (single_select).
+func nativeFlowTapID(evt *events.Message) (string, bool) {
 	unwrapped := store.UnwrapMessage(evt.Message)
 	if unwrapped == nil {
 		return "", false
@@ -200,7 +185,7 @@ func pdfTapID(evt *events.Message) (string, bool) {
 // jangan ke AI). Jalur teks tetap jalan sebagai fallback (mis. klien yang
 // tidak me-render tombol).
 func CheckPDFButtonTap(client *whatsmeow.Client, evt *events.Message) bool {
-	id, ok := pdfTapID(evt)
+	id, ok := nativeFlowTapID(evt)
 	if !ok || !strings.HasPrefix(id, "pdfmerge:") {
 		return false
 	}

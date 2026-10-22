@@ -3,7 +3,6 @@ package plugins
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"regexp"
@@ -12,15 +11,16 @@ import (
 	"time"
 
 	"wabot-go/internal/logfmt"
+	"wabot-go/internal/messaging"
 	"wabot-go/internal/store"
 
+	"github.com/pdfcpu/pdfcpu/pkg/api"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 	whatsmeow "github.com/polymorfa/hypermeow"
 	"github.com/polymorfa/hypermeow/proto/waCommon"
 	"github.com/polymorfa/hypermeow/proto/waE2E"
 	"github.com/polymorfa/hypermeow/types/events"
-	"github.com/pdfcpu/pdfcpu/pkg/api"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -418,35 +418,18 @@ func jpgSendMenu(ctx context.Context, mctx *store.MessageContext) error {
 // Node `biz` SENGAJA tidak disertakan manual: hypermeow menempelkannya
 // otomatis (lihat pdfSendButtons di pdfmerge.go) — node ganda = error.
 func jpgSendButtons(ctx context.Context, mctx *store.MessageContext, title, body string, buttons []jpgButton) error {
-	btns := make([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, 0, len(buttons))
+	nf := make([]messaging.NFButton, 0, len(buttons))
 	for _, b := range buttons {
-		params, _ := json.Marshal(map[string]string{"display_text": b.display, "id": b.id})
-		btns = append(btns, &waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
-			Name:             proto.String("quick_reply"),
-			ButtonParamsJSON: proto.String(string(params)),
-		})
+		nf = append(nf, messaging.QuickReply(b.id, b.display))
 	}
-	msg := &waE2E.Message{
-		InteractiveMessage: &waE2E.InteractiveMessage{
-			Header: &waE2E.InteractiveMessage_Header{
-				Title: proto.String(title),
-			},
-			Body:   &waE2E.InteractiveMessage_Body{Text: proto.String(body)},
-			Footer: &waE2E.InteractiveMessage_Footer{Text: proto.String("Flora Go • JPG ke PDF")},
-			InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
-				NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
-					Buttons: btns,
-				},
-			},
-		},
-	}
-	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, msg,
-		whatsmeow.SendRequestExtra{ID: whatsmeow.GenerateMessageID()})
+	err := messaging.SendNativeFlow(ctx, mctx, messaging.NFText{
+		Title:  title,
+		Body:   body,
+		Footer: "Flora Go • JPG ke PDF",
+	}, "jpgpdf-menu", "jpgpdf: "+title, nf...)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, ErrMsg("JPG ke PDF", fmt.Sprintf("Gagal kirim menu tombol: %v", err)))
 	}
-	store.LogOutgoing(mctx, "jpgpdf-menu", title)
-	store.TrackBotMessageID(resp.ID, "jpgpdf: "+title)
 	return nil
 }
 
@@ -462,7 +445,7 @@ var jpgWords = map[string]string{
 // CheckJpgButtonTap mencegat tap tombol jpgpdf (prefix "jpgpdf:") lalu
 // menjalankan kata yang sama seperti diketik. true = ditangani.
 func CheckJpgButtonTap(client *whatsmeow.Client, evt *events.Message) bool {
-	id, ok := pdfTapID(evt)
+	id, ok := nativeFlowTapID(evt)
 	if !ok || !strings.HasPrefix(id, "jpgpdf:") {
 		return false
 	}

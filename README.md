@@ -259,7 +259,7 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 | `.bk` `<link> [d]` | Download video embed |
 | `.gitclone` / `.gh` + `<owner/repo[@branch]>` | Download repo GitHub publik sebagai ZIP (maks 100MB) |
 | `.youtubemp3` / `.ytmp3`, `.youtube --mp3` | Audio saja |
-| `.shazam` + reply VN/audio | Kenali lagu |
+| `.shazam` + reply VN/audio | Kenali lagu (tombol **Unduh** bila ada track Spotify, selain itu **Buka Spotify**) |
 | `.lrclib` / `.lrc`, `.lrclibs` / `.lrcs` + `<judul>` | Cari lirik plain / synced |
 | Perilaku umum | Carousel/foto multi-item digabung **1 bubble album** (tanpa batas jumlah); WebP statis→JPEG / animasi→MP4 otomatis; video asing di-transcode ke MP4/H.264/AAC agar bisa diputar; thumbnail mini agar preview tampil |
 | Batas (keputusan owner) | Media ≤100MB kirim normal; video YouTube 100–200MB jadi **dokumen** (>200MB ditolak); durasi YouTube maks **35 menit**; antrean maks 2 bersamaan |

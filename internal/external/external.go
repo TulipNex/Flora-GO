@@ -75,6 +75,28 @@ var httpClient = &http.Client{Timeout: 20 * time.Second}
 // panel yang lebih lambat. Cap 100MB tetap (lihat downloadBytes).
 var dlClient = &http.Client{Timeout: 10 * time.Minute}
 
+// dlClientIPv4 mengunduh media dengan koneksi DIPAKSA IPv4. KASUS NYATA
+// (Okt 2026, laptop owner): koneksi IPv6 ke CDN Apple (is1-ssl.mzstatic.com,
+// 2403:300:...) diputus paksa di tengah body — "wsarecv: An existing
+// connection was forcibly closed by the remote host" — sehingga cover Shazam
+// selalu gagal. Happy Eyeballs hanya menolong saat connect, bukan saat
+// transfer putus; karena itu IP literal IPv4 harus dipaksa. Client ini HANYA
+// dipakai sebagai fallback setelah dlClient gagal.
+var dlClientIPv4 = &http.Client{
+	Timeout: 10 * time.Minute,
+	Transport: &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "tcp4", addr)
+		},
+		ForceAttemptHTTP2:   true,
+		MaxIdleConns:        16,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 15 * time.Second,
+	},
+}
+
 // fetchJSON GET JSON dan decode ke v. Error menyebut nama engine supaya
 // rantai fallback bisa merangkai pesan gabungan yang informatif.
 func fetchJSON(ctx context.Context, engine, rawURL string, headers map[string]string, v any) error {
@@ -148,6 +170,19 @@ func DownloadBytes(ctx context.Context, rawURL string) ([]byte, error) {
 // Header User-Agent standar selalu dipasang; header custom menimpanya
 // kecuali User-Agent yang tidak boleh dioverride diam-diam.
 func DownloadBytesWithHeaders(ctx context.Context, rawURL string, headers map[string]string) ([]byte, error) {
+	return downloadBytesVia(ctx, rawURL, headers, dlClient)
+}
+
+// DownloadBytesIPv4 seperti DownloadBytes tetapi koneksinya DIPAKSA IPv4
+// (lihat dlClientIPv4). Dipakai sebagai fallback saat jalur IPv6 memutus
+// transfer di tengah body (kasus CDN Apple dari jaringan owner).
+func DownloadBytesIPv4(ctx context.Context, rawURL string) ([]byte, error) {
+	return downloadBytesVia(ctx, rawURL, nil, dlClientIPv4)
+}
+
+// downloadBytesVia adalah inti unduhan media: validasi URL publik, UA
+// scraper, dan cap 100MB. Client dipilih pemanggil (default / IPv4).
+func downloadBytesVia(ctx context.Context, rawURL string, headers map[string]string, client *http.Client) ([]byte, error) {
 	if err := checkPublicURL(ctx, rawURL); err != nil {
 		return nil, err
 	}
@@ -162,7 +197,7 @@ func DownloadBytesWithHeaders(ctx context.Context, rawURL string, headers map[st
 		}
 		req.Header.Set(k, v)
 	}
-	resp, err := dlClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +205,7 @@ func DownloadBytesWithHeaders(ctx context.Context, rawURL string, headers map[st
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("media HTTP %d", resp.StatusCode)
 	}
-	// Batas 100MB per file. Pakai dlClient (timeout 10 menit), BUKAN
+	// Batas 100MB per file. Pakai client media (timeout 10 menit), BUKAN
 	// httpClient 20-detik yang hanya untuk API JSON.
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (100<<20)+1))
 	if err != nil {

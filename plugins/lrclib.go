@@ -244,9 +244,6 @@ func CheckLrcPick(client *whatsmeow.Client, evt *events.Message, text string) bo
 	if sp, spAt := spPendingPeek(chat, sender); sp != nil && spAt.After(pendAt) {
 		return false
 	}
-	if shNewerThanLrc(chat, sender) {
-		return false
-	}
 	song := pend.songs[n-1]
 	mode := pend.mode // balas angka polos = ikuti mode perintah search
 	lrcPendingConsume(evt.Info.Chat.String(), evt.Info.Sender.String())
