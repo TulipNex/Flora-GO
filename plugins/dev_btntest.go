@@ -23,9 +23,14 @@ func init() {
 }
 
 // RegisterButtonTest mendaftarkan `.btntest`: uji coba tombol + elemen
-// interaktif whatsmeow (kategori Owner — tampil di .menu seksi Owner).
+// interaktif whatsmeow (kategori Dev — tampil di .menu seksi Dev untuk owner).
 // Jadi main-only (cloneBlockedCategories).
 // .btntest = bubble native_flow (7 tombol) · phone = minta nomor.
+// CATATAN: file ini LABORATORIUM — sengaja merakit proto manual untuk
+// mengeksplor tombol/params yang belum tentu didukung. Plugin produksi
+// (pdfmerge, pdflocal, dev_booktest) memakai helper internal/messaging
+// (messaging.NativeFlow / SendNativeFlow / QuickReply / ...); pakai itu
+// untuk fitur baru, bukan meniru rakit manual di sini.
 // CATATAN live: ButtonsMessage/ListMessage lawas DITOLAK server (405),
 // TemplateMessage terhidrasi terkirim tapi tak dirender klien (butuh
 // templateID bisnis) — ketiganya dihapus dari pengirim, hanya extractor
@@ -33,8 +38,8 @@ func init() {
 func RegisterButtonTest(r *Registry) {
 	r.Register(Command{
 		Name:        "btntest",
-		Description: "Uji tombol (native/phone)",
-		Category:    CategoryOwner,
+		Description: "Uji tombol (native/phone/signup/widget)",
+		Category:    CategoryDev,
 		Handler:     handleButtonTest,
 	})
 }
@@ -89,13 +94,16 @@ func handleButtonTest(ctx context.Context, mctx *store.MessageContext) error {
 //   fork lokal third_party/hypermeow). Node ganda = 479; nama turunan =
 //   473/405. Subcommand mati (extra/pay/xcatalog/xremind/xunremind/xaddr)
 //   sudah dihapus dari switch di atas.
+//   Peta name→params JSON untuk tombol yang DIDUKUNG kini dipusatkan di
+//   internal/messaging/button.go (konstanta NF* + konstruktornya).
 
 // btnTestBizExtra mengembalikan extra kirim standar (ID acak). Node `biz`
 // SENGAJA tidak disertakan manual: hypermeow menempelkannya otomatis untuk
 // tiap InteractiveMessage+NativeFlowMessage (getMessageContent /
 // buildNativeFlowBizNode di send.go) — node `biz` ganda ditolak server
 // (error 479, terverifikasi live). Pola manual ini warisan era Baileys yang
-// tak punya auto-biz.
+// tak punya auto-biz. Untuk plugin produksi pakai messaging.SendNativeFlow
+// (internal/messaging/button.go) yang membungkus pola ini.
 func btnTestBizExtra() whatsmeow.SendRequestExtra {
 	return whatsmeow.SendRequestExtra{ID: whatsmeow.GenerateMessageID()}
 }

@@ -55,7 +55,7 @@ func RegisterMenu(r *Registry) {
 					// jangan hilangkan dari menu, tampung ke Umum.
 					cat = CategoryUmum
 				}
-				if cat == CategoryOwner && !showOwner {
+				if (cat == CategoryOwner || cat == CategoryDev) && !showOwner {
 					continue
 				}
 				grouped[cat] = append(grouped[cat], name)
@@ -118,22 +118,21 @@ func RegisterMenu(r *Registry) {
 				desc = fmt.Sprintf("%d commands tersedia", shown)
 			}
 			greeting, mentions := greetingHeader(mctx)
-			// Thumbnail & favicon: nilai kustom DB (.thumbnail/.favicon)
-			// menang atas .env; gagal baca DB = fallback .env (fail-soft,
-			// kartu tetap terkirim tanpa gambar kustom).
-			thumbURL := resolveMenuThumbURL(ctx, mctx)
-			faviconURL := strings.TrimSpace(config.MenuFaviconURL)
-			if custom, err := store.GroupsFor(mctx.Client).GetMenuFaviconURL(ctx); err == nil && custom != "" {
-				faviconURL = custom
-			}
+			// Thumbnail & favicon: gambar tersimpan (.thumbnail dari kiriman
+			// gambar) menang atas URL kustom DB, yang menang atas .env; gagal
+			// baca DB = fallback .env (fail-soft, kartu tetap terkirim).
+			thumbBytes, thumbURL := resolveMenuAsset(ctx, thumbAsset(mctx))
+			faviconBytes, faviconURL := resolveMenuAsset(ctx, faviconAsset(mctx))
 			if err := messaging.SendLinkCard(ctx, mctx, messaging.LinkCard{
-				PageURL:     pageURL,
-				Title:       title,
-				Description: desc,
-				ThumbURL:    thumbURL,
-				FaviconURL:  faviconURL,
-				Body:        greeting + "\n\n*Daftar Menu*\n" + body,
-				Mentions:    mentions,
+				PageURL:      pageURL,
+				Title:        title,
+				Description:  desc,
+				ThumbURL:     thumbURL,
+				ThumbBytes:   thumbBytes,
+				FaviconURL:   faviconURL,
+				FaviconBytes: faviconBytes,
+				Body:         greeting + "\n\n*Daftar Menu*\n" + body,
+				Mentions:     mentions,
 			}); err != nil {
 				return store.ReplyText(ctx, mctx, err.Error())
 			}
@@ -142,17 +141,19 @@ func RegisterMenu(r *Registry) {
 	})
 }
 
-// resolveMenuThumbURL mengembalikan URL thumbnail kartu: kustom DB
-// (.thumbnail) menang atas .env (MENU_THUMB_URL); gagal baca DB = fallback
-// .env (fail-soft). Dipakai menu + shareloc (preview lokasi) supaya satu
-// aturan prioritas dipakai di semua tempat. DB dipilih per pemilik client
-// (bot utama vs clone) supaya thumbnail kustom tidak bocor antar bot.
-func resolveMenuThumbURL(ctx context.Context, mctx *store.MessageContext) string {
-	thumbURL := strings.TrimSpace(config.MenuThumbURL)
-	if custom, err := store.GroupsFor(mctx.Client).GetMenuThumbURL(ctx); err == nil && custom != "" {
-		thumbURL = custom
+// resolveMenuAsset mengembalikan sumber aset kartu .menu: byte lokal (gambar
+// yang disimpan lewat .thumbnail/.favicon) menang atas URL kustom DB, yang
+// menang atas .env. Gagal baca DB = fail-soft (pakai .env) supaya kartu tetap
+// terkirim.
+func resolveMenuAsset(ctx context.Context, a menuAsset) (blob []byte, urls string) {
+	if b, err := a.getBlob(ctx); err == nil && len(b) > 0 {
+		return b, ""
 	}
-	return thumbURL
+	urls = a.fallback
+	if custom, err := a.getURL(ctx); err == nil && custom != "" {
+		urls = custom
+	}
+	return nil, urls
 }
 
 // greetingHeader menyusun sapaan + perkenalan, keduanya bold, dipisah satu

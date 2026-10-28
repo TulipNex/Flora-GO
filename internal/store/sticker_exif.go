@@ -5,18 +5,19 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // stickerExifPayload adalah struktur JSON yang WhatsApp baca dari chunk EXIF
 // webp untuk menentukan nama pack & publisher (author) sebuah stiker.
 type stickerExifPayload struct {
 	PackID    string   `json:"sticker-pack-id"`
-	PackName  string   `json:"sticker-pack-name"`
-	Publisher string   `json:"sticker-pack-publisher"`
-	Emojis    []string `json:"emojis"`
+	PackName  string   `json:"sticker-pack-name,omitempty"`
+	Publisher string   `json:"sticker-pack-publisher,omitempty"`
+	Emojis    []string `json:"emojis,omitempty"`
 }
 
-// exifHeader adalah 24 byte tetap yang WhatsApp expect sebelum payload JSON
+// exifHeader adalah 22 byte tetap yang WhatsApp expect sebelum payload JSON
 // di dalam chunk EXIF webp. Ini konstanta yang dipakai luas oleh berbagai
 // library sticker WhatsApp (mis. wa-sticker-formatter, node sticker libs).
 var exifHeader = []byte{
@@ -28,6 +29,8 @@ var exifHeader = []byte{
 // buildStickerExif membangun full byte chunk EXIF (header + panjang json + json)
 // yang siap dimasukkan sebagai chunk RIFF "EXIF" ke dalam file webp.
 func buildStickerExif(packname, author string) ([]byte, error) {
+	packname = strings.TrimSpace(packname)
+	author = strings.TrimSpace(author)
 	payload := stickerExifPayload{
 		PackID:    "wabot-go",
 		PackName:  packname,

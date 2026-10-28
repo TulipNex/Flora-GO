@@ -4,12 +4,16 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"wabot-go/internal/external"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/messaging"
+	"wabot-go/internal/metrics"
 	"wabot-go/internal/store"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
@@ -18,6 +22,15 @@ import (
 
 func init() {
 	registerPlugin(RegisterDownloader)
+	if dlSem == nil {
+		n := dlMaxPar
+		if raw := strings.TrimSpace(os.Getenv("DL_MAX_PAR")); raw != "" {
+			if v, err := strconv.Atoi(raw); err == nil && v >= 1 && v <= 8 {
+				n = v
+			}
+		}
+		dlSem = make(chan struct{}, n)
+	}
 }
 
 // Batasan downloader medsos. Tanpa cap ukuran file (keputusan owner —
@@ -25,7 +38,7 @@ func init() {
 // panel tidak tumbang.
 const (
 	dlTimeout   = 4 * time.Minute // yt-dlp primer: gagal-cepat lalu fallback scraper
-	dlMaxPar    = 2               // download bersamaan; sisanya ditolak sopan
+	dlMaxPar    = 2               // download bersamaan; sisanya ditolak sopan (override via env DL_MAX_PAR)
 	dlVideoFmt  = "bv*[height<=720]+ba/b[height<=720]/b"
 	dlStaleDays = 24 * time.Hour // umur temp yatim sebelum disapu startup
 	// Album TIDAK dibatasi (keputusan owner): semua item hasil scrape
@@ -41,7 +54,8 @@ const (
 
 // dlSem membatasi download bersamaan (unduh + upload boros bandwidth, RAM,
 // dan disk). Non-blocking: penuh = tolak langsung, bukan antre diam.
-var dlSem = make(chan struct{}, dlMaxPar)
+// Ukuran bisa di-override via env DL_MAX_PAR (default 2, cap 8).
+var dlSem chan struct{}
 
 // dlPlatform mendeskripsikan satu command downloader: domain yang diterima
 // + apakah default-nya audio saja.
@@ -200,7 +214,9 @@ func handleDownload(ctx context.Context, mctx *store.MessageContext, p dlPlatfor
 	}
 	go func() {
 		bg := context.Background()
+		metrics.IncDownload()
 		if rerr := downloadAndSend(bg, mctx, rawURL, &p, audioOnly, status); rerr != nil {
+			metrics.IncDownloadError()
 			_ = store.ReplyText(bg, mctx, rerr.Error())
 		}
 	}()
@@ -270,38 +286,28 @@ func downloadAndSend(ctx context.Context, mctx *store.MessageContext, rawURL str
 	return sendScrapeResult(ctx, mctx, res, status)
 }
 
-// fetchScraper menjalankan rantai adapter per platform + omnify universal
-// sebagai jaring pengaman terakhir (lihat withUniversal).
+// fetchScraper menjalankan adapter platform yang bersangkutan. TIDAK ada lagi
+// fallback universal (omnify) di sini: endpoint-nya menuntut API key sejak
+// Okt 2026 (401 untuk semua request), jadi dulu ia hanya menambah ~20 detik
+// dan pesan error dobel. Rantai cadangan sekarang murni milik tiap adapter
+// (mis. tiktok: faa → tikwm → tiktokdl → musically; instagram: igexport →
+// savereels; facebook: faa saja).
 func fetchScraper(ctx context.Context, p *dlPlatform, rawURL string, audioOnly bool) (*external.ScrapeResult, error) {
-	// withUniversal menjalankan fetch utama, jatuh ke universal bila gagal,
-	// dan merangkai error gabungan yang informatif bila keduanya gagal.
-	withUniversal := func(name string, fetch func(context.Context, string) (*external.ScrapeResult, error)) (*external.ScrapeResult, error) {
-		if res, err := fetch(ctx, rawURL); err == nil {
-			return res, nil
-		} else {
-			firstErr := err
-			if res, err := external.FetchUniversal(ctx, rawURL); err == nil {
-				return res, nil
-			} else {
-				return nil, fmt.Errorf("%s: %v | universal: %v", name, firstErr, err)
-			}
-		}
-	}
 	switch p.command {
 	case "tiktok":
-		return withUniversal("tiktok", external.FetchTikTok)
+		return external.FetchTikTok(ctx, rawURL)
 	case "instagram":
-		return withUniversal("instagram", external.FetchInstagram)
+		return external.FetchInstagram(ctx, rawURL)
 	case "twitter":
-		return withUniversal("twitter", external.FetchTwitter)
+		return external.FetchTwitter(ctx, rawURL)
 	case "spotify":
-		return withUniversal("spotify", external.FetchSpotify)
+		return external.FetchSpotify(ctx, rawURL)
 	case "facebook":
-		return withUniversal("facebook", external.FetchFacebook)
+		return external.FetchFacebook(ctx, rawURL)
 	case "pinterest":
-		return withUniversal("pinterest", external.FetchPinterest)
+		return external.FetchPinterest(ctx, rawURL)
 	default:
-		return external.FetchUniversal(ctx, rawURL)
+		return nil, fmt.Errorf("platform %s belum punya adapter", p.command)
 	}
 }
 
@@ -339,7 +345,9 @@ func sendScrapeResult(ctx context.Context, mctx *store.MessageContext, res *exte
 			cap = caption
 		}
 		var serr error
-		switch item.Kind {
+		// Sniff byte: tebakan Kind dari adapter bisa salah (faa tidak
+		// membedakan foto/video).
+		switch resolveMediaKind(data, item.Kind) {
 		case external.KindAudio:
 			serr = sendDlBytesAudio(ctx, mctx, data, labelFromURL(item.URL))
 		case external.KindPhoto:
@@ -359,6 +367,29 @@ func sendScrapeResult(ctx context.Context, mctx *store.MessageContext, res *exte
 		return fmt.Errorf("semua %d item gagal diproses (%s)", failed, res.Source)
 	}
 	return nil
+}
+
+// resolveMediaKind mengoreksi Kind hasil scraper dengan sniff 512 byte awal
+// hasil unduhan. Perlu karena sebagian engine (faa) tidak membedakan foto dan
+// video — adapter hanya menebak dari bentuk URL. Hasil sniff yang jelas
+// (image/* atau video/*) menang atas tebakan adapter; selain itu tebakan
+// dipertahankan. Audio tidak pernah diubah (tidak di-sniff).
+func resolveMediaKind(data []byte, kind external.MediaKind) external.MediaKind {
+	if kind == external.KindAudio || len(data) == 0 {
+		return kind
+	}
+	head := data
+	if len(head) > 512 {
+		head = head[:512]
+	}
+	ct := http.DetectContentType(head)
+	switch {
+	case strings.HasPrefix(ct, "video/"):
+		return external.KindVideo
+	case strings.HasPrefix(ct, "image/"):
+		return external.KindPhoto
+	}
+	return kind
 }
 
 // albumEligible true kalau ada ≥2 item foto/video (syarat minimal album).
@@ -404,7 +435,9 @@ func sendScrapeAlbum(ctx context.Context, mctx *store.MessageContext, items []ex
 			sent++
 			continue
 		}
-		if item.Kind == external.KindVideo {
+		// Sniff byte: Kind dari adapter hanya tebakan (lihat resolveMediaKind).
+		switch resolveMediaKind(data, item.Kind) {
+		case external.KindVideo:
 			media = append(media, albumMediaItem{video: true, data: data})
 			continue
 		}

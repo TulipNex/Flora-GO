@@ -36,6 +36,10 @@ func init() {
 // susun ulang → `nama X` (opsional) → `gabung` → `batal` bila berubah
 // pikiran. Kata tunggal Indonesia primer (Inggris alias), cocok persis
 // seluruh pesan, hanya berlaku terkait sesi sendiri.
+//
+// Kata `mulai` TIDAK global: ia hanya hidup selama jendela startArmTTL (5
+// menit) setelah `.pdfmerge` mengirim menu (lihat startarm.go). Tanpa jendela,
+// `mulai` lolos sebagai pesan biasa (AI) tanpa notifikasi apa pun.
 func RegisterPDFMerge(r *Registry) {
 	r.Register(Command{
 		Name:        "pdfmerge",
@@ -84,7 +88,13 @@ func pdfStageKey(sender, chat types.JID) string {
 }
 
 func handlePDFMerge(ctx context.Context, mctx *store.MessageContext) error {
-	return pdfSendMenu(ctx, mctx)
+	if err := pdfSendMenu(ctx, mctx); err != nil {
+		return err
+	}
+	// Menu terkirim = buka jendela `mulai` 5 menit untuk pengirim+chat ini.
+	// Menu gagal kirim tidak meng-arm apa pun (user tak melihat tombolnya).
+	startArmSet(startArmKey(mctx.Sender, mctx.Chat), startArmPDF)
+	return nil
 }
 
 // pdfButton adalah satu tombol quick_reply (id ber-prefix "pdfmerge:").
@@ -204,9 +214,22 @@ func CheckPDFButtonTap(client *whatsmeow.Client, evt *events.Message) bool {
 	pdfStagesMu.Lock()
 	st, ok := pdfStages[key]
 	pdfStagesMu.Unlock()
-	if !ok && canon != "mulai" {
-		_ = store.ReplyText(ctx, mctx, "Belum ada sesi upload aktif. Ketuk Mulai dulu.")
-		return true
+	if !ok {
+		if canon != "mulai" {
+			_ = store.ReplyText(ctx, mctx, "Belum ada sesi upload aktif. Ketuk Mulai dulu.")
+			return true
+		}
+		// Tap Mulai di luar sesi: hanya boleh bila jendela `.pdfmerge` masih
+		// hidup. Menu basi (>5 menit) tidak membuka sesi — bot mengirim menu
+		// baru + menyegarkan jendela (bukan notifikasi "sesi nonaktif").
+		if !startArmTakeOrRearm(startArmKey(evt.Info.Sender, evt.Info.Chat), startArmPDF) {
+			_ = pdfSendMenu(ctx, mctx)
+			return true
+		}
+	} else if canon == "mulai" {
+		// Niat "mulai" terjawab "masih aktif" oleh pdfStageWord; jendelanya
+		// tidak perlu disimpan lagi.
+		startArmClear(startArmKey(evt.Info.Sender, evt.Info.Chat))
 	}
 	return pdfStageWord(ctx, mctx, key, st, ok, canon)
 }
@@ -232,7 +255,9 @@ func pdfWordArg(text string) (word, arg string) {
 // CheckPDFStaging dipanggil handler untuk tiap pesan non-command: kata
 // tunggal sesi, tampung PDF (reaksi ✅/❌), atau reply-angka reorder.
 // True = dikonsumsi. Aturan: kata cocok persis; sesi-terkait saja, kecuali
-// "mulai" yang membuka sesi; tanpa sesi + bukan "mulai" = pesan biasa.
+// "mulai" yang membuka sesi — dan itu pun hanya bila jendela `.pdfmerge`
+// (startarm.go) masih hidup. Tanpa sesi + bukan "mulai" (atau jendela basi) =
+// pesan biasa, diteruskan ke jalur normal/AI tanpa notifikasi.
 func CheckPDFStaging(client *whatsmeow.Client, evt *events.Message) bool {
 	key := pdfStageKey(evt.Info.Sender, evt.Info.Chat)
 	pdfStagesMu.Lock()
@@ -251,6 +276,12 @@ func CheckPDFStaging(client *whatsmeow.Client, evt *events.Message) bool {
 	}
 	if arg == "" {
 		if canon, hit := pdfWords[word]; hit {
+			// Gerbang jendela: hanya "mulai" (pembukaan sesi) yang ditahan,
+			// kata sesi lain tetap mengikuti keberadaan sesi.
+			if canon == "mulai" &&
+				!startArmAllows(startArmKey(evt.Info.Sender, evt.Info.Chat), startArmPDF, ok) {
+				return false
+			}
 			return pdfStageWord(ctx, mctx, key, st, ok, canon)
 		}
 	}

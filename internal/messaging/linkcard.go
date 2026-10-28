@@ -10,6 +10,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -18,9 +21,12 @@ import (
 	"image/png"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
@@ -48,9 +54,18 @@ type LinkCard struct {
 	PageURL     string // ditulis di teks + MatchedText (cache preview per URL ini)
 	Title       string // judul kartu
 	Description string // deskripsi pendek kartu
-	ThumbURL    string // sumber gambar thumbnail ("" = tanpa thumbnail)
-	FaviconURL  string // sumber ikon kartu ("" = tanpa favicon)
-	Body        string // isi pesan setelah URL ("" = pakai Description)
+	// ThumbURL adalah sumber gambar thumbnail. Boleh DAFTAR dipisah koma /
+	// spasi: dicoba berurutan sampai satu berhasil (host gambar sering
+	// intermiten). Kosong = tanpa thumbnail.
+	ThumbURL string
+	// ThumbBytes adalah gambar thumbnail LOKAL (mis. hasil .thumbnail dari
+	// gambar yang dikirim owner). Kalau terisi, tidak ada HTTP sama sekali
+	// dan ThumbURL diabaikan — jalur paling tahan gangguan host.
+	ThumbBytes []byte
+	// FaviconURL/FaviconBytes pola sama untuk ikon kartu.
+	FaviconURL   string
+	FaviconBytes []byte
+	Body         string // isi pesan setelah URL ("" = pakai Description)
 	// Mentions adalah JID yang di-tag di dalam Body. SYARAT PAIRING (sama
 	// seperti ReplyTextWithMentions): Body WAJIB mengandung "@<User>" untuk
 	// tiap JID dengan User yang sama persis (di grup mode LID = "@<LID>").
@@ -85,16 +100,23 @@ func SendLinkCard(ctx context.Context, mctx *store.MessageContext, card LinkCard
 		ext.ContextInfo = &waE2E.ContextInfo{MentionedJID: bare}
 	}
 
-	// Thumbnail opsional: kalau ThumbURL diisi, unduh + normalisasi +
-	// upload, lalu pasang field-nya. Gagal = kartu tetap terkirim TANPA
-	// thumbnail (bukan gagal total), karena kartu teksnya sendiri valid.
-	if strings.TrimSpace(card.ThumbURL) != "" {
-		attachThumbnail(ctx, mctx, ext, card.ThumbURL)
+	// Thumbnail opsional: byte lokal (kalau ada) menang — tanpa jaringan.
+	// Selain itu daftar URL dicoba berurutan. Gagal di semua titik = kartu
+	// tetap terkirim TANPA thumbnail (bukan gagal total), karena kartu
+	// teksnya sendiri valid.
+	if len(card.ThumbBytes) > 0 {
+		attachThumbnailBytes(ctx, mctx, ext, card.ThumbBytes)
+	} else if sources := SplitThumbSources(card.ThumbURL); len(sources) > 0 {
+		attachThumbnail(ctx, mctx, ext, sources)
 	}
 
 	// Favicon opsional/pemanis dengan pola yang sama (gagal = dilewati).
-	if strings.TrimSpace(card.FaviconURL) != "" {
-		if favicon := fetchFavicon(ctx, mctx, card.FaviconURL); favicon != nil {
+	if len(card.FaviconBytes) > 0 {
+		if favicon := faviconFromBytes(ctx, mctx, card.FaviconBytes); favicon != nil {
+			ext.FaviconMmsMetadata = favicon
+		}
+	} else if sources := SplitThumbSources(card.FaviconURL); len(sources) > 0 {
+		if favicon := fetchFavicon(ctx, mctx, sources); favicon != nil {
 			ext.FaviconMmsMetadata = favicon
 		}
 	}
@@ -122,9 +144,10 @@ func SendLinkCard(ctx context.Context, mctx *store.MessageContext, card LinkCard
 	return nil
 }
 
-// cachedThumb adalah hasil olahan satu URL gambar yang disimpan supaya
+// cachedThumb adalah hasil olahan satu sumber gambar yang disimpan supaya
 // kartu yang sama (mis. .menu dibuka berkali-kali) tidak download +
-// normalisasi + upload ulang tiap kali.
+// normalisasi + upload ulang tiap kali. Kunci cache: "url:<url>" untuk
+// sumber URL, "blob:<sha256>" untuk byte lokal (gambar tersimpan owner).
 type cachedThumb struct {
 	small    []byte
 	uploaded whatsmeow.UploadResponse
@@ -141,53 +164,138 @@ var (
 // thumbCacheTTL mengikuti contoh yang jalan (cache media 6 jam).
 const thumbCacheTTL = 6 * time.Hour
 
-// getCachedThumb mengembalikan thumbnail olahan untuk URL: dari cache kalau
-// masih segar, kalau tidak unduh + normalisasi + upload dulu lalu simpan.
-// Hasil upload (DirectPath/hash/mediakey) aman dipakai ulang karena
-// kontennya sama persis (content-addressed).
-func getCachedThumb(ctx context.Context, mctx *store.MessageContext, thumbURL string) (small []byte, uploaded *whatsmeow.UploadResponse, width, height uint32, err error) {
-	thumbCacheMu.Lock()
-	if hit, ok := thumbCache[thumbURL]; ok && time.Since(hit.ts) < thumbCacheTTL {
-		cached := *hit
-		thumbCacheMu.Unlock()
-		return cached.small, &cached.uploaded, cached.width, cached.height, nil
-	}
-	thumbCacheMu.Unlock()
+// Kunci cache memori untuk dua jenis sumber.
+const (
+	thumbCacheKeyURL  = "url:"
+	thumbCacheKeyBlob = "blob:"
+)
 
-	raw, err := downloadThumb(ctx, thumbURL)
-	if err != nil {
-		return nil, nil, 0, 0, fmt.Errorf("gagal ambil thumbnail: %w", err)
-	}
-	full, small, width, height := normalizeThumb(raw)
-	up, err := uploadThumb(ctx, mctx, full, whatsmeow.MediaLinkThumbnail)
-	if err != nil {
-		return nil, nil, 0, 0, fmt.Errorf("gagal upload thumbnail: %w", err)
-	}
-
+// lookupThumbCache mengambil entri cache yang masih segar (false = miss).
+func lookupThumbCache(key string) (small []byte, uploaded *whatsmeow.UploadResponse, width, height uint32, ok bool) {
 	thumbCacheMu.Lock()
-	thumbCache[thumbURL] = &cachedThumb{small: small, uploaded: *up, width: width, height: height, ts: time.Now()}
-	// Sapu oportunistik (audit T6): entri kedaluwarsa (>TTL) dibuang tiap
-	// ada simpan baru — tanpa ini map tumbuh tanpa batas seumur proses
-	// (TTL selama ini hanya memengaruhi baca, bukan membersihkan).
+	defer thumbCacheMu.Unlock()
+	hit, found := thumbCache[key]
+	if !found || time.Since(hit.ts) >= thumbCacheTTL {
+		return nil, nil, 0, 0, false
+	}
+	cached := *hit
+	return cached.small, &cached.uploaded, cached.width, cached.height, true
+}
+
+// storeThumbCache menyimpan hasil olahan + menyapu entri kedaluwarsa
+// (audit T6): tanpa sapuan ini map tumbuh tanpa batas seumur proses
+// (TTL selama ini hanya memengaruhi baca, bukan membersihkan).
+func storeThumbCache(key string, small []byte, uploaded whatsmeow.UploadResponse, width, height uint32) {
+	thumbCacheMu.Lock()
+	defer thumbCacheMu.Unlock()
+	thumbCache[key] = &cachedThumb{small: small, uploaded: uploaded, width: width, height: height, ts: time.Now()}
 	now := time.Now()
 	for k, e := range thumbCache {
 		if now.Sub(e.ts) > thumbCacheTTL {
 			delete(thumbCache, k)
 		}
 	}
-	thumbCacheMu.Unlock()
-	return small, up, width, height, nil
 }
 
-// attachThumbnail mengisi field thumbnail di ext lewat cache. Gagal di titik
-// mana pun = ext dibiarkan tanpa thumbnail (kartu teks tetap terkirim),
-// kegagalannya hanya ke console.
-func attachThumbnail(ctx context.Context, mctx *store.MessageContext, ext *waE2E.ExtendedTextMessage, thumbURL string) {
-	small, uploaded, width, height, err := getCachedThumb(ctx, mctx, thumbURL)
+// getCachedThumb mengembalikan thumbnail olahan untuk satu URL: dari cache
+// kalau masih segar; kalau tidak, unduh (retry + cache disk sebagai cadangan
+// saat host gambar sedang mati) lalu normalisasi + upload. Hasil upload aman
+// dipakai ulang karena kontennya sama persis (content-addressed).
+func getCachedThumb(ctx context.Context, mctx *store.MessageContext, thumbURL string) (small []byte, uploaded *whatsmeow.UploadResponse, width, height uint32, err error) {
+	key := thumbCacheKeyURL + thumbURL
+	if small, uploaded, width, height, ok := lookupThumbCache(key); ok {
+		return small, uploaded, width, height, nil
+	}
+
+	raw, err := downloadThumb(ctx, thumbURL)
 	if err != nil {
-		logfmt.Warn("linkcard: thumbnail dilewati (%v)\n", err)
+		cached, ok := readDiskThumb(thumbURL)
+		if !ok {
+			return nil, nil, 0, 0, fmt.Errorf("gagal ambil thumbnail: %w", err)
+		}
+		// Host gambar sedang tidak bisa diakses: pakai salinan terakhir yang
+		// pernah sukses supaya thumbnail tidak hilang begitu saja. Umur file
+		// sengaja tidak dibatasi — lebih baik gambar lama daripada kosong.
+		logfmt.Warn("linkcard: %s gagal diunduh (%v), memakai cache lama\n", thumbURL, err)
+		raw = cached
+	} else {
+		writeDiskThumb(thumbURL, raw)
+	}
+	return prepareCachedThumb(ctx, mctx, key, raw)
+}
+
+// getCachedThumbBytes pola sama untuk sumber byte lokal (tanpa jaringan).
+func getCachedThumbBytes(ctx context.Context, mctx *store.MessageContext, data []byte) (small []byte, uploaded *whatsmeow.UploadResponse, width, height uint32, err error) {
+	sum := sha256.Sum256(data)
+	key := thumbCacheKeyBlob + hex.EncodeToString(sum[:12])
+	if small, uploaded, width, height, ok := lookupThumbCache(key); ok {
+		return small, uploaded, width, height, nil
+	}
+	return prepareCachedThumb(ctx, mctx, key, data)
+}
+
+// prepareCachedThumb menormalkan + mengunggah byte sumber, lalu menyimpan
+// hasilnya di cache memori dengan kunci key.
+func prepareCachedThumb(ctx context.Context, mctx *store.MessageContext, key string, raw []byte) (small []byte, uploaded *whatsmeow.UploadResponse, width, height uint32, err error) {
+	full, smallBytes, w, h := normalizeThumb(raw)
+	up, err := uploadThumb(ctx, mctx, full, whatsmeow.MediaLinkThumbnail)
+	if err != nil {
+		return nil, nil, 0, 0, fmt.Errorf("gagal upload thumbnail: %w", err)
+	}
+	storeThumbCache(key, smallBytes, *up, w, h)
+	return smallBytes, up, w, h, nil
+}
+
+// SplitThumbSources memecah ThumbURL/FaviconURL menjadi daftar URL valid
+// (dipisah koma/titik-koma/spasi). Entri non-http dibuang supaya nilai aneh
+// di bot_settings (mis. sisa teks "reset") tidak menghasilkan permintaan HTTP
+// yang tidak masuk akal.
+func SplitThumbSources(raw string) []string {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || unicode.IsSpace(r)
+	})
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		low := strings.ToLower(f)
+		if !strings.HasPrefix(low, "http://") && !strings.HasPrefix(low, "https://") {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// attachThumbnail mencoba daftar URL berurutan sampai satu berhasil. Gagal
+// di semua URL = ext dibiarkan tanpa thumbnail (kartu teks tetap terkirim),
+// kegagalannya hanya ke console.
+func attachThumbnail(ctx context.Context, mctx *store.MessageContext, ext *waE2E.ExtendedTextMessage, sources []string) {
+	var lastErr error
+	for _, src := range sources {
+		small, uploaded, width, height, err := getCachedThumb(ctx, mctx, src)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		setExtThumbnail(ext, small, uploaded, width, height)
 		return
 	}
+	logfmt.Warn("linkcard: thumbnail dilewati (%v)\n", lastErr)
+}
+
+// attachThumbnailBytes memasang thumbnail dari byte lokal (tanpa jaringan
+// sama sekali) — jalur utama setelah owner menyimpan gambar via .thumbnail.
+func attachThumbnailBytes(ctx context.Context, mctx *store.MessageContext, ext *waE2E.ExtendedTextMessage, data []byte) {
+	small, uploaded, width, height, err := getCachedThumbBytes(ctx, mctx, data)
+	if err != nil {
+		logfmt.Warn("linkcard: thumbnail lokal dilewati (%v)\n", err)
+		return
+	}
+	setExtThumbnail(ext, small, uploaded, width, height)
+}
+
+// setExtThumbnail menulis semua field thumbnail kartu sekaligus (dipakai
+// jalur URL maupun byte lokal).
+func setExtThumbnail(ext *waE2E.ExtendedTextMessage, small []byte, uploaded *whatsmeow.UploadResponse, width, height uint32) {
 	ext.JPEGThumbnail = small
 	ext.ThumbnailDirectPath = proto.String(uploaded.DirectPath)
 	ext.ThumbnailSHA256 = uploaded.FileSHA256
@@ -203,14 +311,35 @@ func attachThumbnail(ctx context.Context, mctx *store.MessageContext, ext *waE2E
 const maxFaviconDim = 96
 
 // fetchFavicon merakit MMSThumbnailMetadata ikon favicon lewat cache yang
-// sama dengan thumbnail. Nil balik berarti "tanpa favicon" (bukan error) —
-// pemanggil tetap mengirim kartu utamanya.
-func fetchFavicon(ctx context.Context, mctx *store.MessageContext, faviconURL string) *waE2E.MMSThumbnailMetadata {
-	_, uploaded, width, height, err := getCachedThumb(ctx, mctx, faviconURL)
+// sama dengan thumbnail, mencoba daftar URL berurutan. Nil balik berarti
+// "tanpa favicon" (bukan error) — pemanggil tetap mengirim kartu utamanya.
+func fetchFavicon(ctx context.Context, mctx *store.MessageContext, sources []string) *waE2E.MMSThumbnailMetadata {
+	var lastErr error
+	for _, src := range sources {
+		_, uploaded, width, height, err := getCachedThumb(ctx, mctx, src)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return faviconMetadata(uploaded, width, height)
+	}
+	logfmt.Warn("linkcard: favicon dilewati (%v)\n", lastErr)
+	return nil
+}
+
+// faviconFromBytes pola sama untuk favicon yang tersimpan lokal.
+func faviconFromBytes(ctx context.Context, mctx *store.MessageContext, data []byte) *waE2E.MMSThumbnailMetadata {
+	_, uploaded, width, height, err := getCachedThumbBytes(ctx, mctx, data)
 	if err != nil {
-		logfmt.Warn("linkcard: favicon dilewati (%v)\n", err)
+		logfmt.Warn("linkcard: favicon lokal dilewati (%v)\n", err)
 		return nil
 	}
+	return faviconMetadata(uploaded, width, height)
+}
+
+// faviconMetadata merakit metadata ikon dari hasil upload (dimensi dipangkas
+// ke maxFaviconDim).
+func faviconMetadata(uploaded *whatsmeow.UploadResponse, width, height uint32) *waE2E.MMSThumbnailMetadata {
 	if width > maxFaviconDim {
 		width = maxFaviconDim
 	}
@@ -427,16 +556,58 @@ func uploadThumb(ctx context.Context, mctx *store.MessageContext, thumb []byte, 
 	return &uploaded, nil
 }
 
-// downloadThumb mengunduh byte gambar untuk thumbnail. Menolak konten
-// non-gambar (mis. URL yang ternyata halaman HTML) dan file di atas
-// maxThumbBytes — keduanya dilaporkan sebagai error yang jelas.
+// Batas percobaan unduh thumbnail. Host gambar publik (catbox dsb.) kerap
+// gagal sesaat; dua percobaan singkat jauh lebih murah daripada kartu tanpa
+// gambar. Timeout per percobaan dipangkas supaya .menu tidak menggantung.
+const (
+	thumbAttempts       = 2
+	thumbAttemptTimeout = 7 * time.Second
+	thumbRetryDelay     = 400 * time.Millisecond
+)
+
+// thumbPermanentError menandai kegagalan yang tidak akan berubah bila
+// diulang: URL bukan gambar langsung, file kebesaran, atau 4xx (mis. 404
+// file sudah dihapus di host-nya).
+type thumbPermanentError struct{ msg string }
+
+func (e *thumbPermanentError) Error() string { return e.msg }
+
+// downloadThumb mengunduh byte gambar untuk thumbnail dengan retry untuk
+// kegagalan transient (timeout/jaringan/5xx/429). Kegagalan permanen
+// langsung dikembalikan tanpa percobaan kedua.
 func downloadThumb(ctx context.Context, rawURL string) ([]byte, error) {
-	dlCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	var lastErr error
+	for attempt := 1; attempt <= thumbAttempts; attempt++ {
+		data, err := downloadThumbOnce(ctx, rawURL)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		var permanent *thumbPermanentError
+		if errors.As(err, &permanent) || ctx.Err() != nil {
+			break
+		}
+		if attempt < thumbAttempts {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(thumbRetryDelay):
+			}
+		}
+	}
+	return nil, lastErr
+}
+
+// downloadThumbOnce satu percobaan unduh. Menolak konten non-gambar (mis.
+// URL yang ternyata halaman HTML) dan file di atas maxThumbBytes — keduanya
+// dilaporkan sebagai error permanen yang jelas.
+func downloadThumbOnce(ctx context.Context, rawURL string) ([]byte, error) {
+	dlCtx, cancel := context.WithTimeout(ctx, thumbAttemptTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, &thumbPermanentError{msg: err.Error()}
 	}
 	req.Header.Set("User-Agent", "wabot-go/1.0")
 
@@ -447,10 +618,14 @@ func downloadThumb(ctx context.Context, rawURL string) ([]byte, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("server gambar menjawab HTTP %d", resp.StatusCode)
+		msg := fmt.Sprintf("server gambar menjawab HTTP %d", resp.StatusCode)
+		if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
+			return nil, errors.New(msg) // transient: layak diulang
+		}
+		return nil, &thumbPermanentError{msg: msg}
 	}
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "image/") {
-		return nil, fmt.Errorf("URL bukan file gambar langsung (Content-Type: %s)", ct)
+		return nil, &thumbPermanentError{msg: fmt.Sprintf("URL bukan file gambar langsung (Content-Type: %s)", ct)}
 	}
 
 	// +1 byte untuk deteksi kelebihan: kalau masih ada sisa setelah batas,
@@ -460,7 +635,71 @@ func downloadThumb(ctx context.Context, rawURL string) ([]byte, error) {
 		return nil, err
 	}
 	if len(data) > maxThumbBytes {
-		return nil, fmt.Errorf("gambar terlalu besar untuk thumbnail (>1MB)")
+		return nil, &thumbPermanentError{msg: "gambar terlalu besar untuk thumbnail (>1MB)"}
 	}
 	return data, nil
+}
+
+// thumbDiskDirName adalah folder cache byte thumbnail di bawah data/
+// (gitignored, bukan wabot-tmp: isinya harus tahan restart dan tidak ikut
+// disapu pembersih temp). Ukurannya kecil — hanya thumbnail/favicon per URL.
+const thumbDiskDirName = "thumb-cache"
+
+// diskThumbPath mengembalikan path cache untuk satu URL (nama = sha256 URL).
+func diskThumbPath(thumbURL string) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(cwd, "data", thumbDiskDirName)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(thumbURL)))
+	return filepath.Join(dir, hex.EncodeToString(sum[:])+".img"), nil
+}
+
+// writeDiskThumb menyimpan byte sumber yang berhasil diunduh (atomik: tulis
+// ke file sementara di folder yang sama lalu rename). Best-effort — gagal
+// tulis hanya berarti tidak ada cadangan, bukan kegagalan kirim kartu.
+func writeDiskThumb(thumbURL string, data []byte) {
+	path, err := diskThumbPath(thumbURL)
+	if err != nil {
+		logfmt.Warn("linkcard: cache thumbnail tak bisa disiapkan (%v)\n", err)
+		return
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "tmp-*")
+	if err != nil {
+		logfmt.Warn("linkcard: cache thumbnail tak bisa ditulis (%v)\n", err)
+		return
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		logfmt.Warn("linkcard: cache thumbnail tak bisa ditulis (%v)\n", err)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		logfmt.Warn("linkcard: cache thumbnail tak bisa ditulis (%v)\n", err)
+		return
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		logfmt.Warn("linkcard: cache thumbnail tak bisa dipasang (%v)\n", err)
+	}
+}
+
+// readDiskThumb membaca cadangan byte untuk URL (false = tidak ada/rusak).
+func readDiskThumb(thumbURL string) ([]byte, bool) {
+	path, err := diskThumbPath(thumbURL)
+	if err != nil {
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 || len(data) > maxThumbBytes {
+		return nil, false
+	}
+	return data, true
 }

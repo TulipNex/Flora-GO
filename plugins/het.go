@@ -75,7 +75,7 @@ func handleHET(ctx context.Context, mctx *store.MessageContext) error {
 // parseHETRange mengubah argumen .het jadi rentang YYYY-MM-DD:
 // kosong → 7 hari terakhir; "-N" (1–31) → N hari terakhir;
 // "DD/MM/YYYY-DD/MM/YYYY" → rentang eksplisit (maks 62 hari, cap hari ini).
-// Acuan "hari ini" = timex.Today() (zona WIB/WITA/WIT aktif).
+// Acuan "hari ini" = timex.Today() (zona BOT_TIMEZONE aktif).
 func parseHETRange(args []string) (from, to string, err error) {
 	today := timex.Today()
 	if len(args) == 0 {

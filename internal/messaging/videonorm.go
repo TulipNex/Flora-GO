@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"wabot-go/internal/heavy"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 )
@@ -125,6 +126,11 @@ func transcodeAudioOnly(ctx context.Context, inPath, outPath string) error {
 
 // runFfmpeg menjalankan satu perintah ffmpeg dengan timeout + log ringkas.
 func runFfmpeg(ctx context.Context, timeout time.Duration, tag string, args ...string) error {
+	release, err := heavy.AcquireTranscode(ctx)
+	if err != nil {
+		return fmt.Errorf("ffmpeg %s: %v", tag, err)
+	}
+	defer release()
 	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(timeoutCtx, "ffmpeg", args...)
@@ -142,6 +148,11 @@ func runFfmpeg(ctx context.Context, timeout time.Duration, tag string, args ...s
 // Preset veryfast + CRF 23: 2-3x lebih cepat dari default dengan kualitas
 // yang tetap bagus untuk chat.
 func transcodeToMP4(ctx context.Context, inPath, outPath string) error {
+	release, err := heavy.AcquireTranscode(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	timeoutCtx, cancel := context.WithTimeout(ctx, normTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(timeoutCtx, "ffmpeg",

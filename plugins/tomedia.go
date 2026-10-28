@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"wabot-go/internal/heavy"
 	"wabot-go/internal/messaging"
 	"wabot-go/internal/store"
 
@@ -213,6 +214,12 @@ func convertAnimatedWebPToMP4(ctx context.Context, data []byte) ([]byte, error) 
 	)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	release, acqErr := heavy.AcquireTranscode(ctx)
+	if acqErr != nil {
+		cancel()
+		return nil, acqErr
+	}
+	defer release()
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("ffmpeg rakit mp4: %v (%s)", err, stderr.String())
 	}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"wabot-go/internal/config"
+	"wabot-go/internal/heavy"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/messaging"
 	"wabot-go/internal/store"
@@ -236,6 +237,11 @@ func runFfmpegConvert(ctx context.Context, data []byte, inExt, outName string, i
 	full = append(full, "-i", inPath)
 	full = append(full, args...)
 	full = append(full, outPath)
+	release, acqErr := heavy.AcquireTranscode(ctx)
+	if acqErr != nil {
+		return nil, acqErr
+	}
+	defer release()
 	cmd := exec.CommandContext(timeoutCtx, "ffmpeg", full...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

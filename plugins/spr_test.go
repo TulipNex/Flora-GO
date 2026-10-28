@@ -114,7 +114,7 @@ func sprTestEntry() (*sprEntry, types.JID, types.JID) {
 	target := types.NewJID("249348621369556", types.HiddenUserServer)
 	other := types.NewJID("111111111111111", types.HiddenUserServer)
 	e := &sprEntry{
-		targets:  sprRememberTargetUsers([]types.JID{target}),
+		targets:  sprRememberTargetUsers(nil, []types.JID{target}),
 		original: &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String("asli")}},
 		decoy:    &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String("decoy")}},
 		hasDecoy: true,

@@ -29,11 +29,12 @@ import (
 // Versi skema per file database. Naikkan angka ini saat menambah/mengubah
 // skema file terkait (dan tambahkan ALTER-nya di pemanggil applySchema).
 const (
-	groupSchemaVersion   = 1
+	groupSchemaVersion   = 3
 	aiSchemaVersion      = 1
 	financeSchemaVersion = 2
 	crmSchemaVersion     = 1
 	absensiSchemaVersion = 1
+	usersSchemaVersion   = 1
 )
 
 // openSQLite membuka file SQLite dengan PRAGMA standar bot dan memastikan
@@ -45,6 +46,10 @@ func openSQLite(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	// SQLite (WAL) menulis serial; batasi koneksi supaya kontensi "database
+	// is locked" diminimalkan. busy_timeout tetap jadi jaring pengaman.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return nil, err

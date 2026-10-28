@@ -7,6 +7,7 @@ require (
 	github.com/bogdanfinn/tls-client v1.16.0
 	github.com/coder/websocket v1.8.15
 	github.com/google/uuid v1.6.0
+	github.com/jellydator/ttlcache/v3 v3.4.1
 	github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0
 	github.com/pdfcpu/pdfcpu v0.16.1
 	github.com/polymorfa/hypermeow v0.0.0-20261010085506-b0e8e85a4075
@@ -17,6 +18,8 @@ require (
 	github.com/xuri/excelize/v2 v2.11.0
 	golang.org/x/image v0.46.0
 	golang.org/x/net v0.59.0
+	golang.org/x/sync v0.23.0
+	golang.org/x/time v0.10.0
 	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.58.0
 )
@@ -60,7 +63,6 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
-	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	gopkg.in/sourcemap.v1 v1.0.5 // indirect
@@ -70,9 +72,13 @@ require (
 )
 
 // replace hypermeow dengan clone lokal ter-patch (third_party/hypermeow,
-// pin b0e8e85a = require di atas): satu-satunya perubahan adalah
-// buildNativeFlowBizNode selalu mengirim native_flow name="mixed" (paritas
-// Baileys) karena derivasi nama dari tombol ditolak server (473/405).
+// pin b0e8e85a = require di atas). Dua perubahan kecil di send.go:
+//   1) buildNativeFlowBizNode selalu mengirim native_flow name="mixed"
+//      (paritas Baileys) karena derivasi nama dari tombol ditolak server
+//      (473/405).
+//   2) getButtonTypeFromMessage juga mengenali carouselMessage sebagai
+//      "native_flow" — patch EKSPERIMEN untuk .carouseltest (agar carousel
+//      ikut dapat node `biz`); hapus bila uji varian B tak diperlukan.
 // Saat update fork: ulangi clone dangkal di pin baru + terapkan ulang patch
 // (diff kecil di send.go), lalu sesuaikan require + komentar ini.
 replace github.com/polymorfa/hypermeow => ./third_party/hypermeow

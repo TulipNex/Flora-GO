@@ -17,6 +17,19 @@ type openAIRequest struct {
 	Model    string          `json:"model"`
 	Messages []openAIMessage `json:"messages"`
 	Tools    []openAITool    `json:"tools,omitempty"`
+	// Stream meminta respons SSE (data mengalir sejak awal). Dipakai default
+	// oleh adapter supaya gateway/Cloudflare tidak memutus request panjang
+	// dengan 524 "tidak ada respons".
+	Stream bool `json:"stream,omitempty"`
+	// StreamOptions meminta rekap token di akhir stream. Didukung resmi oleh
+	// gateway ciora (stream_options.include_usage); tanpa ini objek usage
+	// sering tidak dikirim sama sekali pada respons streaming.
+	StreamOptions *openAIStreamOptions `json:"stream_options,omitempty"`
+}
+
+// openAIStreamOptions adalah field "stream_options" gaya OpenAI.
+type openAIStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // openAIMessage merepresentasikan satu baris "messages" ala OpenAI.

@@ -51,6 +51,28 @@ func urlQueryEscapeGo(s string) string {
 	return url.QueryEscape(s)
 }
 
+// jsonString meng-quote string Go jadi literal JSON (tanpa import
+// encoding/json di tiap pemanggil — cukup untuk field URL/query pada body
+// POST buatan tangan, mis. Spotify partner API).
+func jsonString(s string) string {
+	var sb strings.Builder
+	sb.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			sb.WriteString(`\"`)
+		case '\\':
+			sb.WriteString(`\\`)
+		case '\n':
+			sb.WriteString(`\n`)
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	sb.WriteByte('"')
+	return sb.String()
+}
+
 // urlValues mengubah map jadi url.Values untuk body form POST.
 func urlValues(m map[string]string) url.Values {
 	v := url.Values{}

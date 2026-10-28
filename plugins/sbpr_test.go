@@ -94,7 +94,7 @@ func sbprTestBatchEntry() (*sprEntry, types.JID, types.JID, types.JID, types.Mes
 	b := types.NewJID("222222222222222", types.HiddenUserServer)
 	other := types.NewJID("111111111111111", types.HiddenUserServer)
 	e := &sprEntry{
-		targets: sprRememberTargetUsers([]types.JID{a, b}),
+		targets: sprRememberTargetUsers(nil, []types.JID{a, b}),
 		perSender: map[string]*waE2E.Message{
 			a.ToNonAD().User: {ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String("Halo A!")}},
 			b.ToNonAD().User: {ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String("Halo B!")}},

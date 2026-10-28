@@ -7,6 +7,7 @@ import (
 
 	"wabot-go/internal/ai/tools/bridge"
 	"wabot-go/internal/logfmt"
+	"wabot-go/internal/metrics"
 	"wabot-go/internal/store"
 	"wabot-go/plugins"
 
@@ -60,6 +61,7 @@ func NewEventHandler(client *whatsmeow.Client) func(interface{}) {
 // lalu memanggil plugin yang cocok. Pesan yang BUKAN command diteruskan
 // ke pengecekan trigger AI (lihat handleAITrigger).
 func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *events.Message, bootTime time.Time) {
+	metrics.IncMessages()
 	// Buang pesan basi: dikirim sebelum bot hidup (luapan antrean offline
 	// server saat reconnect) — jangan eksekusi command/vote/AI susulan.
 	// Drop diam-diam + satu baris log (tanpa balasan chat).
@@ -188,15 +190,27 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 	// Staging PDF (.pdfmerge up): pesan non-command berisi PDF atau
 	// reply-angka reorder ditampung/diproses di sini lalu setop — supaya
 	// tidak bocor ke autodownload/AI. Tanpa text pun dicek (PDF tanpa
-	// caption): fungsi ini yang memutuskan false bila tak relevan.
+	// caption): fungsi ini yang memutuskan false bila tak relevan. Kata
+	// `mulai` hanya ditelan selama jendela 5 menit setelah `.pdfmerge`
+	// (startarm.go), selebihnya jadi pesan biasa tanpa notifikasi.
 	if plugins.CheckPDFStaging(client, evt) {
 		return
 	}
 
 	// Staging JPG (.jpgpdf mulai): foto polos tanpa caption ditampung saat
 	// sesi aktif (cermin CheckPDFStaging di atas). Foto bercaption .jpgpdf
-	// lewat jalur command biasa.
+	// lewat jalur command biasa; kata `mulai` ikut digerbangi jendela
+	// `.jpgpdf` 5 menit.
 	if plugins.CheckJpgStaging(client, evt) {
+		return
+	}
+
+	// Sesi Gemini web owner (mode .gemini on): pesan "gemini <teks>" atau
+	// reply ke bubble bot diteruskan ke akun Gemini bot, lalu setop di sini
+	// supaya tidak ikut autodownload/AI. Ditaruh sebelum autodownload karena
+	// prompt boleh memuat tautan; fungsi ini hanya menelan pesan saat mode
+	// aktif dan pemiliknya owner di DM.
+	if plugins.CheckGeminiSession(client, evt, text) {
 		return
 	}
 
@@ -259,6 +273,11 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 
 	// Kontak masuk saat sesi uji tombol aktif (verifikasi request nomor).
 	if plugins.CheckButtonTestContact(client, evt) {
+		return
+	}
+
+	// Tap tombol quick_reply kartu carousel (.carouseltest reply).
+	if plugins.CheckCarouselTestTap(client, evt, text) {
 		return
 	}
 

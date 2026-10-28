@@ -31,7 +31,7 @@ const (
 	reminderMaxCallAttempts   = 3
 )
 
-// Zona tampil jam (WIB/WITA/WIT) terpusat di internal/timex via env
+// Zona tampil jam (BOT_TIMEZONE, nama IANA) terpusat di internal/timex via env
 // BOT_TIMEZONE — jam disimpan unix absolut, zona hanya soal tampil.
 
 // waClientForReminders adalah client whatsmeow untuk pengiriman DM + telepon

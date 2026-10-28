@@ -4,14 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"math"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -32,12 +32,15 @@ func init() {
 const (
 	// ttsWSBase adalah endpoint synthesize Read Aloud milik Microsoft Edge
 	// (dipakai juga oleh library edge-tts 12k⭐): tanpa API key, tanpa
-	// daftar. TrustedClientToken adalah token publik dari klien Edge.
-	ttsWSBase = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4"
+	// daftar. TrustedClientToken adalah token publik dari klien Edge
+	// (lihat ttsTrustedClientToken di tts_gec.go).
+	ttsWSBase = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=" + ttsTrustedClientToken
 
-	// ttsGECVersion adalah versi token Sec-MS-GEC (format 1-<versi Chromium>,
-	// mengikuti edge-tts).
-	ttsGECVersion = "1-143.0.3650.75"
+	// ttsGECVersion adalah versi token Sec-MS-GEC. WAJIB berawalan "2-" sejak
+	// Microsoft mewajibkan token v2 (Okt 2026): dengan "1-" server membalas
+	// 403 "Invalid response status" walau tokennya sudah v2. Angka setelah
+	// awalan harus sama dengan versi Chromium di ttsUA.
+	ttsGECVersion = "2-143.0.3650.75"
 
 	// ttsOrigin meniru extension Chrome — nilai persis dari edge-tts
 	// (tanpa ini handshake berisiko ditolak).
@@ -121,7 +124,7 @@ func ttsGenerate(ctx context.Context, mctx *store.MessageContext, text, voice st
 	ctx, cancel := context.WithTimeout(ctx, ttsTimeout)
 	defer cancel()
 
-	mp3Bytes, err := edgeTTSSynthesize(ctx, text, voice)
+	mp3Bytes, err := ttsSynthesizeMP3(ctx, text, voice)
 	if err != nil {
 		return err
 	}
@@ -193,7 +196,7 @@ func SynthesizeLong(ctx context.Context, text, voice string) ([]byte, error) {
 	chunks := splitTTSChunks(text, 4000)
 	var out bytes.Buffer
 	for i, c := range chunks {
-		mp3, err := edgeTTSSynthesize(ctx, c, voice)
+		mp3, err := ttsSynthesizeMP3(ctx, c, voice)
 		if err != nil {
 			return nil, fmt.Errorf("bagian %d/%d: %v", i+1, len(chunks), err)
 		}
@@ -353,6 +356,76 @@ func splitTTSChunks(text string, maxBytes int) []string {
 	return out
 }
 
+// ttsSynthesizeMP3 adalah satu pintu sintesis teks→MP3: Edge Read Aloud
+// lebih dulu, lalu Google Translate TTS sebagai jaring pengaman (Edge bisa
+// menolak token/memblokir sewaktu-waktu, lihat tts_gec.go). Error akhir
+// memuat sebab dari KEDUA jalur supaya diagnosa tidak buta.
+func ttsSynthesizeMP3(ctx context.Context, text, voice string) ([]byte, error) {
+	mp3, edgeErr := edgeTTSSynthesize(ctx, text, voice)
+	if edgeErr == nil && len(mp3) > 0 {
+		return mp3, nil
+	}
+	if edgeErr == nil {
+		edgeErr = fmt.Errorf("hasil sintesis kosong")
+	}
+	if !ttsGoogleFallbackEnabled() {
+		return nil, edgeErr
+	}
+	logfmt.Warn("tts: Edge gagal (%v), fallback ke Google TTS.\n", edgeErr)
+	alt, googleErr := googleTTSSynthesize(ctx, text, voice)
+	if googleErr != nil {
+		return nil, fmt.Errorf("%v; fallback Google juga gagal: %v", edgeErr, googleErr)
+	}
+	return alt, nil
+}
+
+// ttsDialEdge mendial WebSocket Edge Read Aloud. Token Sec-MS-GEC dihitung
+// ulang tiap percobaan; kalau server membalas 403, jam server dipakai untuk
+// mengoreksi skew lalu dicoba SEKALI lagi. Retry sengaja hanya sekali: 403
+// yang bukan soal jam (mis. skema token berubah) tidak akan sembuh sendiri.
+func ttsDialEdge(ctx context.Context, header http.Header) (*websocket.Conn, error) {
+	var lastResp *http.Response
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		endpoint := ttsWSBase +
+			"&ConnectionId=" + ttsRequestID() +
+			"&Sec-MS-GEC=" + ttsGenerateGEC() +
+			"&Sec-MS-GEC-Version=" + ttsGECVersion
+		conn, resp, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{HTTPHeader: header})
+		if err == nil {
+			return conn, nil
+		}
+		lastResp, lastErr = resp, err
+		if attempt == 0 && resp != nil && resp.StatusCode == http.StatusForbidden {
+			if ttsAdjustClockSkew(resp.Header.Get("Date")) {
+				continue
+			}
+		}
+		break
+	}
+	return nil, ttsHandshakeError(lastResp, lastErr)
+}
+
+// ttsHandshakeError menyusun pesan gagal handshake. Status HTTP dan cuplikan
+// body server (sudah dibatasi coder/websocket ±1 KB) ikut ditampilkan karena
+// 403 Edge bisa berarti token basi, versi salah, atau jam meleset — tanpa
+// detail itu semuanya tampak sama.
+func ttsHandshakeError(resp *http.Response, err error) error {
+	if resp == nil {
+		return fmt.Errorf("layanan TTS tidak merespons: %v", err)
+	}
+	body := ""
+	if resp.Body != nil {
+		if b, rerr := io.ReadAll(io.LimitReader(resp.Body, 200)); rerr == nil {
+			body = strings.TrimSpace(string(b))
+		}
+	}
+	if body == "" {
+		return fmt.Errorf("layanan TTS menolak koneksi (status HTTP %d): %v", resp.StatusCode, err)
+	}
+	return fmt.Errorf("layanan TTS menolak koneksi (status HTTP %d, body: %s): %v", resp.StatusCode, body, err)
+}
+
 // edgeTTSSynthesize memanggil Edge Read Aloud via WebSocket dan
 // mengembalikan MP3. Protokol dipetakan 1:1 dari edge-tts (urutan dan
 // format PENTING — server menolak variasi yang "hampir benar"):
@@ -363,12 +436,11 @@ func splitTTSChunks(text string, maxBytes int) []string {
 //  4. Baca sampai turn.end: pesan TEKS dipisah di \r\n\r\n, pesan BINER
 //     diawali length 2-byte big-endian; kumpulkan body Path:audio.
 //
-// Sec-MS-GEC adalah SHA256-uppercase dari (waktu-file-Windows dibulatkan
-// ke 5 menit + trusted token) — tanpa ini handshake 403 (terverifikasi).
+// Sec-MS-GEC WAJIB token v2 ("<16 heks CS64>-<64 heks SHA256>") dengan versi
+// "2-<chromium>"; token v1 (SHA256 heks saja) dibalas 403 sejak Okt 2026.
 func edgeTTSSynthesize(ctx context.Context, text, voice string) ([]byte, error) {
 	text = removeIncompatibleChars(text)
 	reqID := ttsRequestID()
-	connID := ttsRequestID()
 	// Jeda eksplisit dari struktur baris (audit intonasi): SSML melebur
 	// newline jadi spasi, jadi \n\n (ganti paragraf) → break 600ms dan \n
 	// tunggal → break 300ms. Diterapkan SETELAH escape (tag break tidak
@@ -380,11 +452,6 @@ func edgeTTSSynthesize(ctx context.Context, text, voice string) ([]byte, error) 
 		"<voice name='" + voice + "'><prosody rate='+0%' volume='+0%' pitch='+0Hz'>" +
 		spoken + "</prosody></voice></speak>"
 
-	endpoint := ttsWSBase +
-		"&ConnectionId=" + connID +
-		"&Sec-MS-GEC=" + ttsGenerateGEC() +
-		"&Sec-MS-GEC-Version=" + ttsGECVersion
-
 	header := http.Header{}
 	header.Set("Pragma", "no-cache")
 	header.Set("Cache-Control", "no-cache")
@@ -393,9 +460,9 @@ func edgeTTSSynthesize(ctx context.Context, text, voice string) ([]byte, error) 
 	header.Set("Accept-Encoding", "gzip, deflate, br")
 	header.Set("Accept-Language", "en-US,en;q=0.9")
 	header.Set("Cookie", "muid="+ttsGenerateMUID()+";")
-	conn, _, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{HTTPHeader: header})
+	conn, err := ttsDialEdge(ctx, header)
 	if err != nil {
-		return nil, fmt.Errorf("layanan TTS tidak merespons: %v", err)
+		return nil, err
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
@@ -451,16 +518,43 @@ func edgeTTSSynthesize(ctx context.Context, text, voice string) ([]byte, error) 
 	}
 }
 
-// ttsGenerateGEC membuat token Sec-MS-GEC: SHA256-uppercase dari waktu
-// file Windows (epoch 1601, interval 100ns) yang dibulatkan ke 5 menit,
-// digabung trusted token. Port persis drm.generate_sec_ms_gec edge-tts
-// (urutan operasi float dipertahankan supaya hasilnya identik).
-func ttsGenerateGEC() string {
-	ticks := float64(time.Now().UTC().Unix()) + 11644473600
-	ticks -= math.Mod(ticks, 300)
-	ticks *= 1e9 / 100
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%.0f6A5AA1D4EAFF4E9FB37E23D68491D6F4", ticks)))
-	return strings.ToUpper(hex.EncodeToString(sum[:]))
+// ttsClockSkew selisih jam server Edge vs jam lokal (detik), diisi dari
+// header Date saat handshake dibalas 403. Panel yang jamnya meleset >5 menit
+// membuat token jatuh di jendela waktu yang salah → 403 walau skema tokennya
+// sudah benar (kejadian umum di VPS).
+var ttsClockSkew atomic.Int64
+
+// ttsNowUnix waktu sekarang (detik) yang sudah dikoreksi skew jam server.
+func ttsNowUnix() float64 {
+	return float64(time.Now().Unix()) + float64(ttsClockSkew.Load())
+}
+
+// ttsGenerateGEC membuat token Sec-MS-GEC v2 untuk waktu sekarang
+// (implementasi hash-nya di tts_gec.go).
+func ttsGenerateGEC() string { return ttsGECv2(ttsNowUnix()) }
+
+// ttsAdjustClockSkew menyimpan koreksi jam dari header Date server. false
+// berarti tidak ada koreksi berarti atau tanggal tak terbaca, jadi retry
+// tidak ada gunanya.
+func ttsAdjustClockSkew(serverDate string) bool {
+	if serverDate == "" {
+		return false
+	}
+	server, err := http.ParseTime(serverDate)
+	if err != nil {
+		return false
+	}
+	skew := server.Unix() - time.Now().Unix()
+	if skew > -2 && skew < 2 {
+		return false
+	}
+	// Meleset lebih dari sehari bukan skew, tapi salah konfigurasi jam.
+	if skew > 86400 || skew < -86400 {
+		return false
+	}
+	ttsClockSkew.Store(skew)
+	logfmt.Warn("tts: jam lokal meleset %d dtk dari server, token dihitung ulang.\n", skew)
+	return true
 }
 
 // ttsGenerateMUID membuat MUID acak 32-hex-uppercase untuk cookie.

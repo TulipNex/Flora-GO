@@ -162,7 +162,7 @@ func smemeGenerate(ctx context.Context, mctx *store.MessageContext, img *waE2E.I
 
 	// Pipeline convert stiker yang SAMA dengan .brat/.sticker (ffmpeg pad
 	// 512x512 transparan + EXIF pack/author) — reuse, bukan duplikasi.
-	webp, err := convertToStickerWebp(meme, false)
+	webp, err := convertToStickerWebp(ctx, meme, false)
 	if err != nil {
 		return fmt.Errorf("gagal convert ke stiker: %v", err)
 	}

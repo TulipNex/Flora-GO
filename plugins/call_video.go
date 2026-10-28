@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/purpshell/meowcaller"
 	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/purpshell/meowcaller"
 	"google.golang.org/protobuf/proto"
 
 	"wabot-go/internal/logfmt"
@@ -36,19 +36,22 @@ const (
 	videoMaxSend = 10 * time.Minute
 	// videoTranscodeTimeout membatasi sekali jalan ffmpeg.
 	videoTranscodeTimeout = 150 * time.Second
+	// videoMaxCallAge adalah umur maksimum satu entri di registry. Jaring
+	// pengaman terakhir bila status akhir call tidak pernah terdeteksi
+	// (OnEnd hanya satu slot dan tidak diputar ulang oleh meowcaller).
+	videoMaxCallAge = 3 * time.Hour
 )
 
 // trackedVideoCall adalah satu call yang terdaftar untuk fitur video
-// (outbound .videocall maupun incoming). Perekam + pompa dikelola di sini
-// supaya bisa dihentikan bersih saat call berakhir.
+// (outbound .videocall maupun incoming). Penghitung video + pompa dikelola
+// di sini supaya bisa dihentikan bersih saat call berakhir.
 type trackedVideoCall struct {
 	call    *meowcaller.Call
 	phone   string
 	addedAt time.Time
 
-	recMu    sync.Mutex
-	recorder meowcaller.VideoSink
-	recPath  string
+	sinkMu sync.Mutex
+	sink   *videoCounter
 
 	// audioPath adalah file WAV trek audio video sumber (diekstrak saat
 	// transcode, diputar sebagai pengganti greeting). Decoder + file
@@ -69,16 +72,39 @@ var (
 // trackVideoCall mendaftarkan call. Pemanggil TETAP pemilik callback OnEnd
 // (meowcaller hanya menyimpan satu OnEnd — penimpaan menghapus perilaku
 // lama), jadi cleanup dipanggil eksplisit dari closure OnEnd masing-masing
-// jalur via releaseVideoCall.
+// jalur via releaseVideoCall. watchEnd dipasang sebagai jaring pengaman.
 func trackVideoCall(call *meowcaller.Call, phone string) *trackedVideoCall {
 	e := &trackedVideoCall{call: call, phone: phone, addedAt: time.Now()}
 	trackedVideoMu.Lock()
 	trackedVideoCalls[call.ID()] = e
 	trackedVideoMu.Unlock()
+	go e.watchEnd()
 	return e
 }
 
-// releaseVideoCall menghentikan pompa, menutup perekam, dan menghapus call
+// watchEnd adalah jaring pengaman cleanup: OnEnd di meowcaller hanya satu
+// slot dan TIDAK diputar ulang bila call sudah berakhir sebelum callback
+// dipasang, sehingga entri registry + sink bisa tertinggal selamanya.
+// Polling status call (bukan callback) supaya tidak berebut slot callback
+// dengan jalur outbound yang memakai OnStateChange untuk fase ringing.
+func (e *trackedVideoCall) watchEnd() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		trackedVideoMu.Lock()
+		_, ok := trackedVideoCalls[e.call.ID()]
+		trackedVideoMu.Unlock()
+		if !ok {
+			return
+		}
+		if e.call.State() == meowcaller.CallPhaseEnded || time.Since(e.addedAt) > videoMaxCallAge {
+			releaseVideoCall(e.call.ID())
+			return
+		}
+	}
+}
+
+// releaseVideoCall menghentikan pompa, melepas sink video, dan menghapus call
 // dari registry. Aman dipanggil berkali-kali / untuk ID tak dikenal.
 func releaseVideoCall(callID string) {
 	trackedVideoMu.Lock()
@@ -91,8 +117,50 @@ func releaseVideoCall(callID string) {
 		return
 	}
 	e.stopPump()
-	e.closeRecorder()
+	// Lepas sink dulu supaya engine tidak menulis ke penghitung yang sudah
+	// ditutup (meowcaller tidak menutup videoSink saat call berakhir).
+	e.call.ReceiveVideo(nil)
+	e.closeVideoSink()
 	e.closeAudio()
+}
+
+// videoCounter adalah VideoSink yang hanya MENGHITUNG frame/byte video masuk
+// untuk log — tidak menulis file. Dulu jalur ini memakai AnnexBRecorder yang
+// menaruh rekaman .h264 di wabot-tmp dan tidak pernah dihapus, sehingga
+// folder temp membengkak tiap video call. Bukti "ada video masuk" tetap
+// didapat dari angka di log.
+type videoCounter struct {
+	mu     sync.Mutex
+	frames int
+	bytes  int64
+	closed bool
+}
+
+// WriteVideo mencatat satu access unit H.264.
+func (v *videoCounter) WriteVideo(accessUnit []byte) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.closed {
+		return nil
+	}
+	v.frames++
+	v.bytes += int64(len(accessUnit))
+	return nil
+}
+
+// Close menghentikan penghitungan. Aman dipanggil berkali-kali.
+func (v *videoCounter) Close() error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.closed = true
+	return nil
+}
+
+// stats mengembalikan jumlah frame + byte yang sudah diterima.
+func (v *videoCounter) stats() (frames int, bytes int64) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.frames, v.bytes
 }
 
 // closeAudio menutup decoder audio pengganti greeting dan menghapus file
@@ -127,47 +195,41 @@ func (e *trackedVideoCall) setAudio(src meowcaller.AudioSource, path string) {
 	e.audioPath = path
 }
 
-// ensureRecorder memasang AnnexBRecorder SEKALI (rekaman H.264 mentah peer
-// ke wabot-tmp — analog video dari WAVRecorder audio). Tanpa sink, video
-// inbound dibuang meowcaller.
-func (e *trackedVideoCall) ensureRecorder() {
-	e.recMu.Lock()
-	defer e.recMu.Unlock()
-	if e.recorder != nil {
+// ensureVideoSink memasang penghitung video SEKALI (analog sisi terima audio).
+// Tanpa sink, video inbound dibuang meowcaller.
+func (e *trackedVideoCall) ensureVideoSink() {
+	e.sinkMu.Lock()
+	defer e.sinkMu.Unlock()
+	if e.sink != nil {
 		return
 	}
-	name := fmt.Sprintf("vcall-%s-%d.h264", e.phone, time.Now().Unix())
-	path := filepath.Join(store.MustBotTempDir(), name)
-	rec, err := meowcaller.AnnexBRecorder(path)
-	if err != nil {
-		logfmt.Warn("Gagal siapkan perekam video %s: %v\n", e.phone, err)
-		return
-	}
-	e.recorder = rec
-	e.recPath = path
-	e.call.ReceiveVideo(rec)
+	sink := &videoCounter{}
+	e.sink = sink
+	e.call.ReceiveVideo(sink)
 }
 
-// closeRecorder menutup file rekaman dan melaporkan ukurannya (bukti ada
-// video masuk — berguna karena path video upstream NOT VALIDATED).
-func (e *trackedVideoCall) closeRecorder() {
-	e.recMu.Lock()
-	defer e.recMu.Unlock()
-	if e.recorder == nil {
+// closeVideoSink menutup penghitung dan melaporkan berapa video yang masuk
+// (bukti ada video dari peer — berguna karena path video upstream NOT
+// VALIDATED). Tidak ada file yang ditulis, jadi tidak ada yang perlu dihapus.
+func (e *trackedVideoCall) closeVideoSink() {
+	e.sinkMu.Lock()
+	defer e.sinkMu.Unlock()
+	if e.sink == nil {
 		return
 	}
-	rec := e.recorder
-	path := e.recPath
-	e.recorder = nil
-	e.recPath = ""
-	if err := rec.Close(); err != nil {
-		logfmt.Warn("Gagal menutup rekaman video %s: %v\n", e.phone, err)
+	sink := e.sink
+	e.sink = nil
+	if err := sink.Close(); err != nil {
+		logfmt.Warn("Gagal menutup penghitung video %s: %v\n", e.phone, err)
 		return
 	}
-	if st, err := os.Stat(path); err == nil {
-		logfmt.Call("Rekaman video %s tersimpan: %s (%.1f KB)\n",
-			e.phone, path, float64(st.Size())/1024)
+	frames, bytes := sink.stats()
+	if frames > 0 {
+		logfmt.Call("Video %s: %d frame, %.1f KB diterima (tidak direkam ke file).\n",
+			e.phone, frames, float64(bytes)/1024)
+		return
 	}
+	logfmt.Call("Video %s: tidak ada frame yang masuk.\n", e.phone)
 }
 
 // startPump mengirim access-unit H.264 berulang dengan pacing frame-rate.
@@ -221,12 +283,12 @@ func (e *trackedVideoCall) stopPump() {
 	}
 }
 
-// attachVideoReception memasang sisi TERIMA video untuk satu call: perekam
+// attachVideoReception memasang sisi TERIMA video untuk satu call: penghitung
 // bila call sudah video sejak awal (IsVideo), plus auto-accept upgrade
 // mid-call peer (keputusan owner: langsung, tanpa konfirmasi).
 func attachVideoReception(e *trackedVideoCall) {
 	if e.call.IsVideo() {
-		e.ensureRecorder()
+		e.ensureVideoSink()
 	}
 	e.call.OnVideoState(func(st meowcaller.VideoState) {
 		logfmt.Call("Video %s: aktif=%v upgrade=%v orientasi=%d\n",
@@ -237,9 +299,9 @@ func attachVideoReception(e *trackedVideoCall) {
 				return
 			}
 			logfmt.Call("Upgrade video dari %s diterima otomatis.\n", e.phone)
-			e.ensureRecorder()
+			e.ensureVideoSink()
 		} else if st.Active {
-			e.ensureRecorder()
+			e.ensureVideoSink()
 		}
 	})
 }
@@ -649,6 +711,13 @@ func handleVideoCall(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	entry := trackVideoCall(call, target)
 	entry.setAudio(audioSrc, audioPath)
+	// OnEnd dipasang PALING AWAL (sebelum callback lain): meowcaller tidak
+	// memutar ulang OnEnd bila call keburu berakhir, jadi jendela antara
+	// CallWithOptions kembali dan registrasi callback harus sesempit mungkin.
+	call.OnEnd(func(reason string) {
+		p.onEnd(reason)
+		releaseVideoCall(call.ID())
+	})
 	attachVideoReception(entry)
 
 	call.OnStateChange(func(ph meowcaller.CallPhase) {
@@ -662,10 +731,6 @@ func handleVideoCall(ctx context.Context, mctx *store.MessageContext) error {
 			entry.startPump(aus)
 		}
 	})
-	call.OnEnd(func(reason string) {
-		p.onEnd(reason)
-		releaseVideoCall(call.ID())
-	})
 	return nil
 }
 
@@ -673,5 +738,44 @@ func handleVideoCall(ctx context.Context, mctx *store.MessageContext) error {
 func textMessage(text string) *waE2E.Message {
 	return &waE2E.Message{
 		ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String(text)},
+	}
+}
+
+// CleanStaleCallTemp menyapu sisa artefak panggilan di wabot-tmp
+// (vcall-*.h264, vcall-audio-*.wav, folder transcode vcall-*/vcall-aud-*).
+//
+// Versi lama bot merekam video masuk ke file .h264 dan tidak pernah
+// menghapusnya, jadi file itu menumpuk. Sejak perekaman diganti penghitung
+// (videoCounter) tidak ada lagi file baru; apa pun yang berawalan "vcall-"
+// di folder temp adalah sampah. Dipanggil sekali saat startup — tidak ada
+// panggilan aktif — sehingga aman menghapus semuanya tanpa cek umur.
+func CleanStaleCallTemp() {
+	tmpBase, err := store.BotTempDir()
+	if err != nil {
+		return
+	}
+	entries, err := os.ReadDir(tmpBase)
+	if err != nil {
+		return
+	}
+	var removed int
+	var freed int64
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), "vcall-") {
+			continue
+		}
+		p := filepath.Join(tmpBase, e.Name())
+		if info, ierr := e.Info(); ierr == nil && !info.IsDir() {
+			freed += info.Size()
+		}
+		if rerr := os.RemoveAll(p); rerr != nil {
+			logfmt.Warn("Gagal hapus sisa temp panggilan %s: %v\n", e.Name(), rerr)
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		logfmt.Clean("%d sisa file temp panggilan dibersihkan (%.1f MB).\n",
+			removed, float64(freed)/(1<<20))
 	}
 }

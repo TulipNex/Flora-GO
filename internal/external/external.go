@@ -1,10 +1,16 @@
 // Package external adalah kumpulan ADAPTER SUMBER LUAR (port dari koleksi
 // D:\scrape): selain mengunduh media dari platform sosial via API scraper
 // pihak ketiga (tiktok, youtube, instagram, facebook, twitter, pinterest,
-// spotify, xpvid, omnify, universal), paket ini juga mengambil data
+// spotify, xpvid), paket ini juga mengambil data
 // NON-media (lirik `lrclib`, identifikasi lagu `shazam`, `flaticon`,
 // `football`, `pihps`, `metadata`). Jadi nama "external" berarti "pengambil
 // dari sumber luar", bukan hanya media.
+//
+// TIDAK ADA fallback universal lintas platform: omnify (dan j2download
+// sebelumnya) sudah DIHAPUS. Endpoint omnify menuntut API key sejak Okt 2026
+// (401 "Akses ditolak" untuk semua request), jadi ia bukan jaring pengaman
+// lagi. Rantai cadangan sekarang milik tiap adapter sendiri — tambahkan
+// engine baru di adapter platform yang bersangkutan, bukan di sini.
 //
 // Paket ini TIDAK lagi meng-exec yt-dlp — YouTube di sini murni via API
 // scraper. (Catatan: plugin `plugins/downloader.go` justru memakai yt-dlp
@@ -28,10 +34,16 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"wabot-go/internal/apicache"
 	"wabot-go/internal/netx"
+
+	"golang.org/x/time/rate"
 )
 
 // MediaKind adalah jenis satu item hasil scrape.
@@ -66,14 +78,57 @@ type ScrapeResult struct {
 const scraperUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
 
 // httpClient bersama: timeout 20 detik per request API (bukan download).
-var httpClient = &http.Client{Timeout: 20 * time.Second}
+var httpClient = &http.Client{Timeout: 20 * time.Second, Transport: netx.TunedTransport()}
+
+// rateLimiters per engine (Tahap 4): membatasi laju request API eksternal.
+var (
+	rateMu       sync.Mutex
+	rateLimiters = map[string]*rate.Limiter{}
+)
+
+func externalRateRPS() float64 {
+	raw := strings.TrimSpace(os.Getenv("EXTERNAL_RATE_RPS"))
+	if raw == "" {
+		return 10
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || v <= 0 {
+		return 10
+	}
+	if v > 50 {
+		return 50
+	}
+	return v
+}
+
+func rateLimiterFor(engine string) *rate.Limiter {
+	engine = strings.TrimSpace(engine)
+	if engine == "" {
+		engine = "default"
+	}
+	rateMu.Lock()
+	defer rateMu.Unlock()
+	if l, ok := rateLimiters[engine]; ok {
+		return l
+	}
+	l := rate.NewLimiter(rate.Limit(externalRateRPS()), int(externalRateRPS()*2))
+	if l.Burst() < 1 {
+		l.SetBurst(1)
+	}
+	rateLimiters[engine] = l
+	return l
+}
+
+// scrapeCache menyimpan ScrapeResult per URL (TTL 5 menit) supaya download
+// berulang/autodownload tidak memanggil scraper berkali-kali.
+var scrapeCache = apicache.New[*ScrapeResult](5*time.Minute, 512)
 
 // dlClient KHUSUS mengunduh byte media (bukan API): timeout 10 menit.
 // KASUS NYATA (Sep 2026): audio YouTube 15,9MB butuh ~38 detik bahkan dari
 // jaringan cepat — timeout 20 detik yang dipakai bersama menjamin gagal
 // (context deadline exceeded while reading body) untuk file belasan MB di
 // panel yang lebih lambat. Cap 100MB tetap (lihat downloadBytes).
-var dlClient = &http.Client{Timeout: 10 * time.Minute}
+var dlClient = &http.Client{Timeout: 10 * time.Minute, Transport: netx.TunedTransport()}
 
 // dlClientIPv4 mengunduh media dengan koneksi DIPAKSA IPv4. KASUS NYATA
 // (Okt 2026, laptop owner): koneksi IPv6 ke CDN Apple (is1-ssl.mzstatic.com,
@@ -91,7 +146,8 @@ var dlClientIPv4 = &http.Client{
 			return d.DialContext(ctx, "tcp4", addr)
 		},
 		ForceAttemptHTTP2:   true,
-		MaxIdleConns:        16,
+		MaxIdleConns:        64,
+		MaxIdleConnsPerHost: 8,
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 15 * time.Second,
 	},
@@ -100,6 +156,9 @@ var dlClientIPv4 = &http.Client{
 // fetchJSON GET JSON dan decode ke v. Error menyebut nama engine supaya
 // rantai fallback bisa merangkai pesan gabungan yang informatif.
 func fetchJSON(ctx context.Context, engine, rawURL string, headers map[string]string, v any) error {
+	if err := rateLimiterFor(engine).Wait(ctx); err != nil {
+		return fmt.Errorf("%s: rate limit: %w", engine, err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return fmt.Errorf("%s: %w", engine, err)
@@ -128,6 +187,9 @@ func fetchJSON(ctx context.Context, engine, rawURL string, headers map[string]st
 
 // postFormJSON POST form-urlencoded dan decode JSON ke v.
 func postFormJSON(ctx context.Context, engine, rawURL string, form map[string]string, headers map[string]string, v any) error {
+	if err := rateLimiterFor(engine).Wait(ctx); err != nil {
+		return fmt.Errorf("%s: rate limit: %w", engine, err)
+	}
 	values := url.Values{}
 	for k, val := range form {
 		values.Set(k, val)

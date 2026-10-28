@@ -238,12 +238,17 @@ func processAITurn(ctx context.Context, mctx *store.MessageContext, sessionKey, 
 	systemPrompt := config.AISystemPromptBase
 	// Acuan tanggal: model tidak punya jam internal — tanpa baris ini,
 	// kata relatif seperti "kemarin"/"minggu ini" ditebak dari pengetahuan
-	// model yang bisa basi. Zona aktif timex (WIB/WITA/WIT via env).
+	// model yang bisa basi. Zona aktif timex (BOT_TIMEZONE, nama IANA).
 	nowLocal := timex.Now()
 	systemPrompt = systemPrompt + "\n\nHari ini (zona " + timex.Name() + "): " +
 		nowLocal.Format("Monday, 2 January 2006") +
 		" — format tanggal tool YYYY-MM-DD: " + nowLocal.Format("2006-01-02") + ". " +
 		"Hitung tanggal relatif (kemarin, minggu/bulan ini) dari tanggal ini."
+	// Pengganti max_tokens (field itu diabaikan gateway ciora — sudah diuji):
+	// minta jawaban ringkas supaya waktu tunggu dan token tidak membengkak.
+	systemPrompt = systemPrompt + "\n\nGaya jawaban: ringkas dan langsung ke inti. " +
+		"Obrolan biasa cukup 1–3 paragraf pendek; jangan mengulang pertanyaan user, " +
+		"jangan menulis pengantar atau penutup panjang."
 	if modifier := ai.MoodModifier(mood); modifier != "" {
 		systemPrompt = systemPrompt + "\n\n" + modifier
 	}

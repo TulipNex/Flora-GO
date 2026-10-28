@@ -2,15 +2,12 @@ package plugins
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"wabot-go/internal/messaging"
 	"wabot-go/internal/store"
-
-	"github.com/polymorfa/hypermeow/proto/waE2E"
-	"google.golang.org/protobuf/proto"
 )
 
 func init() {
@@ -38,7 +35,7 @@ var booktestVariants = map[string]string{
 	"tanpa-kontak": "tanpa-kontak", "nocontact": "tanpa-kontak",
 }
 
-// RegisterBooktest mendaftarkan command `.booktest` kategori Owner: mengirim
+// RegisterBooktest mendaftarkan command `.booktest` kategori Dev: mengirim
 // satu kartu uji tombol native_flow `booking_confirmation` (pola sama dengan
 // .btntest — InteractiveMessage + node biz, tinggal nama tombol dan params
 // JSON-nya yang berbeda). Bentuk: `.booktest [varian] [judul]` — varian:
@@ -47,21 +44,43 @@ var booktestVariants = map[string]string{
 func RegisterBooktest(r *Registry) {
 	r.Register(Command{
 		Name:        "booktest",
-		Description: "Uji kartu booking_confirmation + variannya (owner)",
-		Category:    CategoryOwner,
+		Description: "Uji kartu booking_confirmation + variannya",
+		Category:    CategoryDev,
 		Handler:     handleBooktest,
 	})
 }
 
-func handleBooktest(ctx context.Context, mctx *store.MessageContext) error {
-	variant := ""
-	title := strings.TrimSpace(mctx.RawArgs)
+// parseBooktestArgs memisah varian + judul dari teks argumen mentah.
+func parseBooktestArgs(raw string) (variant, title string) {
+	title = strings.TrimSpace(raw)
 	if f := strings.Fields(title); len(f) > 0 {
 		if v, hit := booktestVariants[strings.ToLower(f[0])]; hit {
 			variant = v
 			title = strings.TrimSpace(strings.TrimPrefix(title, f[0]))
 		}
 	}
+	if title == "" {
+		title = "Uji Booking Confirmation"
+	}
+	return variant, title
+}
+
+func handleBooktest(ctx context.Context, mctx *store.MessageContext) error {
+	variant, title := parseBooktestArgs(mctx.RawArgs)
+	if err := booktestSend(ctx, mctx, variant, title); err != nil {
+		return store.ReplyText(ctx, mctx, "Gagal kirim kartu booking: "+err.Error())
+	}
+	label := "penuh"
+	if variant != "" {
+		label = variant
+	}
+	return store.ReplyText(ctx, mctx, "Kartu booking ("+label+") terkirim. Cek tombol/detail mana yang tampil vs hilang di HP.")
+}
+
+// booktestSend mengirim kartu booking_confirmation tanpa balasan ringkasan —
+// dipakai handler `.booktest` maupun agregator `.devtest` (yang membalas
+// sekali di akhir).
+func booktestSend(ctx context.Context, mctx *store.MessageContext, variant, title string) error {
 	if title == "" {
 		title = "Uji Booking Confirmation"
 	}
@@ -73,42 +92,17 @@ func handleBooktest(ctx context.Context, mctx *store.MessageContext) error {
 	// supaya tombol tambah-ke-kalender valid kapan pun diuji.
 	start := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
 	end := start.Add(10 * time.Minute)
-	params, err := json.Marshal(booktestParams(variant, start, end))
-	if err != nil {
-		return store.ReplyText(ctx, mctx, "Gagal siapkan params booking: "+err.Error())
-	}
 
-	msg := &waE2E.Message{
-		InteractiveMessage: &waE2E.InteractiveMessage{
-			Header: &waE2E.InteractiveMessage_Header{
-				Title:    proto.String(title),
-				Subtitle: proto.String("Kartu uji — bukan janji sungguhan"),
-			},
-			Body:   &waE2E.InteractiveMessage_Body{Text: proto.String("Ketuk kartu untuk melihat tombol kalender/peta/kelola booking, lalu laporkan apa yang terjadi di HP.")},
-			Footer: &waE2E.InteractiveMessage_Footer{Text: proto.String("wabot-go • booktest")},
-			InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
-				NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
-					Buttons: []*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
-						btnTestNativeFlowButton("booking_confirmation", string(params)),
-					},
-				},
-			},
-		},
-	}
-
-	// Tanpa node `biz` manual: hypermeow menempelkannya otomatis (clone
-	// ter-patch selalu mengirim name="mixed").
-	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, msg, btnTestBizExtra())
-	if err != nil {
-		return store.ReplyText(ctx, mctx, "Gagal kirim kartu booking: "+err.Error())
-	}
-	store.LogOutgoing(mctx, "booktest", "kartu booking")
-	store.TrackBotMessageID(resp.ID, "booktest")
-	label := "penuh"
-	if variant != "" {
-		label = variant
-	}
-	return store.ReplyText(ctx, mctx, "Kartu booking ("+label+") terkirim. Cek tombol/detail mana yang tampil vs hilang di HP.")
+	// Params kartu booking (varian menghapus field data tertentu). NFButton
+	// dipakai langsung karena varian butuh membuang key, bukan sekadar field
+	// kosong seperti messaging.BookingConfirmation.
+	btn := messaging.NFButton{Name: messaging.NFBookingConfirmation, Params: booktestParams(variant, start, end)}
+	return messaging.SendNativeFlow(ctx, mctx, messaging.NFText{
+		Title:    title,
+		Subtitle: "Kartu uji — bukan janji sungguhan",
+		Body:     "Ketuk kartu untuk melihat tombol kalender/peta/kelola booking, lalu laporkan apa yang terjadi di HP.",
+		Footer:   "wabot-go • booktest",
+	}, "booktest", "booktest", btn)
 }
 
 // booktestParams menyusun params JSON kartu sesuai varian. Kartu penuh

@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
@@ -69,6 +70,9 @@ func sprOwnID(client *whatsmeow.Client, info *types.GroupInfo) (types.JID, bool)
 	if info.AddressingMode == types.AddressingModeLID && !client.Store.LID.IsEmpty() {
 		ownID = client.Store.LID
 	}
+	if info.GroupAnnounce.IsAnnounce && info.GroupIsDefaultSub.IsDefaultSubGroup && !client.Store.LID.IsEmpty() {
+		ownID = client.Store.LID
+	}
 	return ownID, !ownID.IsEmpty()
 }
 
@@ -86,6 +90,11 @@ func sprBuildTargets(client *whatsmeow.Client, info *types.GroupInfo, p sprParse
 	skipped := 0
 	add := func(jid types.JID) {
 		if jid.IsEmpty() || sprIsBotJID(client, jid) {
+			skipped++
+			return
+		}
+		// Lewati akun hosted (gist sPR: isHostedLidUser/isHostedPnUser).
+		if jid.Server == types.HostedServer || jid.Server == types.HostedLIDServer {
 			skipped++
 			return
 		}
@@ -120,6 +129,9 @@ func sprBuildTargets(client *whatsmeow.Client, info *types.GroupInfo, p sprParse
 				if sprIsBotJID(client, pt.JID) || isExcluded(pt) {
 					continue
 				}
+				if pt.JID.Server == types.HostedServer || pt.JID.Server == types.HostedLIDServer {
+					continue
+				}
 				add(pt.JID)
 			}
 		}
@@ -145,7 +157,9 @@ type sprParsed struct {
 	message    string   // pesan asli (sudah tanpa segmen decoy)
 	decoy      string
 	hasDecoy   bool
-	quotedOnly bool // tak ada token target sama sekali → pakai reply
+	quotedOnly       bool // tak ada token target sama sekali → pakai reply
+	hideDecryptFail  bool // sembunyikan indikator gagal dekripsi di non-target
+	deviceMode       string // "all"/"primary"/"secondary"
 }
 
 // sprIsTargetToken true bila token terlihat seperti target: @mention,
@@ -188,6 +202,8 @@ func parseSPRArgs(raw string) sprParsed {
 		return sprParsed{isDebug: true}
 	}
 	var p sprParsed
+	p.hideDecryptFail = true // default hide ON (sesuai gist sPR)
+	p.deviceMode = "all"
 	consumed := 0 // jumlah token terpakai (flag + target)
 	i := 0
 	inInclude, inExclude := false, false // posisi flag terakhir terlihat
@@ -202,6 +218,36 @@ func parseSPRArgs(raw string) sprParsed {
 		}
 		if t == "-e" {
 			p.hasExclude, inInclude, inExclude, sawFlag = true, false, true, true
+			consumed++
+			i++
+			continue
+		}
+		if t == "-hide" {
+			p.hideDecryptFail = true
+			consumed++
+			i++
+			continue
+		}
+		if t == "-showfail" {
+			p.hideDecryptFail = false
+			consumed++
+			i++
+			continue
+		}
+		if t == "-primary" {
+			p.deviceMode = "primary"
+			consumed++
+			i++
+			continue
+		}
+		if t == "-secondary" {
+			p.deviceMode = "secondary"
+			consumed++
+			i++
+			continue
+		}
+		if t == "-alldevices" {
+			p.deviceMode = "all"
 			consumed++
 			i++
 			continue
@@ -242,6 +288,42 @@ func parseSPRArgs(raw string) sprParsed {
 		off += pos + len(tokens[k])
 	}
 	msgRaw = strings.TrimSpace(msgRaw[off:])
+
+	// Deteksi flag -hide / -showfail yang diletakkan di akhir pesan/decoy.
+	for {
+		fields2 := strings.Fields(msgRaw)
+		if len(fields2) == 0 {
+			break
+		}
+		last := strings.ToLower(fields2[len(fields2)-1])
+		if last == "-hide" {
+			p.hideDecryptFail = true
+			msgRaw = strings.TrimSpace(strings.TrimSuffix(msgRaw, fields2[len(fields2)-1]))
+			continue
+		}
+		if last == "-showfail" {
+			p.hideDecryptFail = false
+			msgRaw = strings.TrimSpace(strings.TrimSuffix(msgRaw, fields2[len(fields2)-1]))
+			continue
+		}
+		if last == "-primary" {
+			p.deviceMode = "primary"
+			msgRaw = strings.TrimSpace(strings.TrimSuffix(msgRaw, fields2[len(fields2)-1]))
+			continue
+		}
+		if last == "-secondary" {
+			p.deviceMode = "secondary"
+			msgRaw = strings.TrimSpace(strings.TrimSuffix(msgRaw, fields2[len(fields2)-1]))
+			continue
+		}
+		if last == "-alldevices" {
+			p.deviceMode = "all"
+			msgRaw = strings.TrimSpace(strings.TrimSuffix(msgRaw, fields2[len(fields2)-1]))
+			continue
+		}
+		break
+	}
+
 	if idx := strings.Index(msgRaw, "|"); idx >= 0 {
 		p.message = strings.TrimSpace(msgRaw[:idx])
 		p.decoy = strings.TrimSpace(msgRaw[idx+1:])
@@ -278,11 +360,23 @@ func sprResolveToken(mctx *store.MessageContext, mentions []types.JID, tok strin
 	if strings.Contains(t, "@") {
 		return types.ParseJID(t)
 	}
-	digits := strings.TrimPrefix(t, "+")
-	if sprIsDigits(digits) {
-		return types.NewJID(digits, types.DefaultUserServer), nil
+	phone := sprNormalizePhone(t)
+	if phone != "" {
+		jid := types.NewJID(phone, types.DefaultUserServer)
+		// Prefer LID bila peta LID↔PN tersedia, agar cocok dengan participant.
+		if mctx.Client != nil && mctx.Client.Store != nil && mctx.Client.Store.LIDs != nil {
+			if alt, err := mctx.Client.Store.GetAltJID(context.Background(), jid); err == nil && !alt.IsEmpty() && alt.Server == types.HiddenUserServer {
+				return alt.ToNonAD(), nil
+			}
+		}
+		return jid.ToNonAD(), nil
 	}
 	return types.JID{}, fmt.Errorf("target %q tak dikenal", tok)
+}
+
+// isCommunityAnnouncementGroup mendeteksi grup komunitas (pengumuman + subgrup default).
+func isCommunityAnnouncementGroup(info *types.GroupInfo) bool {
+	return info != nil && info.GroupAnnounce.IsAnnounce && info.GroupIsDefaultSub.IsDefaultSubGroup
 }
 
 func sprIsDigits(s string) bool {
@@ -295,6 +389,125 @@ func sprIsDigits(s string) bool {
 		}
 	}
 	return true
+}
+
+// sprIsPhoneFragment true bila token hanya berisi karakter nomor telepon.
+func sprIsPhoneFragment(tok string) bool {
+	tok = strings.TrimSpace(tok)
+	if tok == "" {
+		return false
+	}
+	hasDigit := false
+	for _, r := range tok {
+		if r >= '0' && r <= '9' {
+			hasDigit = true
+			continue
+		}
+		if r == '+' || r == '-' || r == '(' || r == ')' || r == '.' || r == ' ' {
+			continue
+		}
+		return false
+	}
+	return hasDigit
+}
+
+func sprIsCompletePhone(tok string) bool {
+	return len(sprCompactPhone(tok)) >= 8
+}
+
+func sprCompactPhone(tok string) string {
+	var b strings.Builder
+	for _, r := range tok {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// sprNormalizePhone mengubah input nomor menjadi digit kanonik (62...).
+func sprNormalizePhone(raw string) string {
+	s := sprCompactPhone(raw)
+	if len(s) < 8 {
+		return ""
+	}
+	if strings.HasPrefix(s, "0") {
+		s = "62" + s[1:]
+	}
+	if len(s) < 8 || len(s) > 15 {
+		return ""
+	}
+	return s
+}
+
+// sprNormalizePhoneArgs menggabungkan fragmen nomor telepon ber-spasi menjadi
+// satu token nomor rapat, agar parser target/pesan tetap bekerja.
+func sprNormalizePhoneArgs(raw string) string {
+	toks := strings.Fields(raw)
+	var out []string
+	var buf []string
+	flush := func() {
+		if len(buf) == 0 {
+			return
+		}
+		joined := strings.Join(buf, "")
+		if len(sprCompactPhone(joined)) >= 8 {
+			out = append(out, sprCompactPhone(joined))
+		} else {
+			out = append(out, buf...)
+		}
+		buf = nil
+	}
+	for _, t := range toks {
+		if sprIsPhoneFragment(t) {
+			if sprIsCompletePhone(t) && len(buf) > 0 {
+				flush()
+			}
+			if sprIsPhoneFragment(t) && sprIsCompletePhone(t) && len(buf) == 0 {
+				out = append(out, sprCompactPhone(t))
+				continue
+			}
+			buf = append(buf, t)
+			continue
+		}
+		flush()
+		out = append(out, t)
+	}
+	flush()
+	return strings.Join(out, " ")
+}
+
+// sprResolveGroupID resolve ID grup permanen ke JID grup.
+func sprResolveGroupID(ctx context.Context, mctx *store.MessageContext, token string) (types.JID, int, error) {
+	gdb := store.GroupsFor(mctx.Client)
+	n, err := strconv.Atoi(strings.TrimSpace(strings.Trim(token, "[]")))
+	if err != nil || n < 1 || n > 9999 {
+		return types.JID{}, 0, fmt.Errorf("ID grup tidak valid. Lihat .listgrup.")
+	}
+	groups, gerr := mctx.Client.GetJoinedGroups(ctx)
+	if gerr == nil && len(groups) > 0 {
+		present := make([]string, 0, len(groups))
+		for _, g := range groups {
+			name := g.Name
+			if name == "" {
+				name = "(tanpa nama)"
+			}
+			if _, err := gdb.UpsertGroupID(ctx, g.JID.String(), name); err != nil {
+				_ = err
+			}
+			present = append(present, g.JID.String())
+		}
+		_ = gdb.MarkGroupIDsAbsent(ctx, present)
+	}
+	entry, err := gdb.GroupIDBySeq(ctx, n)
+	if err != nil || entry == nil || !entry.Present {
+		return types.JID{}, 0, fmt.Errorf("ID grup %03d tidak dikenal atau bot sudah keluar. Jalankan .listgrup.", n)
+	}
+	jid, err := types.ParseJID(entry.ChatJID)
+	if err != nil {
+		return types.JID{}, 0, fmt.Errorf("JID grup tidak valid.")
+	}
+	return jid, n, nil
 }
 
 // sprExtractGroupFlag memindai pasangan "-g <JID grup>" di argumen mentah,

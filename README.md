@@ -13,7 +13,7 @@ wabot-go/
 │   ├── handler/
 │   │   └── handler.go             # router pesan masuk -> command / prefix spesial ($, \) / trigger AI, LogIncoming di sini
 │   ├── logfmt/                    # helper log terformat ke console (header/level)
-│   ├── timex/                     # zona waktu aktif bot (WIB/WITA/WIT) + FormatDuration
+│   ├── timex/                     # zona waktu aktif bot (BOT_TIMEZONE, nama IANA) + FormatDuration
 │   ├── netx/                      # helper jaringan (IsPublicIP anti-SSRF, dipakai external & plugins)
 │   ├── textx/                     # helper teks (TruncateRunes, dipakai lintas paket)
 │   ├── identity/                  # normalisasi identitas WhatsApp terpusat (JID/LID/PN: Normalize, ResolvePN/LID, Keys, CanonicalUser, IsBot)
@@ -53,7 +53,6 @@ wabot-go/
 │   │   └── album.go               # pengiriman album media (association + induk counts)
 │   ├── external/                  # adapter unduhan/API per platform (rantai fallback, tanpa yt-dlp)
 │   │   ├── external.go            # tipe ScrapeItem/ScrapeResult, HTTP client API + unduhan (cap 100MB)
-│   │   ├── universal.go / omnify.go # fallback universal 45+ platform + metadata
 │   │   ├── tiktok.go / instagram.go / twitter.go / facebook.go / pinterest.go
 │   │   ├── youtube.go / spotify.go / spotify_search.go
 │   │   ├── lrclib.go / shazam.go  # lirik + kenali lagu
@@ -229,11 +228,33 @@ Diset lewat file `.env` di root panel (`run.sh` sudah otomatis `source .env` di 
 | `LOGIN_METHOD`         | `qr` atau `pairing`                                                        |
 | `PHONE_NUMBER`         | Nomor HP bot untuk pairing (format `62812xxxxxxx`)                         |
 | `<NAMA>_API_KEY`      | API key provider AI (aturan seragam: `CIORA_API_KEY`, `OPENAGENTIC_API_KEY`, …) |
+| `AI_REQUEST_TIMEOUT`   | Batas tunggu satu request AI, format durasi Go (default `150s`)            |
 | `MENU_LINK`            | Link kartu `.menu` (default: wa.me nomor bot)                              |
 | `MENU_TITLE`           | Judul kartu `.menu` (default: nama + versi bot)                            |
 | `MENU_DESC`            | Deskripsi kartu `.menu` (default: jumlah command)                          |
-| `MENU_THUMB_URL`       | Gambar thumbnail kartu `.menu`                                             |
+| `MENU_THUMB_URL`       | Gambar thumbnail kartu `.menu` (cadangan; `.thumbnail` menang)             |
 | `MENU_FAVICON_URL`     | Favicon kartu `.menu`                                                      |
+| `BOT_TIMEZONE`         | Zona waktu bot, nama IANA (mis. `Asia/Makassar`); alias `WIB`/`WITA`/`WIT` masih diterima, kosong = `Asia/Makassar`; ubah lalu restart |
+| `ARENA_CHROME_PATH`    | Path Chrome untuk `.seedream` (default `/usr/bin/google-chrome`)           |
+| `ARENA_HEADED`         | `auto` (default: pakai Xvfb kalau ada), `0` = paksa headless, `1` = headed |
+| `ARENA_XVFB_PATH`      | Path binary Xvfb (default cari di PATH)                                    |
+| `ARENA_READY_SECONDS`  | Batas menunggu halaman arena.ai siap (default `45` di mode tampilan, `30` headless) |
+| `ARENA_HEADED_GPU`     | `1` = biarkan Chrome memakai jalur GPU di Xvfb (default software, `--disable-gpu`) |
+| `ARENA_MODEL`          | Model gambar arena.ai (default `seedream-5.0-pro`; boleh nama atau UUID)   |
+| `ARENA_EDIT_MODEL`     | Model untuk edit foto `.seedream` (default ikut `ARENA_MODEL`)             |
+| `ARENA_CX`             | Field client-interaction arena.ai (default nilai bawaan; `-` = tak dikirim) |
+| `ARENA_WARMUP_SECONDS` | Jeda halaman arena.ai sebelum minta token reCAPTCHA (default `6`)          |
+| `ARENA_CHROME_IDLE_SECONDS` | Chrome dimatikan setelah sekian detik nganggur (default `150`; tidak berlaku selama permintaan berjalan) |
+| `ARENA_MAX_DAILY`      | Kuota gambar `.seedream` per hari (default `20`)                           |
+| `ARENA_COOLDOWN_SECONDS` | Jeda antar permintaan `.seedream` (default `30`)                         |
+| `ARENA_TIMEOUT`        | Batas waktu satu proses gambar (default `240`, detik atau `4m`)            |
+| `GEMINI_MODEL_TEXT`    | Model chat `.gemini`: `lite` (generasi paling singkat), `flash`, atau `pro`  |
+| `GEMINI_THINKING`      | `1` = mode berpikir diperluas Gemini (lebih lambat, lebih teliti)          |
+| `GEMINI_MAX_UPLOAD_MB` | Batas ukuran lampiran yang diunggah ke Gemini (default `20`)               |
+| `GEMINI_CHROME_PATH`   | Path Chrome untuk mengunduh gambar `.gemini` (default cari di PATH/sistem) |
+| `GEMINI_XVFB_PATH`     | Path binary Xvfb untuk Chrome headed saat mengunduh gambar (default PATH)  |
+| `GEMINI_HEADED`        | `0` = paksa Chrome headless saat mengunduh gambar `.gemini`                |
+| `GOMEMLIMIT`           | Batas memori Go (mis. `512MiB`) — disarankan di panel 1,6GB                |
 
 Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan di `.env`, melainkan dikompilasi langsung ke binary lewat `internal/config/config.go` — ubah di sana lalu deploy ulang jika perlu mengganti nilainya.
 
@@ -328,16 +349,30 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 | `.mode` / `.join` / `.leave` | Mode self/public, keluar-masuk grup via link |
 | `.sbpr @a <pesan>` | Batch private relay 1 ID (mis. `.sbpr @a Halo {nama}! \| sapa`) |
 | `.spr @target <pesan> [\| decoy]` | Kirim private reply grup per-target |
-| `.thumbnail` / `.favicon <link>/reset` | Set aset kartu `.menu` |
+| `.thumbnail` / `.favicon <gambar\|link\|reset>` | Set aset kartu `.menu` (kirim/reply gambar = disimpan lokal, tanpa host; atau URL) |
 | `.lastchat` / `.crm` / `.insp` / `.run` | Arsip pesan (cek metadata/JSON, kirim ulang) |
 | `.backup [list\|get <nama>\|jadwal <interval\|off>]` | Backup database (ZIP semua DB / satu `.db` / jadwal otomatis) — hanya via DM owner |
 | `.getexcel [nama.db]` | Ubah file DB jadi Excel (`.xlsx`): reply file `.db`/ZIP hasil backup, atau sebut nama DB — hanya via DM owner |
 | `.id [nomor\|@jid]` | Diagnostik normalisasi identitas: JID mentah, alt, hasil resolve PN/LID, kunci kanonik (owner) |
+| `.seedream <prompt>` (alias `.sd`) | Generate gambar via arena.ai model `seedream-5.0-pro` (owner; prompt bisa juga dari pesan yang di-reply) |
+| `.seedream <prompt>` + foto | Edit foto via arena.ai: kirim/reply foto dengan perintah (owner; 1 foto referensi, hasil 1:1) — otomatis terdeteksi dari adanya gambar |
+| `.seedream cookie <cookie>` / `.seedream cookie` | Perbarui cookie login arena.ai, atau (tanpa argumen) tampilkan status sesi: status, masa berlaku, sisa waktu, dan model — cookie tidak pernah dikembalikan ke chat |
+| `.rch <link pesan> <emoji>` | Kirim reaksi ke pesan WhatsApp Channel lewat auto.reactionwa.online, maks 5 emoji (owner) |
+| `.rch status` / `.rch login <refresh token>` | Cek sesi/akun, atau simpan refresh token Firebase sekali (tanpa argumen = petunjuk login) |
+| `.gemini on` / `off` / `new` | Sesi chat Gemini web di DM owner: aktifkan, akhiri, atau mulai percakapan baru (riwayat disimpan di server Gemini) |
+| `.gemini login <cookie>` / `.gemini status` / `.gemini diag` / `.gemini diag upload` / `.gemini diag image` | Simpan cookie akun Google bot (header `Cookie` dari gemini.google.com), cek status sesi, diagnosa cookie (TS basi vs sesi mati), uji jalur lampiran, atau uji generate + unduh gambar — cookie tidak pernah dikembalikan ke chat |
+| `gemini <pertanyaan>` / reply bubble bot | Kirim prompt ke Gemini saat sesi aktif (juga menerima gambar/PDF sebagai lampiran) |
 | `.listgrup` | Daftar grup bot + JID (untuk flag `-g`) |
 | `$ <perintah>` | Eksekusi shell di server (async, timeout 120 dtk, output dipotong) |
 | `\ <kode js>` | Eval JavaScript di dalam bot (async, timeout 30 dtk) |
 
+Catatan `.seedream`: gambar dibuat lewat akun arena.ai milik owner memakai **Chrome di panel**, bukan solver captcha pihak ketiga. **Chrome headless ditolak reCAPTCHA** (`recaptcha validation failed`) walau UA/layar/WebGL sudah disamarkan, sedangkan Chrome biasa (non-headless) diterima — karena itu bot otomatis memakai **Xvfb** (layar virtual) bila binary `Xvfb` tersedia, dan jatuh ke headless kalau tidak. Di panel Debian: `apt-get install -y xvfb` (butuh root) atau pastikan `Xvfb` ada di PATH. Chrome hanya menyala saat dipakai dan mati sendiri setelah nganggur, karena panel 1,6GB/1 core — menjalankan Chrome terus-menerus akan memicu OOM. Sesi login arena.ai disimpan di `data/arena-cookie.txt` dan **diperbarui otomatis**: setiap kali generate/edit berhasil, bot membaca cookie aktif dari Chrome (`Storage.getCookies`, termasuk yang `HttpOnly`) lalu menulisnya kembali ke file, sehingga rotasi token oleh arena.ai tidak hilang. `.seedream cookie` manual baru perlu saat refresh token benar-benar mati (mingguan) atau setelah logout; `.seedream cookie` tanpa argumen menampilkan masa berlaku sesi. Kalau bot membalas "cookie sudah tidak berlaku", ambil cookie baru dari browser (DevTools → Network → request `create-evaluation` → header `Cookie`) lalu kirim `.seedream cookie <cookie>` tanpa deploy ulang. Uji cepat di panel: `ARENA_SMOKE=1 go test ./internal/arena/ -run TestSmokeBrowser -v` (cek Chrome + reCAPTCHA siap) atau `ARENA_SMOKE=3` (satu gambar sungguhan, memakai kuota akun). Untuk edit foto (`seedream` dengan gambar referensi), `ARENA_SMOKE=4` membuat satu gambar edit dari referensi buatan sendiri - cara termurah memastikan jalur image-to-image masih diterima arena.ai. Gambar hasil selalu dikirim sebagai **balasan (reply) ke perintah user**, didahului pesan tunggu singkat tanpa quote; caption hasil berbentuk `Generate With <model>` / `Edit With <model>` diikuti baris `> prompt` (tanpa menyebut arena.ai). Gambar referensi **wajib diunggah ke storage arena.ai (R2)**: server menolak URL lain (termasuk `data:`) dengan `400 Invalid content`, jadi bot memakai Server Action aplikasi (`generateUploadUrl` + `getSignedUrl`) yang id-nya dipanen runtime. Batas 4 MB per gambar, satu referensi.
+
 Catatan keuangan (lewat AI): tiap transaksi menyimpan **waktu input** (tanggal + jam, berbeda dari tanggal transaksi). **Saat fitur baru aktif**, seluruh transaksi lama diarsipkan (dikirim ke DM owner) lalu buku dimulai ulang dari tanggal aktivasi dengan saldo awal = net transaksi lama. Bulan berjalan ditutup otomatis saat pergantian bulan — bot mengirim **laporan Excel bulanan** ke DM owner, mengarsipkannya di `data/arsip-keuangan/<tahun>/`, lalu mengosongkan transaksi bulan itu dan membawa saldo akhir (kas & rekening) sebagai saldo awal bulan berikutnya.
+
+Catatan `.rch`: memakai situs **auto.reactionwa.online** (endpoint `POST https://api-v1.reactionwa.online`), bukan apikey. Login Google dilakukan **sekali** oleh owner di browser pribadinya; bot hanya menyimpan **refresh token** Firebase di `data/rwa-token.txt` (gitignored, ditulis atomik, tidak pernah di-echo) lewat `.rch login <refresh token>` (ambil dari DevTools > Console halaman `/Free/`: IndexedDB `firebaseLocalStorageDb` > `firebaseLocalStorage` > `stsTokenManager.refreshToken`). Access token dicetak bot sendiri dari `securetoken.googleapis.com` (wajib header `Origin`/`Referer` situs), lalu cache ±55 menit. Token Cloudflare Turnstile **wajib** dan diverifikasi server, jadi setiap kirim bot menyalakan **Chrome + Xvfb** di panel untuk membuka `/Free/` (tanpa login) dan memanen token dari `turnstile.getResponse()`; token itu dipakai ulang sampai ±4 menit supaya kiriman beruntun tidak menyalakan Chrome lagi. Link harus link **pesan** channel (ada nomor di belakang), bukan link profil. Maksimal 5 emoji per kirim (dipisah spasi/koma; emoji ZWJ tidak dipecah). Kuota gratis dibatasi **server** (1×/24 jam per akun/IP); kalau habis, bot menampilkan pesan limit dari server apa adanya (top up/upgrade lewat situs). Chrome/Xvfb memakai profil `rwa-profile/` (gitignored) agar cookie clearance Cloudflare bertahan, dan tidak dinyalakan bila sisa memori cgroup <350 MB.
+
+Catatan `.gemini`: chat Gemini lewat **antarmuka web** (bukan API resmi, bukan Chrome), memakai akun Google khusus bot. Pesan prompt ditandai **reaksi ✨** (berubah menjadi **⏳** bila jawaban belum selesai setelah ±10 detik; tidak ada bubble "sedang meneruskan…"), jawaban dirapikan dulu seperti balasan flora agent (bold Markdown → bold WhatsApp, heading/pemisah/karakter tak terlihat dibuang), dan jawaban panjang dipotong per 3500 karakter. Pembacaan balasan berhenti di penanda akhir stream (atau setelah diam 4 detik bila jawaban sudah ada), bukan menunggu koneksi ditutup — server Gemini kadang menahan koneksi ±20 detik setelah jawaban lengkap, dan itulah yang dulu membuat `.gemini` terasa lambat. Kredensial satu-satunya adalah cookie sesi di `data/gemini-cookie.txt` (gitignored, ditulis atomik 0600, tidak pernah di-echo ke chat) yang diisi lewat `.gemini login <cookie>` — ambil dari DevTools → Network → request `gemini.google.com/app` → header `Cookie`, cukup `__Secure-1PSID` (cookie pendamping ikut kalau ada). Setelah login, bot menyimpan **tembolok token halaman** (`at`/build/f.sid/push id) di `data/gemini-meta.json` (0600, umur pakai 1 jam, dihapus saat cookie identitas berganti), jadi restart tidak perlu membuka `/app` lagi dan tidak menuntut login ulang. Kalau `/app` tetap harus dibuka dan menolak, bot berlapis: rotasi cookie → coba lagi → coba lagi **tanpa cookie volatile** (`__Secure-1PSIDTS` basi kadang membuat permintaan dianggap tidak sah) → baru melaporkan cookie ditolak. `.gemini status` menampilkan keadaan berkas, dan `.gemini diag` menunjukkan apakah masalahnya cookie volatile (bisa diperbaiki bot) atau `__Secure-1PSID` yang sudah tidak berlaku (harus login ulang). Gambar hasil Gemini diunduh memakai sesi bot dengan beberapa percobaan berurutan (mirip permintaan browser: cookie, UA, `Sec-Fetch-*`, tanpa `Origin`; lalu tanpa cookie, tanpa parameter ukuran, dan `=s0`); kalau semuanya ditolak 403, bot menyalakan Chrome di panel sebentar untuk membuka URL yang sama dan mengambil gambar dari halaman yang berhasil dimuat (cookie tidak disuntikkan ke host media, profil `gemini-profile/`), lalu mematikan Chrome lagi — rung yang berhasil dicatat di log (`media ok via …`). Kalau semua gambar gagal diunduh, bot melaporkan alasan ringkasnya (mis. `403 · lh3.googleusercontent.com`), bukan mengirim pesan kosong. `.gemini diag image` meminta satu gambar, memindai semua URL media di payload (kandidat kanonik ditaruh paling depan) lalu menampilkan bentuk tiap kandidat + status tiap percobaan unduh (termasuk rung Chrome untuk kandidat pertama) + kesimpulan (masalah generasi, penolakan 403, atau jalur sehat); biayanya satu kuota generate. Semua kandidat URL tidak ditampilkan di chat, tapi ditulis ke `wabot-tmp/gemini-image-url-*.txt` agar bisa diuji di HP: berhasil di incognito = URL publik (berarti IP/TLS panel yang diblokir), hanya berhasil saat login = gambar butuh cookie `googleusercontent.com`, gagal di keduanya = URL rusak/kedaluwarsa. URL dari stream dibersihkan dulu (trim, `&amp;` → `&`, potong pada spasi/kuota/tanda penutup markup) karena satu karakter sisa markup sudah cukup membuat tanda tangan Google ditolak 403. Untuk balasan ber-lampiran yang bermasalah, `.gemini diag upload` menguji unggah + satu giliran chat dan menunjukkan tahap mana yang gagal (berkas dump mentah di `wabot-tmp/gemini-empty-*.txt` bisa diperiksa lalu dihapus). **Riwayat percakapan disimpan di server Gemini**, bukan di bot: yang ada di memori hanya pointer percakapan (`conv_id`/`resp_id`/`choice_id`), sehingga mode kembali nonaktif setelah bot restart dan `.gemini new` cukup membuang pointer. Pesan sesi ini sengaja **tidak masuk arsip CRM** (tidak ada transkrip lokal). Model: `GEMINI_MODEL_TEXT` (`lite` = generasi paling singkat, `flash`/`pro` untuk kualitas lebih tinggi), `GEMINI_THINKING=1` untuk mode berpikir. Catatan penting di panel: setelah perbaikan pembacaan stream, sisa latensi datang dari **server Gemini** (antrean 8–20 detik sebelum header balasan ditambah ±12 detik inferensi senyap), bukan dari bot — generasi aslinya hanya 2–5 detik, jadi mengecilkan model tidak lagi banyak menolong dan tidak ada setting env untuk memangkasnya. Uji tanpa WhatsApp: `GEMINI_SMOKE=1 go test ./internal/geminiapi/ -run TestSmoke -v` (teks), `=2` (unggah gambar), `=3` (minta gambar), `=4` (tiga giliran) — memakai cookie dan kuota akun asli.
 
 Panggilan WhatsApp memakai library [meowcaller](https://github.com/purpshell/meowcaller). Data grup (setting, dsb) disimpan di SQLite lewat driver `modernc.org/sqlite` (pure Go, tanpa cgo).
 
@@ -387,3 +422,14 @@ Model bisa diganti per provider lewat `.agent model <nama>`; provider/model baru
 - Pengecekan admin grup (`IsSenderAdmin`/`IsBotAdmin`) membandingkan JID lewat `.User`, nomor telepon, **dan** LID sekaligus untuk menghindari kegagalan akibat dual-format identitas WhatsApp (LID vs nomor telepon).
 - Fitur AI bergantung pada API key di `.env` — jika provider aktif tapi key-nya kosong, chat AI akan gagal (bot tetap jalan untuk command lain). Error AI yang gagal total dilaporkan ke nomor owner via WhatsApp.
 - Bot butuh **ffmpeg** di PATH server — untuk `.sticker`, thumbnail video, konversi WebP, dan transcode video asing. Tanpa ffmpeg, fitur-fitur itu membalas error.
+
+## Environment tambahan (opsional, optimasi)
+
+Variabel berikut opsional; kosong berarti pakai default.
+
+- `PPROF_ADDR` (default kosong): nyalakan server pprof (hanya localhost) untuk profiling CPU/mem/goroutine. Contoh `127.0.0.1:6060`.
+- `METRICS_LOG_INTERVAL` (default `5m`): interval log metrik ringan; `off`/`0` mematikan.
+- `HEAVY_MAX_PAR` (default `1`, 1–4): jumlah transcode ffmpeg paralel.
+- `HEAVY_QUEUE_TIMEOUT` (default `30s`): lama antre slot transcode.
+- `DL_MAX_PAR` (default `2`, 1–8): jumlah download paralel.
+- `EXTERNAL_RATE_RPS` (default `10`, cap 50): rate limit request API eksternal per engine.

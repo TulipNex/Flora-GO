@@ -72,6 +72,13 @@ func ArchiveIncoming(client *whatsmeow.Client, evt *events.Message) {
 	if store.CRM() == nil || evt == nil {
 		return
 	}
+	// Sesi Gemini owner tidak diarsipkan: transkripnya sengaja hanya
+	// disimpan di server Gemini, dan command .gemini login bisa memuat
+	// cookie akun (jangan sampai masuk SQLite). Dicek paling awal supaya
+	// tidak ada jalur yang tetap menulis.
+	if geminiPrivateMessage(evt) {
+		return
+	}
 	msg := store.UnwrapMessage(evt.Message)
 	if msg == nil || evt.Info.ID == "" {
 		return
@@ -282,7 +289,7 @@ func crmItalicLine(s string) string {
 	return "_" + s + "_"
 }
 
-// formatCRMTime menulis epoch ke "HH:MM:SS" zona aktif bot (WIB/WITA/WIT
+// formatCRMTime menulis epoch ke "HH:MM:SS" zona aktif bot (BOT_TIMEZONE,
 // via env BOT_TIMEZONE, lihat internal/timex) — konsisten dengan jam
 // penjadwalan .voicecall dan label zona lain di bot. Sebelumnya fungsi ini
 // mengunci Asia/Jakarta (WIB) sehingga arsip .lastchat/.crm/.insp

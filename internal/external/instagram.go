@@ -14,7 +14,8 @@ import (
 // (snapinsta butuh bypass Cloudflare + eval JS — slotnya diganti universal
 // j2download di level engine.)
 func FetchInstagram(ctx context.Context, pageURL string) (*ScrapeResult, error) {
-	if res, err := igexportFetch(ctx, pageURL); err == nil {
+	return scrapeCache.GetOrLoad(ctx, pageURL, func(ctx context.Context) (*ScrapeResult, error) {
+		if res, err := igexportFetch(ctx, pageURL); err == nil {
 		res.Source = "igexport"
 		return res, nil
 	} else {
@@ -26,6 +27,7 @@ func FetchInstagram(ctx context.Context, pageURL string) (*ScrapeResult, error) 
 			return nil, fmt.Errorf("instagram gagal semua: igexport: %v | savereels: %v", err1, err)
 		}
 	}
+	})
 }
 
 // igPostRe memvalidasi URL post/reel/tv Instagram.

@@ -43,14 +43,23 @@ func InitCallClient(wa *whatsmeow.Client) {
 	callClient.OnIncomingCall(func(call *meowcaller.Call) {
 		logfmt.Call("Panggilan masuk dari %s\n", call.Peer().String())
 
-		// Video: daftarkan call + pasang sisi terima (perekam bila sudah
+		// Video: daftarkan call + pasang sisi terima (penghitung bila sudah
 		// video sejak awal, auto-accept upgrade mid-call peer). Lihat
 		// attachVideoReception di call_video.go.
 		entry := trackVideoCall(call, normPhoneDigits(call.Peer().String()))
 		attachVideoReception(entry)
 
+		// OnEnd dipasang SEBELUM Answer(): panggilan yang dibatalkan peer
+		// tepat setelah offer tidak boleh meninggalkan entri registry /
+		// file audio sementara tanpa cleanup.
+		call.OnEnd(func(reason string) {
+			logfmt.Call("Panggilan berakhir: %s\n", reason)
+			releaseVideoCall(call.ID())
+		})
+
 		if err := call.Answer(); err != nil {
 			logfmt.Error("Gagal menjawab panggilan: %v\n", err)
+			releaseVideoCall(call.ID())
 			return
 		}
 
@@ -59,11 +68,6 @@ func InitCallClient(wa *whatsmeow.Client) {
 		} else {
 			call.Play(mp3)
 		}
-
-		call.OnEnd(func(reason string) {
-			logfmt.Call("Panggilan berakhir: %s\n", reason)
-			releaseVideoCall(call.ID())
-		})
 	})
 }
 
@@ -301,7 +305,7 @@ func IsBotPhoneTarget(client *whatsmeow.Client, phone string) bool {
 }
 
 // ParseJam mem-parsing format "HH.MM" (mis. "12.50") menjadi waktu absolut
-// dalam zona aktif timex (WIB/WITA/WIT via env BOT_TIMEZONE). Kalau jam itu
+// dalam zona aktif timex (env BOT_TIMEZONE, nama IANA mis. Asia/Makassar). Kalau jam itu
 // sudah lewat hari ini, dijadwalkan untuk besok.
 // Di-export supaya tool AI make_call memakai aturan jadwal yang SAMA PERSIS
 // dengan command .voicecall (tidak ada duplikasi parsing jam).

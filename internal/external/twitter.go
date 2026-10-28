@@ -10,7 +10,8 @@ import (
 // FetchTwitter mengambil media tweet via xhancer API (port cobalt.js):
 // video bitrate tertinggi + foto kualitas original, plus teks tweet.
 func FetchTwitter(ctx context.Context, pageURL string) (*ScrapeResult, error) {
-	id := extractTweetID(pageURL)
+	return scrapeCache.GetOrLoad(ctx, pageURL, func(ctx context.Context) (*ScrapeResult, error) {
+		id := extractTweetID(pageURL)
 	if id == "" {
 		return nil, fmt.Errorf("xhancer: URL tweet tidak valid")
 	}
@@ -66,6 +67,7 @@ func FetchTwitter(ctx context.Context, pageURL string) (*ScrapeResult, error) {
 		Items:  items,
 		Source: "xhancer",
 	}, nil
+	})
 }
 
 var tweetIDRe = regexp.MustCompile(`status/([0-9]+)`)

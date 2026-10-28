@@ -61,28 +61,52 @@ const (
 	sbprMaxPPBytes = 8 << 20
 )
 
-const sbprUsage = "*SBPR — Send Batch Private Relay* (khusus owner)\n" +
-	"Satu batch, satu message ID: non-target cuma lihat SATU\n" +
-	"gelembung \"menunggu pesan\", tiap target baca isinya sendiri.\n" +
+const sbprUsage = "*SBPR - Send Batch Private Relay* (khusus owner)\n" +
+	"Satu batch, satu gelembung \"menunggu pesan\".\n" +
+	"Tiap target baca isinya sendiri.\n" +
 	"\n" +
-	"*Teks + template*:\n" +
-	"- .sbpr @target <teks>\n" +
-	"- .sbpr @a @b Halo {nama}!\n" +
-	"- {nama} = nama target, {nomor} = nomor target\n" +
+	"Command hanya via chat private ke bot.\n" +
+	"Grup target memakai ID dari .listgrup.\n" +
+	"Target memakai nomor telepon.\n" +
 	"\n" +
-	"*Subcommand*:\n" +
-	"- .sbpr sapa [teks] — sapa semua member\n" +
-	"  (default: Halo {nama}!)\n" +
-	"- .sbpr getpp [@target] — kirim foto profil target\n" +
-	"  (tiap penonton lihat fotonya sendiri)\n" +
-	"- .sbpr status [-g <JID>] — progres batch\n" +
-	"  (di PC tanpa -g: semua grup)\n" +
+	"`Teks`\n" +
+	"Format : .sbpr <id> <nomor> <teks>\n" +
+	"Output : bubble personal ke target\n" +
 	"\n" +
-	"Target: @mention, reply, atau nomor/LID.\n" +
-	"Di grup @lid selalu pakai @mention. Maks 300 target.\n" +
+	"Format : .sbpr <id> <nomor1> <nomor2> Halo {nama}!\n" +
+	"Output : tiap target baca isinya sendiri\n" +
 	"\n" +
-	"Dari PC: tambah -g <JID grup> (lihat .listgrup).\n" +
-	"Target dari PC: digit/LID saja."
+	"```\n" +
+	"ID   : dari .listgrup\n" +
+	"Nomor: 628xxx → +62 8xx xxx\n" +
+	"Teks : {nama}, {nomor}\n" +
+	"```\n" +
+	"\n" +
+	"`Sapa`\n" +
+	"Format : .sbpr sapa <id> [teks]\n" +
+	"Output : semua member dapat sapaan personal\n" +
+	"\n" +
+	"`Foto`\n" +
+	"Format : .sbpr getpp <id> [nomor...]\n" +
+	"Output : foto profil target (tiap orang lihat fotonya sendiri)\n" +
+	"\n" +
+	"`Status`\n" +
+	"Format : .sbpr status [id]\n" +
+	"Output : progres batch terakhir\n" +
+	"\n" +
+	"`Profile`\n" +
+	"Format : .sbprprofile <id> [caption]\n" +
+	"Output : foto profil semua member\n" +
+	"\n" +
+	"```\n" +
+	"Target : nomor HP\n" +
+	"Maks   : 300\n" +
+	"```\n" +
+	"\n" +
+	"*Catatan*\n" +
+	"- Maks 300 target\n" +
+	"- ID grup lihat .listgrup\n" +
+	"- Command hanya via chat private ke bot"
 
 // sbprBatch melacak progres satu batch (dibaca .sbpr status).
 type sbprBatch struct {
@@ -118,64 +142,85 @@ func handleSBPR(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireOwner(mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
 	}
+	if mctx.IsGroup() {
+		return store.ReplyText(ctx, mctx, "Command ini hanya bisa dipakai via chat private ke bot.")
+	}
 	raw := strings.TrimSpace(mctx.RawArgs)
 	if raw == "" {
 		return store.ReplyText(ctx, mctx, sbprUsage)
 	}
-	// Flag -g: eksekusi di grup lain dari PC — command tak muncul di grup.
-	raw, groupJID, gerr := sprExtractGroupFlag(raw)
-	if gerr != nil {
-		return store.ReplyText(ctx, mctx, gerr.Error())
-	}
-	chat := mctx.Chat
-	if !groupJID.IsEmpty() {
-		chat = groupJID
-	}
-	if strings.TrimSpace(raw) == "" {
+	fields := strings.Fields(raw)
+	if len(fields) == 0 {
 		return store.ReplyText(ctx, mctx, sbprUsage)
 	}
-	fields := strings.Fields(raw)
-	sub := strings.ToLower(fields[0])
-	// Status boleh dari mana saja (dari PC tanpa -g = semua grup),
-	// jadi dicek SEBELUM gate grup.
-	if sub == "status" {
-		return sbprReplyStatus(ctx, mctx, chat)
-	}
-	if groupJID.IsEmpty() && !mctx.IsGroup() {
-		return store.ReplyText(ctx, mctx, "Command ini hanya bisa dipakai di dalam grup (atau tambah -g <JID grup>, lihat .listgrup).")
+
+	// Status bisa tanpa ID grup: ringkasan semua grup.
+	if strings.ToLower(fields[0]) == "status" {
+		if len(fields) >= 2 {
+			chat, _, err := sprResolveGroupID(ctx, mctx, fields[1])
+			if err != nil {
+				return store.ReplyText(ctx, mctx, err.Error())
+			}
+			return sbprReplyStatus(ctx, mctx, chat)
+		}
+		return sbprReplyStatus(ctx, mctx, mctx.Chat)
 	}
 
+	sub := ""
+	groupToken := ""
+	restFields := []string{}
+	if isSBPRSubcommand(fields[0]) {
+		if len(fields) < 2 {
+			return store.ReplyText(ctx, mctx, sbprUsage)
+		}
+		sub = strings.ToLower(fields[0])
+		groupToken = fields[1]
+		restFields = fields[2:]
+	} else {
+		groupToken = fields[0]
+		restFields = fields[1:]
+		sub = ""
+	}
+
+	chat, _, err := sprResolveGroupID(ctx, mctx, groupToken)
+	if err != nil {
+		return store.ReplyText(ctx, mctx, err.Error())
+	}
 	info, err := sprGroupInfo(ctx, mctx, chat)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal ambil data grup: %v", err))
+	}
+	if isCommunityAnnouncementGroup(info) {
+		return store.ReplyText(ctx, mctx, "Fitur ini hanya untuk grup biasa.")
 	}
 	mentions := sprParseMentions(mctx)
 
 	switch sub {
 	case "sapa":
-		template := strings.TrimSpace(raw[len(fields[0]):])
+		template := strings.TrimSpace(strings.Join(restFields, " "))
 		if template == "" {
 			template = sbprDefaultSapa
 		}
 		allTargets, allSkipped := sbprAllMembers(mctx.Client, info)
 		return sbprStartBatch(ctx, mctx, chat, info, "sapa", template, allTargets, allSkipped)
 	case "getpp":
-		p := parseSPRArgs(strings.TrimSpace(raw[len(fields[0]):]))
+		rest := sprNormalizePhoneArgs(strings.Join(restFields, " "))
+		p := parseSPRArgs(rest)
 		targets, skipped, failMsg := sbprResolveFromParse(ctx, mctx, info, mentions, p)
 		if len(targets) == 0 {
-			// Tanpa target eksplisit: semua member.
 			targets, skipped = sbprAllMembers(mctx.Client, info)
 		}
 		return sbprStartBatchWithCaption(ctx, mctx, chat, info, "getpp", sbprRejoinTemplate(p), targets, skipped, failMsg)
 	default:
-		p := parseSPRArgs(raw)
+		rest := sprNormalizePhoneArgs(strings.Join(restFields, " "))
+		p := parseSPRArgs(rest)
 		targets, skipped, failMsg := sbprResolveFromParse(ctx, mctx, info, mentions, p)
 		if len(targets) == 0 {
 			detail := ""
 			if failMsg != "" {
 				detail = " " + failMsg
 			}
-			return store.ReplyText(ctx, mctx, "Tak ada target valid. Tag member (@user) atau reply pesannya."+detail+"\n\n"+sbprUsage)
+			return store.ReplyText(ctx, mctx, "Tak ada target valid. Sebutkan nomor telepon target."+detail+"\n\n"+sbprUsage)
 		}
 		template := sbprRejoinTemplate(p)
 		if template == "" {
@@ -185,31 +230,42 @@ func handleSBPR(ctx context.Context, mctx *store.MessageContext) error {
 	}
 }
 
+func isSBPRSubcommand(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	return s == "sapa" || s == "getpp" || s == "status"
+}
+
 // handleSBPRProfile = .sbpr getpp ke semua member (caption = seluruh teks).
 func handleSBPRProfile(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireOwner(mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
 	}
+	if mctx.IsGroup() {
+		return store.ReplyText(ctx, mctx, "Command ini hanya bisa dipakai via chat private ke bot.")
+	}
 	raw := strings.TrimSpace(mctx.RawArgs)
-	raw, groupJID, gerr := sprExtractGroupFlag(raw)
-	if gerr != nil {
-		return store.ReplyText(ctx, mctx, gerr.Error())
+	if raw == "" {
+		return store.ReplyText(ctx, mctx, sbprUsage)
 	}
-	chat := mctx.Chat
-	if !groupJID.IsEmpty() {
-		chat = groupJID
+	fields := strings.Fields(raw)
+	if len(fields) == 0 {
+		return store.ReplyText(ctx, mctx, sbprUsage)
 	}
-	if groupJID.IsEmpty() && !mctx.IsGroup() {
-		return store.ReplyText(ctx, mctx, "Command ini hanya bisa dipakai di dalam grup (atau tambah -g <JID grup>, lihat .listgrup).")
+	chat, _, err := sprResolveGroupID(ctx, mctx, fields[0])
+	if err != nil {
+		return store.ReplyText(ctx, mctx, err.Error())
 	}
 	info, err := sprGroupInfo(ctx, mctx, chat)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal ambil data grup: %v", err))
 	}
+	if isCommunityAnnouncementGroup(info) {
+		return store.ReplyText(ctx, mctx, "Fitur ini hanya untuk grup biasa.")
+	}
 	targets, _ := sbprAllMembers(mctx.Client, info)
-	// Seluruh teks setelah command = caption biasa (bukan target):
-	// ".sbprprofile Halo {nama}" → caption "Halo {nama}" untuk semua.
-	return sbprStartBatchWithCaption(ctx, mctx, chat, info, "getpp", sbprProfileCaption(raw), targets, 0, "")
+	caption := strings.TrimSpace(strings.Join(fields[1:], " "))
+	// Seluruh teks setelah ID grup = caption biasa (bukan target).
+	return sbprStartBatchWithCaption(ctx, mctx, chat, info, "getpp", sbprProfileCaption(caption), targets, 0, "")
 }
 
 // sbprAllMembers mengembalikan semua participant minus bot.
@@ -283,7 +339,7 @@ func sbprStartBatchWithCaption(ctx context.Context, mctx *store.MessageContext, 
 	// Daftarkan entri retry SEBELUM relay pertama: satu message ID untuk
 	// semua relay (klien me-render satu gelembung), isi personal diisi
 	// bertahap per target yang selesai dibangun.
-	targetUsers := sprRememberTargetUsers(targets)
+	targetUsers := sprRememberTargetUsers(info, targets)
 	for _, tgt := range targets {
 		if pn := sbprParticipantPN(info, tgt); pn != "" {
 			targetUsers[pn] = true
@@ -382,7 +438,7 @@ func sbprRunBatch(client *whatsmeow.Client, mctx *store.MessageContext, chat typ
 				serr = rerr
 				continue
 			}
-			if _, serr = sprSendGroupSelective(ctx, client, ownID, chat, tgt, msgID, content); serr != nil {
+			if _, serr = sprSendGroupSelective(ctx, client, ownID, chat, []types.JID{tgt}, msgID, content, true, "all"); serr != nil {
 				continue
 			}
 			sent = true
@@ -392,6 +448,10 @@ func sbprRunBatch(client *whatsmeow.Client, mctx *store.MessageContext, chat typ
 			sbprMarkFailed(batch)
 			logfmt.Error("SBPR #%d: gagal relay ke %s setelah %dx: %v\n", batch.id, tgt.String(), sbprMaxAttempts, serr)
 			continue
+		}
+		// Putus rantai segera setelah kirim.
+		if err := sprResetSenderKey(ctx, client, chat); err != nil {
+			logfmt.Warn("SBPR #%d: gagal reset kunci pasca-relay %s: %v\n", batch.id, tgt.String(), err)
 		}
 		sprMu.Lock()
 		for _, k := range sbprSenderKeys(info, tgt) {

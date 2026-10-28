@@ -18,14 +18,24 @@ func init() {
 // RegisterStickerWatermark mendaftarkan command ".stickerwatermark" (alias ".swm")
 // -> reply gambar atau stiker lalu ketik .swm <packname>|<author> untuk mengubah
 // metadata (packname & author) stiker tersebut dan mengirimkannya kembali sebagai
-// stiker baru. Kalau argumen tidak diisi, dipakai default dari config.go.
+// stiker baru. Author opsional: kalau tidak ditulis (tanpa "|"), metadata stiker
+// tidak memuat sticker-pack-publisher. Tanpa argumen → tampil bantuan.
 func RegisterStickerWatermark(r *Registry) {
 	r.Register(Command{
 		Name:        "stickerwatermark",
 		Aliases:     []string{"swm"},
-		Description: "Reply gambar/stiker + .swm <packname>|<author> untuk ganti metadata stiker",
+		Description: "Reply gambar/stiker + .swm <packname>|<author> (author opsional)",
 		Category:    CategoryMedia,
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
+			if strings.TrimSpace(strings.Join(mctx.Args, " ")) == "" {
+				return store.ReplyText(ctx, mctx, "*Sticker Watermark*\n"+
+					"Reply gambar atau stiker, lalu:\n"+
+					"• .swm <packname>            → nama pack saja\n"+
+					"• .swm <packname>|<author>   → nama pack + author\n"+
+					"Contoh: .swm Mitra  ·  .swm Mitra|By Mitra\n"+
+					"Author hanya ditampilkan kalau ditulis setelah tanda |")
+			}
+
 			packname, author := parseStickerWatermarkArgs(mctx.Args)
 
 			img, sticker, err := extractWatermarkMedia(mctx)
@@ -53,7 +63,7 @@ func RegisterStickerWatermark(r *Registry) {
 			} else {
 				// Gambar biasa — convert dulu ke webp 512x512 lewat pipeline
 				// yang sama dengan command .sticker.
-				webpBytes, err = convertToStickerWebp(mediaBytes, false)
+				webpBytes, err = convertToStickerWebp(ctx, mediaBytes, false)
 				if err != nil {
 					return store.ReplyText(ctx, mctx, "Gagal convert ke stiker: "+err.Error())
 				}
@@ -67,7 +77,10 @@ func RegisterStickerWatermark(r *Registry) {
 			// Upload+kirim lewat helper bersama (bukan blok duplikat lokal) —
 			// termasuk Width/Height yang sebelumnya lupa diisi oleh .swm
 			// (audit A3), dan otomatis LogOutgoing dengan label di bawah.
-			label := fmt.Sprintf("packname=%q author=%q", packname, author)
+			label := fmt.Sprintf("packname=%q", packname)
+			if author != "" {
+				label += fmt.Sprintf(" author=%q", author)
+			}
 			if err := sendStickerWebp(ctx, mctx, newWebp, "stickerwatermark", label); err != nil {
 				return store.ReplyText(ctx, mctx, "Gagal kirim stiker: "+err.Error())
 			}
@@ -79,16 +92,20 @@ func RegisterStickerWatermark(r *Registry) {
 // parseStickerWatermarkArgs mem-parse "<packname>|<author>" dari argumen command.
 // mctx.Args sudah dipecah per-spasi oleh handler, jadi digabung ulang dengan
 // spasi dulu di sini supaya packname/author boleh mengandung spasi (mis.
-// "Flora GO|Mitra Wann"), baru dipecah lagi berdasarkan "|". Bagian yang
-// kosong (atau argumen tidak diisi sama sekali) jatuh balik ke default di
-// config.go.
+// "Flora GO|Mitra Wann"), baru dipecah lagi berdasarkan "|".
+//
+// Aturan author (sesuai permintaan owner):
+//   - author hanya dikirim kalau ditulis eksplisit setelah "|"; kalau tidak,
+//     author kosong → metadata stiker tidak memuat sticker-pack-publisher.
+//   - packname kosong (mis. ".swm |Tim") jatuh ke default config.
+//   - ".swm" tanpa argumen ditangani di handler (tampil help), jadi di sini
+//     tidak lagi memakai default author.
 func parseStickerWatermarkArgs(args []string) (packname, author string) {
 	packname = config.StickerPackname
-	author = config.StickerAuthor
 
 	joined := strings.TrimSpace(strings.Join(args, " "))
 	if joined == "" {
-		return packname, author
+		return packname, ""
 	}
 
 	parts := strings.SplitN(joined, "|", 2)
@@ -96,9 +113,7 @@ func parseStickerWatermarkArgs(args []string) (packname, author string) {
 		packname = p
 	}
 	if len(parts) == 2 {
-		if a := strings.TrimSpace(parts[1]); a != "" {
-			author = a
-		}
+		author = strings.TrimSpace(parts[1])
 	}
 	return packname, author
 }
@@ -114,7 +129,7 @@ func parseStickerWatermarkArgs(args []string) (packname, author string) {
 func extractWatermarkMedia(mctx *store.MessageContext) (*waE2E.ImageMessage, *waE2E.StickerMessage, error) {
 	quoted := store.UnwrapMessage(store.ExtractQuotedMessage(mctx.RawEvt))
 	if quoted == nil {
-		return nil, nil, fmt.Errorf("reply ke gambar atau stiker dulu, lalu ketik .swm <packname>|<author>")
+		return nil, nil, fmt.Errorf("reply ke gambar atau stiker dulu, lalu ketik .swm <packname>|<author> (author opsional)")
 	}
 
 	if img := quoted.GetImageMessage(); img != nil {

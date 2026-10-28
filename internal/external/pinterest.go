@@ -16,7 +16,8 @@ import (
 // CSRF (/get-csrf-token.php), POST /en2/download, petik tombol unduhan
 // (a#dlMP4 = video, a#dljpg = foto/thumbnail).
 func FetchPinterest(ctx context.Context, pageURL string) (*ScrapeResult, error) {
-	const engine = "klickpin"
+	return scrapeCache.GetOrLoad(ctx, pageURL, func(ctx context.Context) (*ScrapeResult, error) {
+		const engine = "klickpin"
 	const base = "https://klickpin.com"
 	if !pinURLRe.MatchString(pageURL) {
 		return nil, fmt.Errorf("%s: bukan URL pinterest/pin.it", engine)
@@ -68,6 +69,7 @@ func FetchPinterest(ctx context.Context, pageURL string) (*ScrapeResult, error) 
 		return nil, fmt.Errorf("%s: tidak ada media", engine)
 	}
 	return &ScrapeResult{Items: items, Source: "klickpin"}, nil
+	})
 }
 
 // pinURLRe memvalidasi URL pinterest / pin.it (cermin regex situsnya).

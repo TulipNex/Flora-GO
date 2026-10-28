@@ -117,7 +117,36 @@ func openGroupDBFile(path string) (*sql.DB, error) {
 		status     TEXT NOT NULL DEFAULT 'active',
 		created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 	);
+	CREATE TABLE IF NOT EXISTS group_members (
+		chat_jid      TEXT NOT NULL,
+		user_id       INTEGER NOT NULL,
+		jid           TEXT NOT NULL DEFAULT '',
+		lid           TEXT NOT NULL DEFAULT '',
+		pn            TEXT NOT NULL DEFAULT '',
+		pushname      TEXT NOT NULL DEFAULT '',
+		is_admin      INTEGER NOT NULL DEFAULT 0,
+		is_superadmin INTEGER NOT NULL DEFAULT 0,
+		present       INTEGER NOT NULL DEFAULT 1,
+		joined_at     INTEGER NOT NULL DEFAULT 0,
+		left_at       INTEGER NOT NULL DEFAULT 0,
+		first_seen    INTEGER NOT NULL DEFAULT 0,
+		last_seen     INTEGER NOT NULL DEFAULT 0,
+		updated_at    INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (chat_jid, user_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_gm_pn  ON group_members(chat_jid, pn);
+	CREATE INDEX IF NOT EXISTS idx_gm_lid ON group_members(chat_jid, lid);
+	CREATE TABLE IF NOT EXISTS group_ids (
+		seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+		chat_jid    TEXT NOT NULL UNIQUE,
+		name        TEXT NOT NULL DEFAULT '',
+		present     INTEGER NOT NULL DEFAULT 1,
+		created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+		updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+	);
 	`
+
+
 	// Migrasi untuk database LAMA yang tabel group_greetings-nya sudah ada
 	// TANPA kolom bye/welcome_msg/bye_msg (dibuat sebelum fitur perpisahan +
 	// template ini ditambahkan). Pola yang sama dengan migrasi kolom

@@ -15,7 +15,8 @@ import (
 // musically. FAA utama (SD ringan, hemat CPU); sisanya fallback.
 // Port dari tiktok.js + tikwm.js + tiktokdl.js + musically.js.
 func FetchTikTok(ctx context.Context, pageURL string) (*ScrapeResult, error) {
-	if res, err := faaTikTokFetch(ctx, pageURL); err == nil {
+	return scrapeCache.GetOrLoad(ctx, pageURL, func(ctx context.Context) (*ScrapeResult, error) {
+		if res, err := faaTikTokFetch(ctx, pageURL); err == nil {
 		res.Source = "faa"
 		return res, nil
 	} else {
@@ -39,6 +40,7 @@ func FetchTikTok(ctx context.Context, pageURL string) (*ScrapeResult, error) {
 			}
 		}
 	}
+	})
 }
 
 // --- faa (utama): GET api-faa.my.id/faa/tiktok, SD ringan dulu ---

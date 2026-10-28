@@ -11,8 +11,8 @@ import (
 )
 
 // TestProviderSlotQueue: antrean openagentic (limit 1) menahan akuisisi
-// kedua, melepas setelah release; provider lain tanpa batas; timeout
-// antrean gagal ramah dan non-transient.
+// kedua, melepas setelah release; provider tak terdaftar tanpa batas; ciora
+// dibatasi 2 slot; timeout antrean gagal ramah dan non-transient.
 func TestProviderSlotQueue(t *testing.T) {
 	ctx := context.Background()
 	rel1, err := acquireProviderSlot(ctx, "openagentic")
@@ -45,11 +45,17 @@ func TestProviderSlotQueue(t *testing.T) {
 	}
 	defer rel2()
 
-	rel, err := acquireProviderSlot(ctx, "ciora")
+	rel, err := acquireProviderSlot(ctx, "provider-tanpa-batas")
 	if err != nil {
 		t.Fatalf("provider tanpa batas harus lolos: %v", err)
 	}
 	rel()
+
+	// ciora punya gerbang sendiri (2 slot): tanpa ini chat paralel +
+	// ekstraksi fakta + ringkasan sesi menembak bersamaan lalu timeout.
+	if limit, gated := providerConcurrency["ciora"]; !gated || limit != 2 {
+		t.Fatalf("ciora harus dibatasi 2 slot, dapat gated=%v limit=%d", gated, limit)
+	}
 
 	oldTimeout := providerQueueTimeout
 	providerQueueTimeout = 150 * time.Millisecond

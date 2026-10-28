@@ -11,12 +11,15 @@ import (
 	"time"
 )
 
-// FetchSpotify mengambil audio Spotify via waterfall: nexray → musicfab →
-// omnify. Port dari spotify-down.js (minus jurus yt-dlp-search: butuh
+// FetchSpotify mengambil audio Spotify via waterfall: nexray → musicfab.
+// Port dari spotify-down.js (minus jurus yt-dlp-search: butuh
 // judul+artis yang hanya diketahui dari metadata eksternal). Semuanya
 // mengembalikan audio ASLI Spotify (bukan YouTube-search) + validasi judul.
+// omnify dulu disebut di rantai ini tapi tidak pernah dipanggil (dan sekarang
+// sudah dihapus seluruhnya — endpoint-nya menuntut API key).
 func FetchSpotify(ctx context.Context, pageURL string) (*ScrapeResult, error) {
-	id := extractSpotifyID(pageURL)
+	return scrapeCache.GetOrLoad(ctx, pageURL, func(ctx context.Context) (*ScrapeResult, error) {
+		id := extractSpotifyID(pageURL)
 	if id == "" {
 		return nil, fmt.Errorf("spotify: URL track tidak valid")
 	}
@@ -34,6 +37,7 @@ func FetchSpotify(ctx context.Context, pageURL string) (*ScrapeResult, error) {
 			return nil, fmt.Errorf("spotify gagal semua: nexray: %v | musicfab: %v", err1, err)
 		}
 	}
+	})
 }
 
 var spotifyIDRe = regexp.MustCompile(`track/([a-zA-Z0-9]+)`)

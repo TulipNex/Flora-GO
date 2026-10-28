@@ -42,7 +42,7 @@ const (
 	// sprMaxTargets membatasi jumlah target per command. Tiap target =
 	// satu pengiriman grup dengan rotasi sender key sendiri, berurutan —
 	// tanpa batas, grup besar bisa kena rate-limit / ban.
-	sprMaxTargets = 25
+	sprMaxTargets = 300
 	// sprSendDelay jeda antar pengiriman per-target (lihat alasan di atas).
 	sprSendDelay = 400 * time.Millisecond
 	// sprEntryTTL umur entri decoy/retry. Retry WhatsApp normalnya masuk
@@ -72,6 +72,7 @@ type sprEntry struct {
 
 var (
 	sprMu      sync.Mutex
+	sprRetryMu sync.Mutex
 	sprEntries = map[string]*sprEntry{}
 )
 
@@ -79,14 +80,19 @@ func sprKey(chat types.JID, id types.MessageID) string {
 	return chat.String() + "\x00" + string(id)
 }
 
-// sprRememberTargetUsers membangun set bare-User dari daftar JID target
-// (kedua sisi LID/PN bila bisa dipecahkan dari info grup).
-func sprRememberTargetUsers(targets []types.JID) map[string]bool {
+// sprRememberTargetUsers membangun set bare-User dari daftar JID target,
+// termasuk LID dan PN bila tersedia dari info grup.
+func sprRememberTargetUsers(info *types.GroupInfo, targets []types.JID) map[string]bool {
 	out := make(map[string]bool, len(targets)*2)
 	for _, t := range targets {
 		bare := t.ToNonAD()
 		if !bare.IsEmpty() {
 			out[bare.User] = true
+		}
+		if info != nil {
+			if pn := sbprParticipantPN(info, t); pn != "" {
+				out[pn] = true
+			}
 		}
 	}
 	return out
@@ -94,23 +100,93 @@ func sprRememberTargetUsers(targets []types.JID) map[string]bool {
 
 // sprSenderIsTarget true bila pengirim receipt adalah salah satu target
 // (cocok Sender atau SenderAlt — grup mode LID vs PN).
-func sprSenderIsTarget(e *sprEntry, sender, senderAlt types.JID) bool {
-	if !sender.IsEmpty() && e.targets[sender.ToNonAD().User] {
+func sprSenderIsTarget(targets map[string]bool, sender, senderAlt types.JID) bool {
+	if targets == nil {
+		return false
+	}
+	if !sender.IsEmpty() && targets[sender.ToNonAD().User] {
 		return true
 	}
-	return !senderAlt.IsEmpty() && e.targets[senderAlt.ToNonAD().User]
+	return !senderAlt.IsEmpty() && targets[senderAlt.ToNonAD().User]
+}
+
+func sprLookupPerSenderMap(perSender map[string]*waE2E.Message, sender, senderAlt types.JID) *waE2E.Message {
+	if perSender == nil {
+		return nil
+	}
+	if !sender.IsEmpty() {
+		if c, ok := perSender[sender.ToNonAD().User]; ok {
+			return c
+		}
+	}
+	if !senderAlt.IsEmpty() {
+		if c, ok := perSender[senderAlt.ToNonAD().User]; ok {
+			return c
+		}
+	}
+	return nil
+}
+
+func msgSenderKey(msg *waE2E.Message) *waE2E.SenderKeyDistributionMessage {
+	if msg == nil {
+		return nil
+	}
+	if msg.DeviceSentMessage != nil && msg.DeviceSentMessage.Message != nil {
+		return msg.DeviceSentMessage.Message.SenderKeyDistributionMessage
+	}
+	return msg.SenderKeyDistributionMessage
+}
+
+func restoreSenderKey(msg *waE2E.Message, skdm *waE2E.SenderKeyDistributionMessage) {
+	if msg == nil {
+		return
+	}
+	if msg.DeviceSentMessage != nil && msg.DeviceSentMessage.Message != nil {
+		msg.DeviceSentMessage.Message.SenderKeyDistributionMessage = skdm
+		return
+	}
+	msg.SenderKeyDistributionMessage = skdm
+}
+
+func clearSenderKey(msg *waE2E.Message) {
+	if msg == nil {
+		return
+	}
+	if msg.DeviceSentMessage != nil && msg.DeviceSentMessage.Message != nil {
+		msg.DeviceSentMessage.Message.SenderKeyDistributionMessage = nil
+		return
+	}
+	msg.SenderKeyDistributionMessage = nil
+}
+
+func sprEnsureDeviceSent(msg *waE2E.Message, receipt *events.Receipt) {
+	if msg == nil || receipt == nil || !receipt.IsFromMe {
+		return
+	}
+	if msg.DeviceSentMessage != nil && msg.DeviceSentMessage.Message != nil {
+		return
+	}
+	inner := proto.Clone(msg).(*waE2E.Message)
+	msg.Reset()
+	msg.DeviceSentMessage = &waE2E.DeviceSentMessage{
+		DestinationJID: proto.String(receipt.Chat.String()),
+		Message:        inner,
+	}
 }
 
 // sprPruneLocked menghapus entri kadaluarsa. Pemanggil WAJIB pegang sprMu.
 func sprPruneLocked() {
-	if len(sprEntries) < sprMaxEntries {
-		return
-	}
 	now := time.Now()
 	for k, e := range sprEntries {
+		if e.created.IsZero() {
+			continue
+		}
 		if now.Sub(e.created) > sprEntryTTL {
 			delete(sprEntries, k)
 		}
+	}
+	if len(sprEntries) < sprMaxEntries {
+		return
 	}
 	// Masih penuh (serbuan < TTL): buang yang tertua sampai di bawah pagu.
 	for len(sprEntries) >= sprMaxEntries {
@@ -121,6 +197,9 @@ func sprPruneLocked() {
 			if first || e.created.Before(oldestAt) {
 				oldest, oldestAt, first = k, e.created, false
 			}
+		}
+		if oldest == "" {
+			break
 		}
 		delete(sprEntries, oldest)
 	}
@@ -177,19 +256,42 @@ func sprHandleRetry(receipt *events.Receipt, id types.MessageID, msg *waE2E.Mess
 	if msg == nil {
 		return false, true
 	}
+	sprRetryMu.Lock()
+	defer sprRetryMu.Unlock()
+
 	sprMu.Lock()
+	sprPruneLocked()
 	e, ok := sprEntries[sprKey(receipt.Chat, id)]
+	var targets map[string]bool
+	var perSender map[string]*waE2E.Message
+	var original, decoy *waE2E.Message
+	var hasDecoy bool
+	if ok {
+		targets = e.targets
+		if e.perSender != nil {
+			perSender = make(map[string]*waE2E.Message, len(e.perSender))
+			for k, v := range e.perSender {
+				perSender[k] = v
+			}
+		}
+		original = e.original
+		decoy = e.decoy
+		hasDecoy = e.hasDecoy
+	}
 	sprMu.Unlock()
 	if !ok {
 		return false, true
 	}
-	if sprSenderIsTarget(e, receipt.Sender, receipt.SenderAlt) {
+
+	isTarget := sprSenderIsTarget(targets, receipt.Sender, receipt.SenderAlt)
+	if isTarget {
 		// Mode batch (SBPR): konten personal per pengirim.
-		if e.perSender != nil {
-			if c := sprLookupPerSender(e, receipt.Sender, receipt.SenderAlt); c != nil {
-				skdm := msg.SenderKeyDistributionMessage
+		if perSender != nil {
+			if c := sprLookupPerSenderMap(perSender, receipt.Sender, receipt.SenderAlt); c != nil {
+				skdm := msgSenderKey(msg)
 				sprSwapMessage(msg, c)
-				msg.SenderKeyDistributionMessage = skdm
+				restoreSenderKey(msg, skdm)
+				sprEnsureDeviceSent(msg, receipt)
 				return true, true
 			}
 			// Target yang kontennya belum dibangun (batch masih berjalan):
@@ -197,24 +299,22 @@ func sprHandleRetry(receipt *events.Receipt, id types.MessageID, msg *waE2E.Mess
 			return true, false
 		}
 		// Pertahankan SKDM yang ditempel library (target berhak atas kunci).
-		skdm := msg.SenderKeyDistributionMessage
-		sprSwapMessage(msg, e.original)
-		msg.SenderKeyDistributionMessage = skdm
-	} else if e.hasDecoy {
-		sprSwapMessage(msg, e.decoy)
+		skdm := msgSenderKey(msg)
+		sprSwapMessage(msg, original)
+		restoreSenderKey(msg, skdm)
+		sprEnsureDeviceSent(msg, receipt)
+	} else if hasDecoy {
+		sprSwapMessage(msg, decoy)
 		// Cabut SKDM kunci terkini yang ditempel library SEBELUM callback
 		// (retry.go menempelkannya dulu, baru memanggil PreRetryCallback):
 		// untuk 1 target / target terakhir, itu persis kunci yang mengunci
 		// bubble asli — kalau ikut terkirim, penerima decoy bisa
 		// mendekripsi bubble aslinya juga (bocor lewat pintu belakang).
-		msg.SenderKeyDistributionMessage = nil
+		clearSenderKey(msg)
+		sprEnsureDeviceSent(msg, receipt)
 		logfmt.Warn("SPR: retry %s dari non-target %s dijawab decoy\n", id, receipt.Sender.String())
 	} else {
 		// Tanpa decoy: retry non-target DITOLAK (tidak dijawab apa-apa).
-		// Non-target stuck di "menunggu pesan" selamanya — tidak pernah
-		// mendapat isi maupun kunci. Isi cache tidak disentuh supaya retry
-		// target berikutnya tetap mendapat pesan asli. Counter retry di
-		// library membatasi badai retry (~10x per pengirim per pesan).
 		logfmt.Warn("SPR: retry %s dari non-target %s ditolak (tanpa decoy)\n", id, receipt.Sender.String())
 		return true, false
 	}
@@ -250,6 +350,7 @@ func sprLookupPerSender(e *sprEntry, sender, senderAlt types.JID) *waE2E.Message
 func sprContentFor(requester, chat types.JID, id types.MessageID) *waE2E.Message {
 	sprMu.Lock()
 	defer sprMu.Unlock()
+	sprPruneLocked()
 	e, ok := sprEntries[sprKey(chat, id)]
 	if !ok {
 		return nil
@@ -261,6 +362,10 @@ func sprContentFor(requester, chat types.JID, id types.MessageID) *waE2E.Message
 		return nil
 	}
 	if e.original == nil {
+		return nil
+	}
+	// Jangan bocor ke non-target pada mode biasa.
+	if len(e.targets) > 0 && !requester.IsEmpty() && !e.targets[requester.ToNonAD().User] {
 		return nil
 	}
 	return proto.Clone(e.original).(*waE2E.Message)
@@ -282,7 +387,10 @@ func sprContentFor(requester, chat types.JID, id types.MessageID) *waE2E.Message
 // (bot/meta/additionalNodes/addressingMode/peerRecipientPN) tidak relevan
 // untuk pesan teks grup biasa. Signature divalidasi tiap panggilan supaya
 // ketidakcocokan versi hypermeow gagal eksplisit, bukan diam-diam.
-func sprSendGroupSelective(ctx context.Context, client *whatsmeow.Client, ownID, chat, target types.JID, id types.MessageID, message *waE2E.Message) (string, error) {
+func sprSendGroupSelective(ctx context.Context, client *whatsmeow.Client, ownID, chat types.JID, targets []types.JID, id types.MessageID, message *waE2E.Message, hideDecryptFail bool, deviceMode string) (string, error) {
+	if len(targets) == 0 {
+		return "", fmt.Errorf("target kosong")
+	}
 	di := client.DangerousInternals()
 	mv := reflect.ValueOf(di).MethodByName("SendGroup")
 	if !mv.IsValid() {
@@ -293,15 +401,24 @@ func sprSendGroupSelective(ctx context.Context, client *whatsmeow.Client, ownID,
 		return "", fmt.Errorf("signature SendGroup berubah (%d in/%d out), batal kirim aman", mt.NumIn(), mt.NumOut())
 	}
 	timings := reflect.New(mt.In(6).Elem()) // *MessageDebugTimings non-nil (dipakai internal)
+	// Susun nodeExtraParams via refleksi agar field decryptFailHide bisa
+	// diisi tanpa import tipe unexported hypermeow.
+	extra := reflect.New(mt.In(7)).Elem()
+	if f := extra.FieldByName("DecryptFailHide"); f.IsValid() && f.CanSet() {
+		f.SetBool(hideDecryptFail)
+	}
+	if f := extra.FieldByName("DeviceMode"); f.IsValid() && f.CanSet() {
+		f.SetString(deviceMode)
+	}
 	out := mv.Call([]reflect.Value{
 		reflect.ValueOf(ctx),
 		reflect.ValueOf(ownID),
 		reflect.ValueOf(chat),
-		reflect.ValueOf([]types.JID{target}),
+		reflect.ValueOf(targets),
 		reflect.ValueOf(id),
 		reflect.ValueOf(message),
 		timings,
-		reflect.Zero(mt.In(7)), // nodeExtraParams zero
+		extra,
 	})
 	if errVal := out[2]; !errVal.IsNil() {
 		return "", errVal.Interface().(error)
@@ -330,12 +447,9 @@ func sprSendGroupSelective(ctx context.Context, client *whatsmeow.Client, ownID,
 // Nama record direplika persis dari sendGroup internal: group = JID chat,
 // sender = signal address milik sendiri (getOwnLID = LID bila ada).
 func sprResetSenderKey(ctx context.Context, client *whatsmeow.Client, chat types.JID) error {
-	own := client.Store.LID
-	if own.IsEmpty() && client.Store.ID != nil {
-		own = *client.Store.ID
-	}
+	own := client.Store.GetLID()
 	if own.IsEmpty() {
-		return fmt.Errorf("identitas bot kosong")
+		return fmt.Errorf("LID bot belum siap")
 	}
 	ser := hstore.SignalProtobufSerializer
 	empty := groupRecord.NewSenderKey(ser.SenderKeyRecord, ser.SenderKeyState)
@@ -351,54 +465,88 @@ func sprResetSenderKey(ctx context.Context, client *whatsmeow.Client, chat types
 // Handler
 // ---------------------------------------------------------------------------
 
-const sprUsage = "*SPR — Send Private Reply* (khusus owner)\n" +
+const sprUsage = "*SPR - Send Private Reply* (khusus owner)\n" +
 	"Bisik ke target di dalam grup. Target baca isi asli,\n" +
 	"anggota lain tidak.\n" +
 	"\n" +
-	"*Target* (satu cara saja):\n" +
-	"- @mention → .spr @Budi halo\n" +
-	"- reply pesan target → .spr halo\n" +
-	"- nomor / LID → .spr 62812xxx halo\n" +
-	"- @me → ke dirimu sendiri\n" +
-	"Di grup mode @lid wajib pakai @mention.\n" +
+	"Command hanya via chat private ke bot.\n" +
+	"Grup target memakai ID dari .listgrup.\n" +
+	"Target memakai nomor telepon.\n" +
 	"\n" +
-	"*Pesan*:\n" +
-	"- .spr @target <pesan>\n" +
-	"  non-target stuck di \"menunggu pesan\"\n" +
-	"- .spr @target <asli> | <decoy>\n" +
-	"  non-target melihat decoy\n" +
+	"`Aturan`\n" +
+	"Format : .spr <id> <nomor> <pesan>\n" +
+	"Output : satu bubble privat ke target\n" +
 	"\n" +
-	"*Multi-target* (maks 25, dikirim berurutan):\n" +
-	"- -i @t1 @t2 → hanya ke yang disebut\n" +
-	"- -e @ex1 → ke semua kecuali yang disebut\n" +
-	"- -i @t1 -e @ex1 → kombinasi\n" +
+	"```\n" +
+	"ID     : dari .listgrup\n" +
+	"Nomor  : 628xxx → +62 8xx xxx\n" +
+	"Pesan  : teks biasa\n" +
+	"```\n" +
 	"\n" +
-	"Lainnya: .spr debug (info teknis grup)\n" +
+	"`Decoy`\n" +
+	"Format : .spr <id> <nomor> <asli> | <decoy>\n" +
+	"Output : target baca asli, lainnya baca decoy\n" +
 	"\n" +
-	"Dari PC: tambah -g <JID grup> (lihat .listgrup).\n" +
-	"Target dari PC: digit/LID saja."
+	"`Media`\n" +
+	"Reply ke pesan media (atau lampirkan media ke command) →\n" +
+	"SPR mengirim media itu ke target. Teks setelah target jadi caption.\n" +
+	"\n" +
+	"`Hide`\n" +
+	"Format : .spr <id> <nomor> <pesan> -hide\n" +
+	"Output : non-target tidak melihat indikator gagal dekripsi (default)\n" +
+	"Format : .spr <id> <nomor> <pesan> -showfail\n" +
+	"Output : non-target melihat indikator gagal dekripsi\n" +
+	"\n" +
+	"`Device`\n" +
+	"Format : ... -primary / -secondary / -alldevices\n" +
+	"Output : filter perangkat target (default all)\n" +
+	"\n" +
+	"`Multi`\n" +
+	"Format : .spr <id> -i <nomor...> <pesan>\n" +
+	"Output : satu bubble privat ke target yang disebut\n" +
+	"\n" +
+	"Format : .spr <id> -e <nomor> <pesan>\n" +
+	"Output : satu bubble ke semua kecuali nomor itu\n" +
+	"\n" +
+	"Format : .spr <id> -i <nomor1> -e <nomor2> <pesan>\n" +
+	"Output : satu bubble ke target terpilih\n" +
+	"\n" +
+	"```\n" +
+	"Target : nomor HP → @me\n" +
+	"Maks   : 300\n" +
+	"```\n" +
+	"\n" +
+	"`Debug`\n" +
+	"Format : .spr <id> debug\n" +
+	"Output : info teknis grup\n" +
+	"\n" +
+	"*Catatan*\n" +
+	"- Tanpa decoy: non-target stuck \"menunggu pesan\"\n" +
+	"- Dengan decoy: non-target melihat decoy\n" +
+	"- Command hanya via chat private ke bot"
 
 func handleSPR(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireOwner(mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
 	}
+	if mctx.IsGroup() {
+		return store.ReplyText(ctx, mctx, "Command ini hanya bisa dipakai via chat private ke bot.")
+	}
 	raw := strings.TrimSpace(mctx.RawArgs)
 	if raw == "" {
 		return store.ReplyText(ctx, mctx, sprUsage)
 	}
-	// Flag -g: eksekusi di grup lain dari PC — command tak muncul di grup.
-	raw, groupJID, gerr := sprExtractGroupFlag(raw)
-	if gerr != nil {
-		return store.ReplyText(ctx, mctx, gerr.Error())
+	fields := strings.Fields(raw)
+	if len(fields) == 0 {
+		return store.ReplyText(ctx, mctx, sprUsage)
 	}
-	if groupJID.IsEmpty() && !mctx.IsGroup() {
-		return store.ReplyText(ctx, mctx, "Command ini hanya bisa dipakai di dalam grup (atau tambah -g <JID grup>, lihat .listgrup).")
+	chat, _, err := sprResolveGroupID(ctx, mctx, fields[0])
+	if err != nil {
+		return store.ReplyText(ctx, mctx, err.Error())
 	}
-	chat := mctx.Chat
-	if !groupJID.IsEmpty() {
-		chat = groupJID
-	}
-	p := parseSPRArgs(raw)
+	rest := strings.TrimSpace(strings.Join(fields[1:], " "))
+	rest = sprNormalizePhoneArgs(rest)
+	p := parseSPRArgs(rest)
 	if p.isDebug {
 		return sprReplyDebug(ctx, mctx, chat)
 	}
@@ -406,6 +554,9 @@ func handleSPR(ctx context.Context, mctx *store.MessageContext) error {
 	info, err := sprGroupInfo(ctx, mctx, chat)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal ambil data grup: %v", err))
+	}
+	if isCommunityAnnouncementGroup(info) {
+		return store.ReplyText(ctx, mctx, "Fitur ini hanya untuk grup biasa.")
 	}
 
 	// Mention terparse untuk pemetaan @user → JID beneran.
@@ -429,7 +580,8 @@ func handleSPR(ctx context.Context, mctx *store.MessageContext) error {
 		}
 		return store.ReplyText(ctx, mctx, "Tak ada target valid. Tag member (@user) atau reply pesannya."+detail+"\n\n"+sprUsage)
 	}
-	if p.message == "" && !(p.hasDecoy && p.decoy != "") {
+	hasMedia := sprSourceMediaMessage(mctx) != nil
+	if p.message == "" && !hasMedia && !(p.hasDecoy && p.decoy != "") {
 		return store.ReplyText(ctx, mctx, "Pesan kosong.\n\n"+sprUsage)
 	}
 
@@ -451,76 +603,83 @@ func handleSPR(ctx context.Context, mctx *store.MessageContext) error {
 		return store.ReplyText(ctx, mctx, "Identitas bot belum siap, coba lagi sebentar.")
 	}
 
-	realMsg := &waE2E.Message{
-		ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String(p.message)},
-	}
+	var realMsg *waE2E.Message
 	var decoyMsg *waE2E.Message
+	if src := sprSourceMediaMessage(mctx); src != nil {
+		built, err := sprBuildMediaMessage(ctx, mctx, src, p.message)
+		if err != nil {
+			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal siapkan media SPR: %v", err))
+		}
+		realMsg = built
+	} else {
+		realMsg = &waE2E.Message{
+			ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String(p.message)},
+		}
+	}
 	if p.hasDecoy {
 		decoyMsg = &waE2E.Message{
 			ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String(p.decoy)},
 		}
 	}
 
-	// Kirim berurutan — tiap target dirotasi sender key-nya sendiri: reset
-	// dulu (paksa kunci baru yang belum dipegang siapa pun), baru kirim
-	// selektif. Tanpa reset, Create me-reuse kunci lama yang sudah shared.
-	targetUsers := sprRememberTargetUsers(targets)
-	var okIDs []string
-	var failed []string
-	for i, tgt := range targets {
-		if i > 0 {
-			time.Sleep(sprSendDelay)
-		}
-		msgID := mctx.Client.GenerateMessageID()
-		if err := sprResetSenderKey(ctx, mctx.Client, chat); err != nil {
-			failed = append(failed, displayNumber(info, tgt))
-			logfmt.Error("SPR: gagal rotasi kunci untuk %s: %v\n", displayNumber(info, tgt), err)
-			continue
-		}
-		if _, err := sprSendGroupSelective(ctx, mctx.Client, ownID, chat, tgt, msgID, proto.Clone(realMsg).(*waE2E.Message)); err != nil {
-			failed = append(failed, displayNumber(info, tgt))
-			logfmt.Error("SPR: gagal kirim ke %s: %v\n", tgt.String(), err)
-			continue
-		}
-		sprMu.Lock()
-		sprPruneLocked()
-		sprEntries[sprKey(chat, msgID)] = &sprEntry{
-			targets:  targetUsers,
-			original: proto.Clone(realMsg).(*waE2E.Message),
-			decoy:    decoyMsg,
-			hasDecoy: p.hasDecoy,
-			created:  time.Now(),
-		}
-		sprMu.Unlock()
-		okIDs = append(okIDs, string(msgID))
-		store.LogOutgoing(mctx, "spr", p.message)
-	}
+	// Kirim satu bubble bersama ke semua target: reset kunci dulu, kirim sekali,
+	// lalu reset lagi segera agar jendela kunci menyusut.
+	targetUsers := sprRememberTargetUsers(info, targets)
+	origin := mctx.Chat
+	_ = store.ReplyText(ctx, mctx, fmt.Sprintf("SPR dimulai: %d target.", len(targets)))
 
-	if len(okIDs) == 0 {
-		_ = sprResetSenderKey(ctx, mctx.Client, chat) // putus rantai juga saat gagal total
-		return store.ReplyText(ctx, mctx, "SPR gagal total: "+strings.Join(failed, ", "))
-	}
-	// Putus rantai: kunci SPR terakhir wajib diganti sebelum traffic normal
-	// berikutnya — kalau pesan biasa me-reuse-nya, SKDM kunci SPR tersebar ke
-	// semua orang dan bubble tadi ikut terbaca (bocor tertunda).
-	if err := sprResetSenderKey(ctx, mctx.Client, chat); err != nil {
-		logfmt.Warn("SPR: gagal reset kunci pasca-kirim: %v\n", err)
-	}
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "SPR terkirim ke %d target", len(okIDs))
-	if p.hasDecoy {
-		sb.WriteString(" (mode decoy on)")
-	} else {
-		sb.WriteString(" (tanpa decoy: non-target tak melihat apa-apa)")
-	}
-	sb.WriteString(".")
-	if len(failed) > 0 {
-		fmt.Fprintf(&sb, " Gagal: %s.", strings.Join(failed, ", "))
-	}
-	if skipped > 0 {
-		fmt.Fprintf(&sb, " %d token dilewati (tak dikenal/bukan member/duplikat).", skipped)
-	}
-	return store.ReplyText(ctx, mctx, sb.String())
+	go func(mctx *store.MessageContext, chat types.JID, info *types.GroupInfo, p sprParsed, targets []types.JID, targetUsers map[string]bool, ownID types.JID, realMsg, decoyMsg *waE2E.Message) {
+		bg := context.Background()
+		client := mctx.Client
+		msgID := client.GenerateMessageID()
+		ok := true
+		var failMsg string
+		if err := sprResetSenderKey(bg, client, chat); err != nil {
+			ok = false
+			failMsg = err.Error()
+		} else if _, err := sprSendGroupSelective(bg, client, ownID, chat, targets, msgID, proto.Clone(realMsg).(*waE2E.Message), p.hideDecryptFail, p.deviceMode); err != nil {
+			ok = false
+			failMsg = err.Error()
+		} else {
+			sprMu.Lock()
+			sprPruneLocked()
+			sprEntries[sprKey(chat, msgID)] = &sprEntry{
+				targets:  targetUsers,
+				original: proto.Clone(realMsg).(*waE2E.Message),
+				decoy:    decoyMsg,
+				hasDecoy: p.hasDecoy,
+				created:  time.Now(),
+			}
+			sprMu.Unlock()
+			store.LogOutgoing(mctx, "spr", p.message)
+		}
+		// Putus rantai segera.
+		if err := sprResetSenderKey(bg, client, chat); err != nil {
+			logfmt.Warn("SPR: gagal reset kunci pasca-kirim: %v\n", err)
+		}
+
+		msg := ""
+		if !ok {
+			msg = fmt.Sprintf("SPR gagal: %s", failMsg)
+		} else {
+			var sb strings.Builder
+			fmt.Fprintf(&sb, "SPR terkirim ke %d target", len(targets))
+			if p.hasDecoy {
+				sb.WriteString(" (mode decoy on)")
+			} else {
+				sb.WriteString(" (tanpa decoy: non-target tak melihat apa-apa)")
+			}
+			sb.WriteString(".")
+			if skipped > 0 {
+				fmt.Fprintf(&sb, " %d token dilewati (tak dikenal/bukan member/duplikat).", skipped)
+			}
+			msg = sb.String()
+		}
+		out := &store.MessageContext{Client: client, Chat: origin}
+		_ = store.SendText(bg, out, msg)
+	}(mctx, chat, info, p, targets, targetUsers, ownID, realMsg, decoyMsg)
+
+	return nil
 }
 
 // sprReplyDebug menjawab ".spr debug": info teknis grup + status SPR.

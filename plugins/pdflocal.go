@@ -457,6 +457,17 @@ func CheckJpgButtonTap(client *whatsmeow.Client, evt *events.Message) bool {
 		return true
 	}
 	if word == "mulai" {
+		armKey := startArmKey(evt.Info.Sender, evt.Info.Chat)
+		if _, sess := jpgSession(mctx); sess != nil {
+			startArmClear(armKey)
+			return jpgOpenSession(ctx, mctx, true)
+		}
+		// Menu basi (>5 menit): jangan buka sesi, kirim menu baru +
+		// segarkan jendela (cermin pdfmerge, tanpa notifikasi).
+		if !startArmTakeOrRearm(armKey, startArmJPG) {
+			_ = jpgSendMenu(ctx, mctx)
+			return true
+		}
 		return jpgOpenSession(ctx, mctx, true)
 	}
 	key := jpgStageKey(evt.Info.Sender, evt.Info.Chat)
@@ -486,7 +497,8 @@ func CheckJpgButtonTap(client *whatsmeow.Client, evt *events.Message) bool {
 // CheckJpgStaging menampung foto polos (tanpa caption command) yang masuk
 // saat sesi jpgpdf aktif — cermin CheckPDFStaging milik pdfmerge. Dipanggil
 // handler untuk pesan non-command (sebelum autodownload); true = ditelan.
-// Tanpa sesi aktif atau bukan gambar: false (bukan urusan staging).
+// Tanpa sesi aktif atau bukan gambar: false (bukan urusan staging). Kata
+// `mulai` juga digerbangi jendela `.jpgpdf` 5 menit (startarm.go).
 func CheckJpgStaging(client *whatsmeow.Client, evt *events.Message) bool {
 	ctx := context.Background()
 	mctx := &store.MessageContext{Client: client, Chat: evt.Info.Chat, Sender: evt.Info.Sender, RawEvt: evt}
@@ -506,6 +518,13 @@ func CheckJpgStaging(client *whatsmeow.Client, evt *events.Message) bool {
 		if canon, hit := jpgWords[w]; hit && arg == "" {
 			switch canon {
 			case "mulai":
+				// Cermin pdfmerge: buka sesi hanya bila sesi sudah ada
+				// (dijawab sesi baru seperti sebelumnya) atau jendela
+				// `.jpgpdf` masih hidup. Jendela basi = pesan biasa.
+				_, sess := jpgSession(mctx)
+				if !startArmAllows(startArmKey(evt.Info.Sender, evt.Info.Chat), startArmJPG, sess != nil) {
+					return false
+				}
 				return jpgOpenSession(ctx, mctx, true)
 			case "daftar":
 				return jpgListUI(ctx, mctx, true) == nil
@@ -600,7 +619,12 @@ func handleJpgPDF(ctx context.Context, mctx *store.MessageContext) error {
 		jpgStagesMu.Unlock()
 		return store.ReplyText(ctx, mctx, Block("JPG ke PDF", "Sesi dibatalkan, file dibuang."))
 	default:
-		return jpgSendMenu(ctx, mctx)
+		if err := jpgSendMenu(ctx, mctx); err != nil {
+			return err
+		}
+		// Menu terkirim = jendela `mulai` 5 menit (cermin pdfmerge).
+		startArmSet(startArmKey(mctx.Sender, mctx.Chat), startArmJPG)
+		return nil
 	}
 }
 

@@ -12,9 +12,12 @@ import (
 	"runtime"
 
 	"wabot-go/internal/ai"
+	"wabot-go/internal/arena"
+	"wabot-go/internal/diag"
 	"wabot-go/internal/config"
 	"wabot-go/internal/handler"
 	"wabot-go/internal/logfmt"
+	"wabot-go/internal/metrics"
 	"wabot-go/internal/store"
 	"wabot-go/plugins"
 
@@ -98,6 +101,17 @@ func main() {
 	printBanner()
 
 	// ==========================================================
+	// 0. Diagnostik opsional: pprof (CPU/mem/goroutine) — hanya aktif
+	//    bila env PPROF_ADDR diisi (default mati). Bind localhost saja.
+	// ==========================================================
+	diag.StartPprof()
+
+	// ==========================================================
+	// 0a. Metrik ringan (counter + log periodik). Default 5 menit;
+	//     matikan dengan METRICS_LOG_INTERVAL=off.
+	// ==========================================================
+	metrics.StartLogger()
+	// ==========================================================
 	// 0a. Sapu folder temp yatim downloader (wabot-dl-*) yang umurnya
 	//    lebih dari 24 jam — sisa crash di tengah download yang defer-nya
 	//    tidak sempat jalan. Aman & cepat, fail-soft di dalamnya.
@@ -105,11 +119,26 @@ func main() {
 	plugins.CleanStaleDownloads()
 
 	// ==========================================================
+	// 0a2. Sapu sisa artefak panggilan (vcall-*.h264 / vcall-audio-*.wav /
+	//     folder transcode vcall-*) yang dulu ditumpuk rekaman video call.
+	//     Sejak perekaman diganti penghitung, semua itu sampah.
+	// ==========================================================
+	plugins.CleanStaleCallTemp()
+
+	// ==========================================================
 	// 0b. Siapkan database SQLite untuk pengaturan grup (kick, promote,
 	//    open/close, dll). Terpisah dari data/session.db milik whatsmeow.
 	// ==========================================================
 	if err := store.InitGroupDB("data/group.db"); err != nil {
 		panic(fmt.Sprintf("gagal inisialisasi group.db: %v", err))
+	}
+
+	// ==========================================================
+	// 0b1. Siapkan direktori identitas user (data/users.db). Fail-soft
+	//     seperti CRM/absensi: init gagal = UserDB mati, bot tetap jalan.
+	// ==========================================================
+	if err := store.InitUsersDB("data/users.db"); err != nil {
+		logfmt.Warn("gagal inisialisasi users.db (UserDB mati): %v\n", err)
 	}
 
 	// ==========================================================
@@ -312,6 +341,9 @@ func main() {
 	// Putus clone dulu supaya tidak ada koneksi menggantung yang menyeret
 	// shutdown melewati stop timeout panel (lihat DisconnectAllClones).
 	store.DisconnectAllClones()
+	// Chrome milik adapter arena.ai (command .seedream) hidup di luar proses
+	// bot — tanpa ini ia jadi proses yatim yang menahan ~300MB di panel.
+	arena.Shutdown()
 	client.Disconnect()
 }
 

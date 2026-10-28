@@ -13,7 +13,7 @@ import "strings"
 //
 // Dipusatkan di sini — sebelumnya pola pemotongan rune ini disalin ulang
 // (dengan variasi trim/suffix) di plugins/docread.go, plugins/ownerexec.go,
-// plugins/ownerget.go, dan internal/external/omnify.go.
+// dan plugins/ownerget.go.
 func TruncateRunes(s string, max int, trim bool) (out string, total int, cut bool) {
 	if trim {
 		s = strings.TrimSpace(s)

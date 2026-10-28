@@ -22,6 +22,12 @@ const (
 	CategoryInternet = "Internet"
 	CategoryGame     = "Game"
 	CategoryOwner    = "Owner"
+	// CategoryDev: command uji/diagnostik pengembang (btntest, booktest,
+	// carouseltest, devtest). Tampil sebagai grup sendiri di .menu — hanya
+	// untuk owner (lihat menu.go) dan main-only (cloneBlockedCategories),
+	// sama seperti Owner, tapi dipisah supaya tidak bercampur dengan
+	// perintah operasional owner sehari-hari.
+	CategoryDev = "Dev"
 	// CategoryHidden sengaja TIDAK masuk CategoryOrder: command berkategori
 	// ini tidak punya rumah tampil di menu. WAJIB dipasangkan dengan
 	// Hidden:true (menu.go melewatkan command hidden sebelum grouping) —
@@ -49,6 +55,7 @@ var CategoryOrder = []string{
 	CategoryInternet,
 	CategoryGame,
 	CategoryOwner,
+	CategoryDev,
 }
 
 // Command mendeskripsikan satu perintah bot.
@@ -70,6 +77,7 @@ var cloneBlockedCategories = map[string]bool{
 	CategoryHidden:  true,
 	CategoryAI:      true,
 	CategoryAbsensi: true,
+	CategoryDev:     true,
 }
 
 // CloneBlocked true bila command ini tidak boleh jalan di bot clone —

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"wabot-go/internal/heavy"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 )
@@ -120,6 +121,11 @@ func InlineThumbForVideo(ctx context.Context, data []byte) []byte {
 		{"-y", "-ss", "1", "-i", in, "-vframes", "1", "-q:v", "5", out},
 		{"-y", "-i", in, "-vframes", "1", "-q:v", "5", out},
 	}
+	release, acqErr := heavy.AcquireTranscode(ctx)
+	if acqErr != nil {
+		return nil
+	}
+	defer release()
 	for i, args := range strategies {
 		cmd := exec.CommandContext(timeoutCtx, "ffmpeg", args...)
 		var stderr bytes.Buffer

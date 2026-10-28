@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"wabot-go/internal/config"
+	"wabot-go/internal/heavy"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 
@@ -50,7 +51,7 @@ func RegisterSticker(r *Registry) {
 				return store.ReplyText(ctx, mctx, ErrMsg("Stiker", "Gagal unduh media, coba lagi sebentar."))
 			}
 
-			webpBytes, err := convertToStickerWebp(mediaBytes, isVideo)
+			webpBytes, err := convertToStickerWebp(ctx, mediaBytes, isVideo)
 			if err != nil {
 				logfmt.Warn("sticker: convert gagal (%v)\n", err)
 				return store.ReplyText(ctx, mctx, ErrMsg("Stiker", "Gagal convert ke stiker, coba file lain."))
@@ -106,7 +107,7 @@ func BuildAndSendSticker(ctx context.Context, mctx *store.MessageContext, packna
 		return fmt.Errorf("gagal download media, coba lagi sebentar")
 	}
 
-	webpBytes, err := convertToStickerWebp(mediaBytes, isVideo)
+	webpBytes, err := convertToStickerWebp(ctx, mediaBytes, isVideo)
 	if err != nil {
 		logfmt.Warn("sticker(tool): convert gagal (%v)\n", err)
 		return fmt.Errorf("gagal convert ke stiker, coba file lain")
@@ -215,7 +216,7 @@ func extractStickerMedia(mctx *store.MessageContext) (*waE2E.ImageMessage, *waE2
 // convertToStickerWebp memanggil ffmpeg untuk convert gambar/video jadi stiker webp 512x512
 // dengan background transparan. Untuk video/gif, animasi dibatasi 6 detik pertama & 10fps
 // supaya ukuran file stiker tetap wajar.
-func convertToStickerWebp(input []byte, isVideo bool) ([]byte, error) {
+func convertToStickerWebp(ctx context.Context, input []byte, isVideo bool) ([]byte, error) {
 	baseTmp, err := store.BotTempDir()
 	if err != nil {
 		return nil, err
@@ -275,6 +276,11 @@ func convertToStickerWebp(input []byte, isVideo bool) ([]byte, error) {
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	release, acqErr := heavy.AcquireTranscode(ctx)
+	if acqErr != nil {
+		return nil, acqErr
+	}
+	defer release()
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("ffmpeg: %v (%s)", err, stderr.String())
 	}

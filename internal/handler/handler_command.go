@@ -6,6 +6,7 @@ import (
 
 	"wabot-go/internal/ai"
 	"wabot-go/internal/logfmt"
+	"wabot-go/internal/metrics"
 	"wabot-go/internal/store"
 	"wabot-go/plugins"
 
@@ -98,6 +99,8 @@ func executeNamedCommand(client *whatsmeow.Client, registry *plugins.Registry, e
 	if !ok {
 		return // command tidak ditemukan, diamkan saja (bisa diubah untuk balas "command tidak dikenal")
 	}
+
+	metrics.IncCommand(cmdName)
 
 	// Gerbang clone (jadibot): command main-only (flag MainOnly atau
 	// kategori Owner/Hidden/AI/Absensi) ditolak eksplisit di clone supaya

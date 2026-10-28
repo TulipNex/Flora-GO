@@ -22,6 +22,13 @@ func Row(key, val string) string {
 	return "• " + key + " : " + val
 }
 
+// Opt membuat baris opsi dua tingkat: kunci di baris pertama, nilainya
+// (contoh pemakaian) di baris kedua dengan awalan "> ". Dipakai blok bantuan
+// yang perintahnya panjang, supaya tidak berdesakan di satu baris.
+func Opt(key, val string) string {
+	return "• " + key + " :\n> " + val
+}
+
 // Block merangkai judul + baris-baris isi (baris boleh Row atau teks bebas).
 func Block(title string, rows ...string) string {
 	var sb strings.Builder

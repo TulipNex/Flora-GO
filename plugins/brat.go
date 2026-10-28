@@ -176,7 +176,7 @@ func bratGenerate(ctx context.Context, mctx *store.MessageContext, text string, 
 	// Pipeline convert stiker yang SAMA dengan .sticker (ffmpeg pad
 	// 512x512 transparan + EXIF pack/author) — reuse, bukan duplikasi,
 	// supaya perilaku stiker tidak pernah menyimpang antar command.
-	webp, err := convertToStickerWebp(media, v.isVideo)
+	webp, err := convertToStickerWebp(ctx, media, v.isVideo)
 	if err != nil {
 		return fmt.Errorf("gagal convert ke stiker: %v", err)
 	}

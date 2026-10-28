@@ -9,4 +9,7 @@ wabot-go.md
 test-env.ps1
 test-env-build.ps1
 wabot-tmp/
+arena-profile/
+rwa-profile/
+gemini-profile/
 .last-deploy-state

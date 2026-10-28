@@ -35,7 +35,7 @@ var jadwalLeagues = []struct {
 }
 
 // Zona tampil jam/tanggal mengikuti satu-satunya sumber kebenaran repo,
-// internal/timex (env BOT_TIMEZONE=WIB/WITA/WIT) — diteruskan sebagai
+// internal/timex (env BOT_TIMEZONE, nama IANA) — diteruskan sebagai
 // parameter loc agar fungsi format murni & test hermetik.
 
 // RegisterJadwal mendaftarkan `.jadwal` (pekan berjalan) dan `.hasil`

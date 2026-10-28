@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
 	"github.com/polymorfa/hypermeow/proto/waE2E"
@@ -24,13 +25,19 @@ type MessageContext struct {
 	// format multi-baris (.welcome set/.bye set) WAJIB pakai field ini,
 	// bukan strings.Join(Args, " ").
 	RawArgs string
+	// SkipArchive true = balasan yang dikirim dari konteks ini TIDAK masuk
+	// arsip CRM (data/crm.db). Dipakai fitur yang isinya memang tidak boleh
+	// tersimpan lokal, mis. sesi Gemini owner: transkripnya hanya di server
+	// Gemini, sedangkan di bot cuma ada cookie. Pengaruhnya khusus arsip
+	// keluar; pesan masuk dikecualikan di plugins.ArchiveIncoming.
+	SkipArchive bool
 }
 
 // archiveOutgoingIfMain memusatkan guard "hanya bot utama" + pengiriman teks
 // keluar ke antrian arsip async, supaya tak diulang di setiap helper teks.
 // Arsip kini non-blocking di sisi store, jadi TIDAK perlu `go` di sini.
 func archiveOutgoingIfMain(mctx *MessageContext, msgID string, msg *waE2E.Message) {
-	if mctx != nil && IsMainClient(mctx.Client) {
+	if mctx != nil && !mctx.SkipArchive && IsMainClient(mctx.Client) {
 		ArchiveOutgoingMessage(mctx.Chat.String(), msgID, msg)
 	}
 }
@@ -164,6 +171,21 @@ func SendTextWithMentions(ctx context.Context, mctx *MessageContext, text string
 		TrackBotMessageID(resp.ID, text)
 		archiveOutgoingIfMain(mctx, string(resp.ID), outMsg)
 	}
+	return err
+}
+
+// SendReaction memberi reaksi emoji ke pesan pemicu, dipakai sebagai tanda
+// "diterima" tanpa bubble teks (mis. .gemini). Reaksi sengaja TIDAK diarsipkan
+// dan kegagalannya tidak pernah fatal: pemanggil boleh mengabaikan error.
+func SendReaction(ctx context.Context, mctx *MessageContext, emoji string) error {
+	if mctx == nil || mctx.Client == nil || mctx.RawEvt == nil || mctx.RawEvt.Info.ID == "" {
+		return nil
+	}
+	if strings.TrimSpace(emoji) == "" {
+		return nil
+	}
+	msg := mctx.Client.BuildReaction(mctx.Chat, mctx.Sender, mctx.RawEvt.Info.ID, emoji)
+	_, err := mctx.Client.SendMessage(ctx, mctx.Chat, msg)
 	return err
 }
 
