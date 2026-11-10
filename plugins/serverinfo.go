@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +19,7 @@ func init() {
 
 // RegisterServerInfo mendaftarkan command `.server` (alias `.serverinfo`,
 // `.si`) KHUSUS owner: ringkasan server (hardware, memori sistem, runtime).
-// Detail OS ada di `.os`, detail memori proses ada di `.rss` — pembagian
+// Detail OS ada di `.os`, detail memori proses ada di `.memory` — pembagian
 // disengaja supaya tidak ada baris yang tampil dobel antar command.
 //
 // Semua pembacaan spesifik-Linux di-gate runtime.GOOS: di panel Linux
@@ -56,34 +55,37 @@ func handleServerInfo(ctx context.Context, mctx *store.MessageContext) error {
 	}
 
 	msg := fmt.Sprintf(
-		"🖥️ *SERVER INFORMATION*\n"+
-			"\n*Hardware*\n"+
-			"• CPU : %s\n"+
-			"• Core : %d\n"+
-			"• Clock : %s\n"+
-			"• Architecture : %s\n"+
-			"• Endianness : %s\n"+
-			"\n*Memory*\n"+
-			"• Total : %s\n"+
-			"• Used : %s\n"+
-			"• Free : %s\n"+
-			"\n*Runtime*\n"+
-			"• Go : %s\n"+
-			"• Engine : gc\n"+
-			"• PID : %d\n"+
-			"• Heap Limit : %s\n"+
-			"• Library : %s\n"+
-			"\nDetail: .os | .rss",
-		dashStr(cpuModel),
-		runtime.NumCPU(),
-		dashStr(cpuClock),
-		goArchDisplay(),
-		goEndianness(),
-		gbOrDash(memTotal), gbOrDash(memUsed), gbOrDash(memFree),
-		runtime.Version(),
-		os.Getpid(),
-		heapLimit,
-		hypermeowVersion(),
+		"*SERVER INFORMATION*\n\n"+
+			"```Hardware\n"+
+			"%-13s: %s\n"+
+			"%-13s: %d\n"+
+			"%-13s: %s\n"+
+			"%-13s: %s\n"+
+			"%-13s: %s\n"+
+			"\nMemory\n"+
+			"%-13s: %s\n"+
+			"%-13s: %s\n"+
+			"%-13s: %s\n"+
+			"\nRuntime\n"+
+			"%-13s: %s\n"+
+			"%-13s: %s\n"+
+			"%-13s: %d\n"+
+			"%-13s: %s\n"+
+			"%-13s: %s\n"+
+			"\nDetail: .os | .memory```",
+		"CPU", dashStr(cpuModel),
+		"Core", runtime.NumCPU(),
+		"Clock", dashStr(cpuClock),
+		"Architecture", goArchDisplay(),
+		"Endianness", goEndianness(),
+		"Total", gbOrDash(memTotal),
+		"Used", gbOrDash(memUsed),
+		"Free", gbOrDash(memFree),
+		"Go", runtime.Version(),
+		"Engine", "gc",
+		"PID", os.Getpid(),
+		"Heap Limit", heapLimit,
+		"Library", "hypermeow",
 	)
 	return store.ReplyText(ctx, mctx, msg)
 }
@@ -99,26 +101,6 @@ func dashStr(s string) string {
 		return "-"
 	}
 	return s
-}
-
-// hypermeowVersion membaca versi modul hypermeow (github.com/polymorfa/hypermeow,
-// fork whatsmeow) dari build info
-// (stdlib runtime/debug, tanpa dependensi). Pseudo-version panjang
-// (v0.0.0-20250928140511-35f522c88ce3) dipadatkan jadi v0.0.0-20250928 agar
-// enak dibaca; "hypermeow" polos bila tak terbaca.
-func hypermeowVersion() string {
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		for _, dep := range bi.Deps {
-			if dep.Path == "github.com/polymorfa/hypermeow" {
-				v := dep.Version
-				if i := strings.Index(v, "-"); i > 0 && len(v) > i+9 {
-					return "hypermeow " + v[:i] + "-" + v[i+1:i+9]
-				}
-				return "hypermeow " + v
-			}
-		}
-	}
-	return "hypermeow"
 }
 
 // formatDuration dipusatkan di internal/timex.FormatDuration (dulu duplikat

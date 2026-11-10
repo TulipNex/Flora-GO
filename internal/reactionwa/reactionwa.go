@@ -34,6 +34,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"wabot-go/internal/memlog"
 )
 
 const (
@@ -263,7 +265,7 @@ func (c *Client) Account(ctx context.Context) (Account, error) {
 }
 
 // React mengirim reaksi ke satu pesan WhatsApp Channel.
-func (c *Client) React(ctx context.Context, link string, emojis []string) (*Result, error) {
+func (c *Client) React(ctx context.Context, link string, emojis []string) (res *Result, err error) {
 	clean, err := NormalizeLink(link)
 	if err != nil {
 		return nil, err
@@ -279,6 +281,11 @@ func (c *Client) React(ctx context.Context, link string, emojis []string) (*Resu
 	}
 	reaction := strings.Join(emojis, ",")
 
+	// Satu baris riwayat memori per permintaan: jalur ini bisa menyalakan
+	// Chrome (Turnstile) di panel kecil, jadi biayanya perlu terlihat.
+	op := memlog.Begin("reactionwa", "react")
+	defer func() { op.End(err == nil, "") }()
+
 	var lastErr error
 	// Dua percobaan: token Turnstile berumur pendek, jadi kegagalan captcha
 	// dicoba sekali lagi dengan token baru sebelum dilaporkan ke owner.
@@ -291,7 +298,7 @@ func (c *Client) React(ctx context.Context, link string, emojis []string) (*Resu
 		if merr != nil {
 			return nil, merr
 		}
-		res, err := c.post(ctx, token, clean, reaction, cap)
+		res, err = c.post(ctx, token, clean, reaction, cap)
 		if err == nil {
 			return res, nil
 		}

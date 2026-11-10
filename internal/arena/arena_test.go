@@ -168,3 +168,28 @@ func TestBuildImagesPayload(t *testing.T) {
 		t.Errorf("tanpa gambar harus jadi array kosong, dapat %q (%v)", raw, err)
 	}
 }
+
+// TestBuildGenerateScriptWithImages memastikan skrip generate yang memuat gambar referensi
+// merangkai fungsi discoverActions dan extractActionId dengan benar tanpa placeholder tersisa.
+func TestBuildGenerateScriptWithImages(t *testing.T) {
+	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00}
+	imgPayload, err := buildImagesPayload([][]byte{jpeg})
+	if err != nil {
+		t.Fatalf("buildImagesPayload: %v", err)
+	}
+
+	script := buildGenerateScript("ubah baju jadi hijau", "019f42b5-8c52-7793-9be8-de35eecf7ea9", imgPayload)
+
+	for _, ph := range []string{"__SITEKEY__", "__ACTION__", "__PROMPT__", "__MODEL__", "__CXLINE__", "__IMAGES__"} {
+		if strings.Contains(script, ph) {
+			t.Errorf("placeholder %s belum diganti", ph)
+		}
+	}
+
+	// Pastikan fungsi-fungsi baru ada di dalam skrip
+	for _, fn := range []string{"uploadOne", "generate-upload-url", "get-signed-url"} {
+		if !strings.Contains(script, fn) {
+			t.Errorf("fungsi/nama %q harus ada di dalam skrip", fn)
+		}
+	}
+}

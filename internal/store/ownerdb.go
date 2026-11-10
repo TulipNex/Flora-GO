@@ -468,6 +468,34 @@ func (g *GroupDB) ListTrustedUsers(ctx context.Context) ([]TrustedEntry, error) 
 	return out, rows.Err()
 }
 
+const geminiSystemKey = "gemini_system_prompt"
+
+// GetGeminiSystemPrompt membaca prompt sistem Gemini dari bot_settings.
+// Mengembalikan string kosong jika belum pernah disetel.
+func (g *GroupDB) GetGeminiSystemPrompt(ctx context.Context) (string, error) {
+	var v string
+	err := g.db.QueryRowContext(ctx, `SELECT value FROM bot_settings WHERE key = ?`, geminiSystemKey).Scan(&v)
+	if err != nil {
+		if isNoRowsError(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return v, nil
+}
+
+// SetGeminiSystemPrompt menyimpan prompt sistem Gemini ke bot_settings.
+// Teks kosong (setelah trim) menghapus baris dari bot_settings.
+func (g *GroupDB) SetGeminiSystemPrompt(ctx context.Context, text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		_, err := g.db.ExecContext(ctx, `DELETE FROM bot_settings WHERE key = ?`, geminiSystemKey)
+		return err
+	}
+	_, err := g.db.ExecContext(ctx, `INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)`, geminiSystemKey, text)
+	return err
+}
+
 // errInvalidMode dipisah supaya pesan error konsisten dipakai ulang.
 func errInvalidMode(mode string) error {
 	return &modeError{mode: mode}

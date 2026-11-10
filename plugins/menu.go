@@ -169,11 +169,9 @@ func greetingHeader(mctx *store.MessageContext) (string, []types.JID) {
 	periode := dayPeriod(timex.Now())
 	sender := mctx.Sender.ToNonAD()
 	if sender.User == "" {
-		return fmt.Sprintf("*Halo kamu, selamat %s!*\n\n*Saya %s, %s.*",
-			periode, config.BotName, config.BotDescription), nil
+		return fmt.Sprintf("*Halo kamu, selamat %s!*", periode), nil
 	}
-	return fmt.Sprintf("*Halo @%s, selamat %s!*\n\n*Saya %s, %s.*",
-			sender.User, periode, config.BotName, config.BotDescription),
+	return fmt.Sprintf("*Halo @%s, selamat %s!*", sender.User, periode),
 		[]types.JID{sender}
 }
 

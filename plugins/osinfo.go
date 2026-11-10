@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -88,41 +87,62 @@ func locationDisplay(net ipAPIResponse) string {
 	}
 }
 
+// shortISP mengambil dua kata pertama dari nama ISP (mis. "Oliver Horscht"
+// dari 'Oliver Horscht is trading as "SYNLINQ"'). Gagal parse = string asli.
+func shortISP(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	// Buang bagian setelah tanda kutip/koma/semicolon.
+	for _, sep := range []string{`"`, "'", ",", ";"} {
+		if i := strings.Index(raw, sep); i >= 0 {
+			raw = strings.TrimSpace(raw[:i])
+		}
+	}
+	fields := strings.Fields(raw)
+	if len(fields) == 0 {
+		return raw
+	}
+	if len(fields) == 1 {
+		return fields[0]
+	}
+	return fields[0] + " " + fields[1]
+}
+
 func handleOSInfo(ctx context.Context, mctx *store.MessageContext) error {
-	// Detail host tak boleh publik: gate eksplisit seperti .server dan .rss.
+	// Detail host tak boleh publik: gate eksplisit seperti .server dan .memory.
 	if msg := requireOwner(mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
 	}
 
 	distro := linuxDistro()
 	kernel := linuxKernelRelease()
-	hostname, _ := os.Hostname()
 	hostUptime, hostUptimeOK := linuxUptime()
 	net := lookupIPInfo()
+	isp := shortISP(net.ISP)
 
 	msg := fmt.Sprintf(
-		"🖥️ *OPERATING SYSTEM*\n"+
-			"\n• Distro : %s\n"+
-			"• Platform : %s\n"+
-			"• Type : %s\n"+
-			"• Release : %s\n"+
-			"• Hostname : %s\n"+
-			"• Uptime : %s\n"+
-			"\n*Network*\n"+
-			"• IP Publik : %s\n"+
-			"• ISP : %s\n"+
-			"• Lokasi : %s\n"+
-			"• Zona Waktu : %s",
-		dashStr(distro),
-		runtime.GOOS,
-		"Linux",
-		dashStr(kernel),
-		dashStr(hostname),
-		durationOrDash(hostUptime, hostUptimeOK),
-		dashStr(net.Query),
-		dashStr(net.ISP),
-		locationDisplay(net),
-		dashStr(net.Timezone),
+		"*OPERATING SYSTEM*\n\n"+
+			"```%-11s: %s\n"+
+			"%-11s: %s\n"+
+			"%-11s: %s\n"+
+			"%-11s: %s\n"+
+			"%-11s: %s\n"+
+			"\nNetwork\n"+
+			"%-11s: %s\n"+
+			"%-11s: %s\n"+
+			"%-11s: %s\n"+
+			"%-11s: %s```",
+		"Distro", dashStr(distro),
+		"Platform", runtime.GOOS,
+		"Type", "Linux",
+		"Release", dashStr(kernel),
+		"Uptime", durationOrDash(hostUptime, hostUptimeOK),
+		"IP Publik", dashStr(net.Query),
+		"ISP", dashStr(isp),
+		"Lokasi", locationDisplay(net),
+		"Zona Waktu", dashStr(net.Timezone),
 	)
 	return store.ReplyText(ctx, mctx, msg)
 }

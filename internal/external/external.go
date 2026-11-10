@@ -41,7 +41,9 @@ import (
 	"time"
 
 	"wabot-go/internal/apicache"
+	"wabot-go/internal/memlog"
 	"wabot-go/internal/netx"
+	"wabot-go/internal/spool"
 
 	"golang.org/x/time/rate"
 )
@@ -235,6 +237,20 @@ func DownloadBytesWithHeaders(ctx context.Context, rawURL string, headers map[st
 	return downloadBytesVia(ctx, rawURL, headers, dlClient)
 }
 
+// DownloadBlobLimit mengunduh media ke spool: berkas <= 32MB tetap di RAM,
+// di atasnya dialirkan ke file wabot-tmp dan dibaca bertahap oleh pemanggil.
+//
+// Ini jalur untuk berkas besar (.bk sampai 500MB). Menampung seluruh body di
+// RAM membuat puncak RSS 1,6GB di panel 1,6GB (dua OOM kill Nov 2026),
+// sedangkan jalur file hanya butuh buffer 32KB - isi berkas tidak pernah
+// utuh di memori.
+func DownloadBlobLimit(ctx context.Context, rawURL string, headers map[string]string, maxBytes int64) (*spool.Blob, error) {
+	if maxBytes <= 0 {
+		maxBytes = maxDownloadBytes
+	}
+	return downloadBlobViaLimit(ctx, rawURL, headers, dlClient, maxBytes)
+}
+
 // DownloadBytesIPv4 seperti DownloadBytes tetapi koneksinya DIPAKSA IPv4
 // (lihat dlClientIPv4). Dipakai sebagai fallback saat jalur IPv6 memutus
 // transfer di tengah body (kasus CDN Apple dari jaringan owner).
@@ -242,9 +258,24 @@ func DownloadBytesIPv4(ctx context.Context, rawURL string) ([]byte, error) {
 	return downloadBytesVia(ctx, rawURL, nil, dlClientIPv4)
 }
 
+// maxDownloadBytes adalah batas bawaan unduhan media (100MB).
+const maxDownloadBytes = 100 << 20
+
 // downloadBytesVia adalah inti unduhan media: validasi URL publik, UA
 // scraper, dan cap 100MB. Client dipilih pemanggil (default / IPv4).
 func downloadBytesVia(ctx context.Context, rawURL string, headers map[string]string, client *http.Client) ([]byte, error) {
+	return downloadBytesViaLimit(ctx, rawURL, headers, client, maxDownloadBytes)
+}
+
+// mediaTooLarge adalah satu-satunya pesan untuk cap ukuran, supaya pesan ke
+// user dan pencocokan tes tidak bercabang.
+func mediaTooLarge(maxBytes int64) error {
+	return fmt.Errorf("file media terlalu besar (>%dMB)", maxBytes>>20)
+}
+
+// mediaGet menyiapkan request unduhan media: validasi SSRF, UA scraper,
+// header tambahan, dan cek status. Body milik pemanggil (wajib Close).
+func mediaGet(ctx context.Context, rawURL string, headers map[string]string, client *http.Client) (*http.Response, error) {
 	if err := checkPublicURL(ctx, rawURL); err != nil {
 		return nil, err
 	}
@@ -263,20 +294,120 @@ func downloadBytesVia(ctx context.Context, rawURL string, headers map[string]str
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		resp.Body.Close()
 		return nil, fmt.Errorf("media HTTP %d", resp.StatusCode)
 	}
-	// Batas 100MB per file. Pakai client media (timeout 10 menit), BUKAN
-	// httpClient 20-detik yang hanya untuk API JSON.
-	data, err := io.ReadAll(io.LimitReader(resp.Body, (100<<20)+1))
+	return resp, nil
+}
+
+// readAllLimit membaca body dengan cap maxBytes. hint = Content-Length
+// (boleh -1): kalau diketahui, buffer dialokasikan PERSIS sebesar itu
+// sehingga tidak ada pertumbuhan bertahap 100+200+400+500MB seperti
+// io.ReadAll (TotalAlloc turun ~2x lipat).
+func readAllLimit(r io.Reader, maxBytes, hint int64) ([]byte, error) {
+	if hint > maxBytes {
+		return nil, mediaTooLarge(maxBytes)
+	}
+	if hint > 0 {
+		buf := make([]byte, hint)
+		n, err := io.ReadFull(r, buf)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			// Content-Length menjanjikan hint byte tapi koneksi berhenti
+			// lebih awal: jangan pernah mengembalikan media terpotong
+			// sebagai sukses (io.ReadAll dulu melaporkan error ini).
+			return nil, fmt.Errorf("media terpotong (%d dari %d byte)", n, hint)
+		}
+		if err != nil {
+			return nil, err
+		}
+		// Server mengirim lebih dari Content-Length: baca sisanya dengan cap.
+		rest, err := io.ReadAll(io.LimitReader(r, maxBytes-int64(n)+1))
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(rest)) > maxBytes-int64(n) {
+			return nil, mediaTooLarge(maxBytes)
+		}
+		return append(buf, rest...), nil
+	}
+	data, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > 100<<20 {
-		return nil, fmt.Errorf("file media terlalu besar (>100MB)")
+	if int64(len(data)) > maxBytes {
+		return nil, mediaTooLarge(maxBytes)
 	}
 	return data, nil
+}
+
+// downloadBytesViaLimit sama seperti downloadBytesVia tetapi cap ukurannya
+// parameter.
+//
+// Setiap pemanggilan tercatat di riwayat memori (.memlog top) dengan label
+// host sumber: unduhan media adalah alokasi besar yang sah, dan tanpa catatan
+// ini kenaikan heap/RSS dari file 50MB tidak bisa dibedakan dari kebocoran.
+//
+// Content-Length diperiksa SEBELUM membaca body: berkas 4GB yang dibatasi
+// 500MB dulu tetap dibaca 500MB+1 byte lalu ditolak - alokasi ~1,2GB untuk
+// hasil nol. Sekarang ditolak dalam satu request header.
+func downloadBytesViaLimit(ctx context.Context, rawURL string, headers map[string]string, client *http.Client, maxBytes int64) (data []byte, err error) {
+	op := memlog.Begin("download", urlHostLabel(rawURL))
+	defer func() { op.End(err == nil, "") }()
+
+	// Pakai client media (timeout 10 menit), BUKAN httpClient 20-detik yang
+	// hanya untuk API JSON.
+	resp, err := mediaGet(ctx, rawURL, headers, client)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.ContentLength > maxBytes {
+		return nil, mediaTooLarge(maxBytes)
+	}
+	return readAllLimit(resp.Body, maxBytes, resp.ContentLength)
+}
+
+// downloadBlobViaLimit adalah versi spool dari downloadBytesViaLimit: badan
+// respons dialirkan ke spool (RAM <=32MB, selebihnya file) sehingga berkas
+// besar tidak pernah utuh di memori.
+func downloadBlobViaLimit(ctx context.Context, rawURL string, headers map[string]string, client *http.Client, maxBytes int64) (blob *spool.Blob, err error) {
+	op := memlog.Begin("download", urlHostLabel(rawURL))
+	defer func() { op.End(err == nil, "") }()
+
+	resp, err := mediaGet(ctx, rawURL, headers, client)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.ContentLength > maxBytes {
+		return nil, mediaTooLarge(maxBytes)
+	}
+
+	blob, err = spool.ReadFrom(io.LimitReader(resp.Body, maxBytes+1), 0)
+	if err != nil {
+		return nil, err
+	}
+	if blob.Size() > maxBytes {
+		blob.Close()
+		return nil, mediaTooLarge(maxBytes)
+	}
+	return blob, nil
+}
+
+// urlHostLabel mengambil host dari URL sebagai label operasi (grup .memlog
+// top jadi "download/cdninstagram.com" alih-alih satu baris raksasa). URL
+// rusak = label kosong; telemetri tidak boleh mengganggu unduhan.
+func urlHostLabel(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	if len(host) > 48 {
+		host = host[:48]
+	}
+	return host
 }
 
 // checkPublicURL menolak URL non-http(s) dan host internal (loopback,

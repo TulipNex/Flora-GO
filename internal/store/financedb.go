@@ -8,13 +8,14 @@ package store
 // mandiri), WAL + busy_timeout, CREATE TABLE IF NOT EXISTS, instance
 // global lewat Finance(), init sekali di main.go.
 //
-// Skema (7 kolom logika + teknis):
+// Skema:
 //   id TEXT PK (UUID stabil dari pemanggil — kunci mutasi, bukan nomor),
+//   tanggal ('YYYY-MM-DD' teks), transaksi, sumber ('kas'/'rekening'),
+//   masuk/keluar (INTEGER NULL — NULL berarti sisi kosong),
+//   saldo_kas, saldo_rekening, saldo (running balance per transaksi),
 //   owner TEXT (isolasi per nomor owner, cermin tab-per-owner Sheet),
-//   transaksi, masuk/keluar (INTEGER NULL — NULL berarti sisi kosong),
-//   sumber ('kas'/'rekening'), tanggal ('YYYY-MM-DD' teks),
-//   client_req_id UNIQUE (anti-ganda; NULL = tanpa proteksi),
-//   created_at (unix), input_at ('YYYY-MM-DD HH:MM:SS' lokal, NULL baris lama).
+//   input_at ('YYYY-MM-DD HH:MM:SS' lokal, NULL baris lama),
+//   created_at (unix), client_req_id UNIQUE (anti-ganda; NULL = tanpa proteksi).
 // Nomor urut display TIDAK disimpan (keputusan owner): enumerasi 1..N
 // dibuat saat export Excel. Rekap = SUM langsung (tanpa tabel saldo,
 // tanpa cache — SQLite cukup cepat; lihat diskusi Ide 1 vs Ide 2).
@@ -53,14 +54,18 @@ func InitFinanceDB(path string) error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS keuangan (
 		id            TEXT PRIMARY KEY,
-		owner         TEXT NOT NULL,
+		tanggal       TEXT NOT NULL,
 		transaksi     TEXT NOT NULL,
+		sumber        TEXT NOT NULL,
 		masuk         INTEGER NULL,
 		keluar        INTEGER NULL,
-		sumber        TEXT NOT NULL,
-		tanggal       TEXT NOT NULL,
-		client_req_id TEXT NULL UNIQUE,
-		created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+		saldo_kas     INTEGER NULL,
+		saldo_rekening INTEGER NULL,
+		saldo         INTEGER NULL,
+		owner         TEXT NOT NULL,
+		input_at      TEXT NULL,
+		created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+		client_req_id TEXT NULL UNIQUE
 	);
 	CREATE INDEX IF NOT EXISTS idx_keuangan_owner_tanggal ON keuangan(owner, tanggal);
 	CREATE INDEX IF NOT EXISTS idx_keuangan_owner_sumber ON keuangan(owner, sumber);
@@ -76,13 +81,24 @@ func InitFinanceDB(path string) error {
 	`
 	// input_at: waktu input lokal ('YYYY-MM-DD HH:MM:SS'), NULL untuk baris
 	// lama (sebelum fitur ini). Diisi saat INSERT, tak diubah saat edit.
+	// saldo_kas & saldo_rekening & saldo: running balance per transaksi.
 	alters := []string{
 		`ALTER TABLE keuangan ADD COLUMN input_at TEXT NULL`,
+		`ALTER TABLE keuangan ADD COLUMN saldo_kas INTEGER NULL`,
+		`ALTER TABLE keuangan ADD COLUMN saldo_rekening INTEGER NULL`,
+		`ALTER TABLE keuangan ADD COLUMN saldo INTEGER NULL`,
 	}
 	if err := applySchema(db, "finance.db", schema, alters, financeSchemaVersion); err != nil {
 		return err
 	}
-	financeDB = &FinanceDB{db: db}
+	if err := reorderKeuanganTable(db); err != nil {
+		return fmt.Errorf("reorder tabel keuangan: %w", err)
+	}
+	f := &FinanceDB{db: db}
+	if err := f.recalculateAllOwners(context.Background()); err != nil {
+		return fmt.Errorf("recalculate saldo awal finance: %w", err)
+	}
+	financeDB = f
 	return nil
 }
 
@@ -97,15 +113,18 @@ func Finance() *FinanceDB {
 
 // FinanceRow adalah satu baris transaksi (masuk/keluar nil = sisi kosong).
 type FinanceRow struct {
-	ID          string
-	Transaksi   string
-	Masuk       *int64
-	Keluar      *int64
-	Sumber      string
-	Tanggal     string
-	InputAt     string // waktu input 'YYYY-MM-DD HH:MM:SS' ("" bila baris lama)
-	ClientReqID string
-	CreatedAt   int64
+	ID            string
+	Transaksi     string
+	Masuk         *int64
+	Keluar        *int64
+	Sumber        string
+	Tanggal       string
+	InputAt       string // waktu input 'YYYY-MM-DD HH:MM:SS' ("" bila baris lama)
+	SaldoKas      *int64 // saldo kas berjalan setelah mutasi
+	SaldoRekening *int64 // saldo rekening berjalan setelah mutasi
+	Saldo         *int64 // saldo total (kas + rekening) berjalan setelah mutasi
+	ClientReqID   string
+	CreatedAt     int64
 }
 
 // FinanceFilter adalah patokan pencarian multi-kriteria (Ide 1): semua
@@ -126,9 +145,9 @@ type FinanceFilter struct {
 // scanFinanceRow memindai satu baris hasil query ke FinanceRow.
 func scanFinanceRow(rows *sql.Rows) (FinanceRow, error) {
 	var r FinanceRow
-	var masuk, keluar sql.NullInt64
+	var masuk, keluar, sKas, sRek, sTot sql.NullInt64
 	var reqID, inputAt sql.NullString
-	if err := rows.Scan(&r.ID, &r.Transaksi, &masuk, &keluar, &r.Sumber, &r.Tanggal, &reqID, &r.CreatedAt, &inputAt); err != nil {
+	if err := rows.Scan(&r.ID, &r.Transaksi, &masuk, &keluar, &r.Sumber, &r.Tanggal, &reqID, &r.CreatedAt, &inputAt, &sKas, &sRek, &sTot); err != nil {
 		return FinanceRow{}, err
 	}
 	if masuk.Valid {
@@ -144,6 +163,18 @@ func scanFinanceRow(rows *sql.Rows) (FinanceRow, error) {
 	}
 	if inputAt.Valid {
 		r.InputAt = inputAt.String
+	}
+	if sKas.Valid {
+		v := sKas.Int64
+		r.SaldoKas = &v
+	}
+	if sRek.Valid {
+		v := sRek.Int64
+		r.SaldoRekening = &v
+	}
+	if sTot.Valid {
+		v := sTot.Int64
+		r.Saldo = &v
 	}
 	return r, nil
 }
@@ -187,6 +218,7 @@ func financeWhere(f FinanceFilter) (string, []interface{}) {
 // proteksi ganda. Mengembalikan isDup=true bila req_id sudah ada (bukan
 // error) supaya pemanggil bisa lapor "sudah tercatat".
 // input_at diisi waktu input lokal (zona aktif timex) saat insert.
+// Setelah insert, saldo berjalan dihitung ulang agar konsisten.
 func (f *FinanceDB) InsertKeuangan(ctx context.Context, id, owner, transaksi string, masuk, keluar *int64, sumber, tanggal, clientReqID string) (isDup bool, err error) {
 	var reqArg interface{}
 	if strings.TrimSpace(clientReqID) != "" {
@@ -202,6 +234,9 @@ func (f *FinanceDB) InsertKeuangan(ctx context.Context, id, owner, transaksi str
 			return true, nil
 		}
 		return false, err
+	}
+	if rerr := f.RecalculateRunningBalances(ctx, owner); rerr != nil {
+		return false, fmt.Errorf("gagal hitung ulang saldo: %w", rerr)
 	}
 	return false, nil
 }
@@ -226,8 +261,8 @@ func (f *FinanceDB) SearchKeuangan(ctx context.Context, filter FinanceFilter) (r
 	where, args := financeWhere(filter)
 	args = append(args, limit+1)
 	qrows, err := f.db.QueryContext(ctx, `
-		SELECT id, transaksi, masuk, keluar, sumber, tanggal, client_req_id, created_at, input_at
-		FROM keuangan WHERE `+where+` ORDER BY tanggal DESC, id DESC LIMIT ?
+		SELECT id, transaksi, masuk, keluar, sumber, tanggal, client_req_id, created_at, input_at, saldo_kas, saldo_rekening, saldo
+		FROM keuangan WHERE `+where+` ORDER BY tanggal DESC, COALESCE(input_at, '') DESC, id DESC LIMIT ?
 	`, args...)
 	if err != nil {
 		return nil, false, err
@@ -295,12 +330,12 @@ func (f *FinanceDB) RekapKeuangan(ctx context.Context, filter FinanceFilter) (Fi
 // GetKeuangan mengambil satu baris milik owner (untuk inferensi edit).
 func (f *FinanceDB) GetKeuangan(ctx context.Context, owner, id string) (*FinanceRow, error) {
 	var r FinanceRow
-	var masuk, keluar sql.NullInt64
+	var masuk, keluar, sKas, sRek, sTot sql.NullInt64
 	var reqID, inputAt sql.NullString
 	err := f.db.QueryRowContext(ctx, `
-		SELECT id, transaksi, masuk, keluar, sumber, tanggal, client_req_id, created_at, input_at
+		SELECT id, transaksi, masuk, keluar, sumber, tanggal, client_req_id, created_at, input_at, saldo_kas, saldo_rekening, saldo
 		FROM keuangan WHERE owner = ? AND id = ?
-	`, owner, id).Scan(&r.ID, &r.Transaksi, &masuk, &keluar, &r.Sumber, &r.Tanggal, &reqID, &r.CreatedAt, &inputAt)
+	`, owner, id).Scan(&r.ID, &r.Transaksi, &masuk, &keluar, &r.Sumber, &r.Tanggal, &reqID, &r.CreatedAt, &inputAt, &sKas, &sRek, &sTot)
 	if isNoRowsError(err) {
 		return nil, nil
 	}
@@ -320,6 +355,18 @@ func (f *FinanceDB) GetKeuangan(ctx context.Context, owner, id string) (*Finance
 	}
 	if inputAt.Valid {
 		r.InputAt = inputAt.String
+	}
+	if sKas.Valid {
+		v := sKas.Int64
+		r.SaldoKas = &v
+	}
+	if sRek.Valid {
+		v := sRek.Int64
+		r.SaldoRekening = &v
+	}
+	if sTot.Valid {
+		v := sTot.Int64
+		r.Saldo = &v
 	}
 	return &r, nil
 }
@@ -354,6 +401,9 @@ func (f *FinanceDB) UpdateKeuangan(ctx context.Context, owner, id string, transa
 		return false, err
 	}
 	n, _ := res.RowsAffected()
+	if n > 0 {
+		_ = f.RecalculateRunningBalances(ctx, owner)
+	}
 	return n > 0, nil
 }
 
@@ -364,6 +414,9 @@ func (f *FinanceDB) DeleteKeuangan(ctx context.Context, owner, id string) (bool,
 		return false, err
 	}
 	n, _ := res.RowsAffected()
+	if n > 0 {
+		_ = f.RecalculateRunningBalances(ctx, owner)
+	}
 	return n > 0, nil
 }
 
@@ -411,7 +464,7 @@ func (f *FinanceDB) GetFinancePeriode(ctx context.Context, owner, periode string
 }
 
 // SetFinancePeriodeAwal menulis saldo awal periode (upsert tanpa menyentuh
-// status laporan).
+// status laporan), lalu menyinkronkan running balance transaksi jika ada.
 func (f *FinanceDB) SetFinancePeriodeAwal(ctx context.Context, owner, periode string, kas, rekening int64) error {
 	_, err := f.db.ExecContext(ctx, `
 		INSERT INTO finance_periode (owner, periode, saldo_awal_kas, saldo_awal_rekening)
@@ -420,7 +473,11 @@ func (f *FinanceDB) SetFinancePeriodeAwal(ctx context.Context, owner, periode st
 			saldo_awal_kas = excluded.saldo_awal_kas,
 			saldo_awal_rekening = excluded.saldo_awal_rekening
 	`, owner, periode, kas, rekening)
-	return err
+	if err != nil {
+		return err
+	}
+	_ = f.RecalculateRunningBalances(ctx, owner)
+	return nil
 }
 
 // MarkFinancePeriodeReported menandai periode sudah dilaporkan + path arsip.
@@ -461,9 +518,9 @@ func (f *FinanceDB) OpenFinancePeriodes(ctx context.Context, owner, before strin
 // katup limit 500).
 func (f *FinanceDB) ListKeuanganRange(ctx context.Context, owner, dari, sampai string) ([]FinanceRow, error) {
 	rows, err := f.db.QueryContext(ctx, `
-		SELECT id, transaksi, masuk, keluar, sumber, tanggal, client_req_id, created_at, input_at
+		SELECT id, transaksi, masuk, keluar, sumber, tanggal, client_req_id, created_at, input_at, saldo_kas, saldo_rekening, saldo
 		FROM keuangan WHERE owner = ? AND tanggal >= ? AND tanggal <= ?
-		ORDER BY tanggal ASC, id ASC
+		ORDER BY tanggal ASC, COALESCE(input_at, '') ASC, id ASC
 	`, owner, dari, sampai)
 	if err != nil {
 		return nil, err
@@ -505,8 +562,8 @@ func (f *FinanceDB) HasFinancePeriode(ctx context.Context, owner string) (bool, 
 // untuk arsip pra-fitur (tanpa katup limit).
 func (f *FinanceDB) ListAllKeuangan(ctx context.Context, owner string) ([]FinanceRow, error) {
 	rows, err := f.db.QueryContext(ctx, `
-		SELECT id, transaksi, masuk, keluar, sumber, tanggal, client_req_id, created_at, input_at
-		FROM keuangan WHERE owner = ? ORDER BY tanggal ASC, id ASC
+		SELECT id, transaksi, masuk, keluar, sumber, tanggal, client_req_id, created_at, input_at, saldo_kas, saldo_rekening, saldo
+		FROM keuangan WHERE owner = ? ORDER BY tanggal ASC, COALESCE(input_at, '') ASC, id ASC
 	`, owner)
 	if err != nil {
 		return nil, err
@@ -544,5 +601,267 @@ func (f *FinanceDB) ResetFinanceOwnerInitial(ctx context.Context, owner, periode
 	`, owner, periode, kas, rekening); err != nil {
 		return err
 	}
+	return tx.Commit()
+}
+
+// RecalculateRunningBalances menghitung ulang seluruh saldo_kas dan
+// saldo_rekening untuk seorang owner secara kronologis (tanggal ASC, input_at ASC, id ASC).
+// Memperhitungkan saldo awal periode terawal yang relevan jika ada.
+func (f *FinanceDB) RecalculateRunningBalances(ctx context.Context, owner string) error {
+	type rowMutasi struct {
+		id      string
+		tanggal string
+		sumber  string
+		masuk   int64
+		keluar  int64
+	}
+
+	rows, err := f.db.QueryContext(ctx, `
+		SELECT id, tanggal, sumber, COALESCE(masuk, 0), COALESCE(keluar, 0)
+		FROM keuangan
+		WHERE owner = ?
+		ORDER BY tanggal ASC, COALESCE(input_at, '') ASC, id ASC
+	`, owner)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var list []rowMutasi
+	earliestPeriode := ""
+	for rows.Next() {
+		var rm rowMutasi
+		if err := rows.Scan(&rm.id, &rm.tanggal, &rm.sumber, &rm.masuk, &rm.keluar); err != nil {
+			return err
+		}
+		list = append(list, rm)
+		if len(rm.tanggal) >= 7 && (earliestPeriode == "" || rm.tanggal[:7] < earliestPeriode) {
+			earliestPeriode = rm.tanggal[:7]
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		return nil
+	}
+
+	var saldoKas, saldoRekening int64
+	if earliestPeriode != "" {
+		var sKas, sRek sql.NullInt64
+		err := f.db.QueryRowContext(ctx, `
+			SELECT saldo_awal_kas, saldo_awal_rekening
+			FROM finance_periode
+			WHERE owner = ? AND periode = ?
+		`, owner, earliestPeriode).Scan(&sKas, &sRek)
+		if err == nil {
+			if sKas.Valid {
+				saldoKas = sKas.Int64
+			}
+			if sRek.Valid {
+				saldoRekening = sRek.Int64
+			}
+		}
+	}
+
+	tx, err := f.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.PrepareContext(ctx, `UPDATE keuangan SET saldo_kas = ?, saldo_rekening = ?, saldo = ? WHERE id = ?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, m := range list {
+		if m.sumber == "rekening" {
+			saldoRekening += m.masuk - m.keluar
+		} else {
+			saldoKas += m.masuk - m.keluar
+		}
+		totalSaldo := saldoKas + saldoRekening
+		if _, err := stmt.ExecContext(ctx, saldoKas, saldoRekening, totalSaldo, m.id); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return f.reorderPhysicalRows(ctx)
+}
+
+func (f *FinanceDB) recalculateAllOwners(ctx context.Context) error {
+	rows, err := f.db.QueryContext(ctx, `SELECT DISTINCT owner FROM keuangan`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var owners []string
+	for rows.Next() {
+		var o string
+		if err := rows.Scan(&o); err != nil {
+			return err
+		}
+		owners = append(owners, o)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, o := range owners {
+		if err := f.RecalculateRunningBalances(ctx, o); err != nil {
+			return fmt.Errorf("owner %s: %w", o, err)
+		}
+	}
+	return nil
+}
+
+// reorderKeuanganTable memastikan urutan kolom fisik tabel keuangan sesuai
+// dengan struktur yang ditentukan:
+// id, tanggal, transaksi, sumber, masuk, keluar, saldo_kas, saldo_rekening, saldo, owner, input_at, created_at, client_req_id
+func reorderKeuanganTable(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(keuangan)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var currentCols []string
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		currentCols = append(currentCols, name)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(currentCols) == 0 {
+		return nil
+	}
+
+	targetCols := []string{
+		"id", "tanggal", "transaksi", "sumber", "masuk", "keluar",
+		"saldo_kas", "saldo_rekening", "saldo", "owner", "input_at",
+		"created_at", "client_req_id",
+	}
+
+	if len(currentCols) == len(targetCols) {
+		match := true
+		for i, c := range targetCols {
+			if currentCols[i] != c {
+				match = false
+				break
+			}
+		}
+		if match {
+			return nil
+		}
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	createSQL := `
+	CREATE TABLE keuangan_new (
+		id            TEXT PRIMARY KEY,
+		tanggal       TEXT NOT NULL,
+		transaksi     TEXT NOT NULL,
+		sumber        TEXT NOT NULL,
+		masuk         INTEGER NULL,
+		keluar        INTEGER NULL,
+		saldo_kas     INTEGER NULL,
+		saldo_rekening INTEGER NULL,
+		saldo         INTEGER NULL,
+		owner         TEXT NOT NULL,
+		input_at      TEXT NULL,
+		created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+		client_req_id TEXT NULL UNIQUE
+	);`
+	if _, err := tx.Exec(createSQL); err != nil {
+		return fmt.Errorf("create keuangan_new: %w", err)
+	}
+
+	copySQL := `
+	INSERT INTO keuangan_new (id, tanggal, transaksi, sumber, masuk, keluar, saldo_kas, saldo_rekening, saldo, owner, input_at, created_at, client_req_id)
+	SELECT id, tanggal, transaksi, sumber, masuk, keluar, saldo_kas, saldo_rekening, saldo, owner, input_at, created_at, client_req_id
+	FROM keuangan;`
+	if _, err := tx.Exec(copySQL); err != nil {
+		return fmt.Errorf("copy data to keuangan_new: %w", err)
+	}
+
+	if _, err := tx.Exec(`DROP TABLE keuangan`); err != nil {
+		return fmt.Errorf("drop table keuangan: %w", err)
+	}
+
+	if _, err := tx.Exec(`ALTER TABLE keuangan_new RENAME TO keuangan`); err != nil {
+		return fmt.Errorf("rename keuangan_new: %w", err)
+	}
+
+	indexSQL := `
+	CREATE INDEX IF NOT EXISTS idx_keuangan_owner_tanggal ON keuangan(owner, tanggal);
+	CREATE INDEX IF NOT EXISTS idx_keuangan_owner_sumber ON keuangan(owner, sumber);`
+	if _, err := tx.Exec(indexSQL); err != nil {
+		return fmt.Errorf("recreate indices: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// reorderPhysicalRows menyusun ulang baris fisik tabel keuangan agar berurutan
+// kronologis (owner ASC, tanggal ASC, input_at ASC, id ASC).
+// Dengan demikian, transaksi yang diinput susulan (mis. tanggal 6 diinput di tanggal 8)
+// otomatis tertulis berdekatan dengan tanggal 6 lainnya, baik di database maupun
+// saat diekspor ke Excel (.backup / export).
+func (f *FinanceDB) reorderPhysicalRows(ctx context.Context) error {
+	tx, err := f.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS keuangan_sorted`); err != nil {
+		return fmt.Errorf("drop temp keuangan_sorted: %w", err)
+	}
+
+	createTmp := `
+	CREATE TEMP TABLE keuangan_sorted AS
+	SELECT id, tanggal, transaksi, sumber, masuk, keluar, saldo_kas, saldo_rekening, saldo, owner, input_at, created_at, client_req_id
+	FROM keuangan
+	ORDER BY owner ASC, tanggal ASC, COALESCE(input_at, '') ASC, id ASC;
+	`
+	if _, err := tx.ExecContext(ctx, createTmp); err != nil {
+		return fmt.Errorf("create temp table: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM keuangan`); err != nil {
+		return fmt.Errorf("clear keuangan: %w", err)
+	}
+
+	insertBack := `
+	INSERT INTO keuangan (id, tanggal, transaksi, sumber, masuk, keluar, saldo_kas, saldo_rekening, saldo, owner, input_at, created_at, client_req_id)
+	SELECT id, tanggal, transaksi, sumber, masuk, keluar, saldo_kas, saldo_rekening, saldo, owner, input_at, created_at, client_req_id
+	FROM keuangan_sorted;
+	`
+	if _, err := tx.ExecContext(ctx, insertBack); err != nil {
+		return fmt.Errorf("re-insert sorted: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS keuangan_sorted`); err != nil {
+		return fmt.Errorf("cleanup temp: %w", err)
+	}
+
 	return tx.Commit()
 }

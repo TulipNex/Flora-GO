@@ -1123,6 +1123,11 @@ func (b *browser) evaluateString(ctx context.Context, expression string, awaitPr
 // baik mencoba launch (gagal dengan pesan jelas) daripada menolak Chrome
 // yang sebenarnya sehat.
 func chromeMajorVersion(ctx context.Context, chromePath string) (int, error) {
+	if runtime.GOOS == "windows" {
+		// Di Windows, GUI exe seperti msedge.exe/chrome.exe dengan flag --version
+		// sering keluar dengan status 0x80000003 atau tanpa output stdout.
+		return 0, nil
+	}
 	vctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(vctx, chromePath, "--version").Output()

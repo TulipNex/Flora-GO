@@ -205,11 +205,10 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 		return
 	}
 
-	// Sesi Gemini web owner (mode .gemini on): pesan "gemini <teks>" atau
-	// reply ke bubble bot diteruskan ke akun Gemini bot, lalu setop di sini
-	// supaya tidak ikut autodownload/AI. Ditaruh sebelum autodownload karena
-	// prompt boleh memuat tautan; fungsi ini hanya menelan pesan saat mode
-	// aktif dan pemiliknya owner di DM.
+	// Sesi Gemini (mode tamu, tanpa login): pesan "gemini <teks>" atau reply
+	// ke bubble bot diteruskan ke Gemini lalu setop di sini supaya tidak ikut
+	// autodownload/AI. Berlaku di DM maupun grup, hanya untuk owner. Ditaruh
+	// sebelum autodownload karena prompt boleh memuat tautan.
 	if plugins.CheckGeminiSession(client, evt, text) {
 		return
 	}
@@ -290,6 +289,11 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 
 	// Tap tombol jpgpdf (cermin pdfmerge di atas, prefix "jpgpdf:").
 	if plugins.CheckJpgButtonTap(client, evt) {
+		return
+	}
+
+	// Tap tombol convert (prefix "convert:").
+	if plugins.CheckConvertButtonTap(client, evt) {
 		return
 	}
 

@@ -326,7 +326,8 @@ func sendDlPhotoSmart(ctx context.Context, mctx *store.MessageContext, data []by
 // (stiker tanpa metadata tetap tampil — lebih baik daripada dilewati).
 func sendWebPAsSticker(ctx context.Context, mctx *store.MessageContext, data []byte, label string) error {
 	webp := data
-	if ex, err := store.WriteStickerExif(data, config.StickerPackname, config.StickerAuthor); err == nil {
+	author := config.ResolveStickerAuthor(mctx.SenderPushName())
+	if ex, err := store.WriteStickerExif(data, config.ResolveStickerPackname(), author); err == nil {
 		webp = ex
 	} else {
 		logfmt.Warn("downloader: EXIF stiker gagal (%v), kirim mentah.\n", err)

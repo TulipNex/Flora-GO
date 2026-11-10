@@ -31,10 +31,11 @@ import (
 const (
 	groupSchemaVersion   = 3
 	aiSchemaVersion      = 1
-	financeSchemaVersion = 2
+	financeSchemaVersion = 5
 	crmSchemaVersion     = 1
 	absensiSchemaVersion = 1
 	usersSchemaVersion   = 1
+	memlogSchemaVersion  = 1
 )
 
 // openSQLite membuka file SQLite dengan PRAGMA standar bot dan memastikan

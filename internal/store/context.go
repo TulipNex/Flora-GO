@@ -25,19 +25,25 @@ type MessageContext struct {
 	// format multi-baris (.welcome set/.bye set) WAJIB pakai field ini,
 	// bukan strings.Join(Args, " ").
 	RawArgs string
-	// SkipArchive true = balasan yang dikirim dari konteks ini TIDAK masuk
-	// arsip CRM (data/crm.db). Dipakai fitur yang isinya memang tidak boleh
-	// tersimpan lokal, mis. sesi Gemini owner: transkripnya hanya di server
-	// Gemini, sedangkan di bot cuma ada cookie. Pengaruhnya khusus arsip
-	// keluar; pesan masuk dikecualikan di plugins.ArchiveIncoming.
-	SkipArchive bool
+}
+
+// SenderPushName mengembalikan nama tampilan (PushName) pengirim dari event WhatsApp.
+// Jika PushName kosong (misal pengguna belum set nama), fallback ke nomor pengguna (Sender.User).
+func (mctx *MessageContext) SenderPushName() string {
+	if mctx != nil && mctx.RawEvt != nil && strings.TrimSpace(mctx.RawEvt.Info.PushName) != "" {
+		return strings.TrimSpace(mctx.RawEvt.Info.PushName)
+	}
+	if mctx != nil && mctx.Sender.User != "" {
+		return mctx.Sender.User
+	}
+	return ""
 }
 
 // archiveOutgoingIfMain memusatkan guard "hanya bot utama" + pengiriman teks
 // keluar ke antrian arsip async, supaya tak diulang di setiap helper teks.
 // Arsip kini non-blocking di sisi store, jadi TIDAK perlu `go` di sini.
 func archiveOutgoingIfMain(mctx *MessageContext, msgID string, msg *waE2E.Message) {
-	if mctx != nil && !mctx.SkipArchive && IsMainClient(mctx.Client) {
+	if mctx != nil && IsMainClient(mctx.Client) {
 		ArchiveOutgoingMessage(mctx.Chat.String(), msgID, msg)
 	}
 }

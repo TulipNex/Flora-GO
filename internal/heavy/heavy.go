@@ -1,7 +1,9 @@
 // Package heavy menampung pengendali beban untuk pekerjaan berat
 // (transcode ffmpeg, Chrome launch) di panel kecil (1 core / ~1,6GB).
 //
-// Leaf package: tidak mengimpor paket repo lain.
+// Paket ini nyaris leaf: satu-satunya impor repo adalah internal/memlog
+// (yang juga leaf) untuk mencatat berapa byte yang dipakai satu transcode.
+// Itu tidak melahirkan import cycle, tapi jangan tambah impor lain ke sini.
 package heavy
 
 import (
@@ -11,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"wabot-go/internal/memlog"
 )
 
 // maxTranscodePar default 1: transcode ffmpeg sangat boros CPU/RAM di panel
@@ -46,7 +50,14 @@ func AcquireTranscode(ctx context.Context) (func(), error) {
 	defer timer.Stop()
 	select {
 	case transcodeSem <- struct{}{}:
-		return func() { <-transcodeSem }, nil
+		// Satu baris riwayat memori per pemakaian slot: ffmpeg adalah
+		// penyumbang RSS terbesar di panel ini, dan durasi slot = durasi
+		// proses ffmpeg berjalan (Op.End idempoten, jadi release ganda aman).
+		op := memlog.Begin("ffmpeg", "transcode")
+		return func() {
+			op.End(true, "")
+			<-transcodeSem
+		}, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-timer.C:

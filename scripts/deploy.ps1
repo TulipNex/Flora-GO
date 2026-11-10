@@ -1,4 +1,4 @@
-﻿# deploy.ps1
+# deploy.ps1
 # Build wabot-go untuk Linux, lalu sync binary-nya ke panel Pterodactyl via SFTP (rclone).
 # Jalankan dari root folder project:  .\scripts\deploy.ps1  (script otomatis
 # mengarahkan direktori kerja ke root proyek, tempat main.go berada).
@@ -31,19 +31,13 @@ $RemotePath = "${RemoteName}:/"      # binary diletakkan di root panel
 # ---------- Helper tampilan ----------
 
 function Write-Divider {
-    Write-Host ("─" * 65) -ForegroundColor DarkGray
+    Write-Host ("-" * 65) -ForegroundColor DarkGray
 }
 
 # Banner ASCII besar "FLORA GO", ditampilkan sekali di awal sebelum proses build/sync mulai.
 function Write-Banner {
-    $banner = @"
-███████╗██╗      ██████╗ ██████╗  █████╗      ██████╗  ██████╗
-██╔════╝██║     ██╔═══██╗██╔══██╗██╔══██╗    ██╔════╝ ██╔═══██╗
-█████╗  ██║     ██║   ██║██████╔╝███████║    ██║  ███╗██║   ██║
-██╔══╝  ██║     ██║   ██║██╔══██╗██╔══██║    ██║   ██║██║   ██║
-██║     ███████╗╚██████╔╝██║  ██║██║  ██║    ╚██████╔╝╚██████╔╝
-╚═╝     ╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝     ╚═════╝  ╚═════╝
-"@
+    $bannerB64 = "4paI4paI4paI4paI4paI4paI4paI4pWX4paI4paI4pWXICAgICAg4paI4paI4paI4paI4paI4paI4pWXIOKWiOKWiOKWiOKWiOKWiOKWiOKVlyAg4paI4paI4paI4paI4paI4pWXICAgICAg4paI4paI4paI4paI4paI4paI4pWXICDilojilojilojilojilojilojilZcK4paI4paI4pWU4pWQ4pWQ4pWQ4pWQ4pWd4paI4paI4pWRICAgICDilojilojilZTilZDilZDilZDilojilojilZfilojilojilZTilZDilZDilojilojilZfilojilojilZTilZDilZDilojilojilZcgICAg4paI4paI4pWU4pWQ4pWQ4pWQ4pWQ4pWdIOKWiOKWiOKVlOKVkOKVkOKVkOKWiOKWiOKVlwrilojilojilojilojilojilZcgIOKWiOKWiOKVkSAgICAg4paI4paI4pWRICAg4paI4paI4pWR4paI4paI4paI4paI4paI4paI4pWU4pWd4paI4paI4paI4paI4paI4paI4paI4pWRICAgIOKWiOKWiOKVkSAg4paI4paI4paI4pWX4paI4paI4pWRICAg4paI4paI4pWRCuKWiOKWiOKVlOKVkOKVkOKVnSAg4paI4paI4pWRICAgICDilojilojilZEgICDilojilojilZHilojilojilZTilZDilZDilojilojilZfilojilojilZTilZDilZDilojilojilZEgICAg4paI4paI4pWRICAg4paI4paI4pWR4paI4paI4pWRICAg4paI4paI4pWRCuKWiOKWiOKVkSAgICAg4paI4paI4paI4paI4paI4paI4paI4pWX4pWa4paI4paI4paI4paI4paI4paI4pWU4pWd4paI4paI4pWRICDilojilojilZHilojilojilZEgIOKWiOKWiOKVkSAgICDilZrilojilojilojilojilojilojilZTilZ3ilZrilojilojilojilojilojilojilZTilZ0K4pWa4pWQ4pWdICAgICDilZrilZDilZDilZDilZDilZDilZDilZ0g4pWa4pWQ4pWQ4pWQ4pWQ4pWQ4pWdIOKVmuKVkOKVnSAg4pWa4pWQ4pWd4pWa4pWQ4pWdICDilZrilZDilZ0gICAgIOKVmuKVkOKVkOKVkOKVkOKVkOKVnSAg4pWa4pWQ4pWQ4pWQ4pWQ4pWQ4pWd"
+    $banner = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($bannerB64))
     Write-Host $banner -ForegroundColor Green
 }
 
@@ -56,17 +50,17 @@ function Write-Header {
 
 function Write-Step {
     param([string]$Text)
-    Write-Host " → $Text" -ForegroundColor Yellow
+    Write-Host " -> $Text" -ForegroundColor Yellow
 }
 
 function Write-Ok {
     param([string]$Text)
-    Write-Host " ✔ $Text" -ForegroundColor Green
+    Write-Host " [OK] $Text" -ForegroundColor Green
 }
 
 function Write-Err {
     param([string]$Text)
-    Write-Host " ✘ $Text" -ForegroundColor Red
+    Write-Host " [X] $Text" -ForegroundColor Red
 }
 
 function Format-Size {
@@ -81,7 +75,7 @@ $startTime = Get-Date
 
 # ---------- Konfirmasi pra-deploy ----------
 # Binary ditimpa saat bot jalan berisiko (file terkunci/eksekusi korup),
-# dan rclone-SFTP tidak bisa mengecek status server panel — jadi tanya
+# dan rclone-SFTP tidak bisa mengecek status server panel - jadi tanya
 # manual. Jawaban selain Y membatalkan (fail-safe, bukan lanjut diam-diam).
 
 Write-Host ""
@@ -104,7 +98,7 @@ if (-not $y) {
         Write-Host "  Jawab Y untuk lanjut, N untuk batal." -ForegroundColor DarkGray
     }
     if (-not $confirmed) {
-        Write-Err "Deploy dibatalkan — stop dulu bot di panel, lalu jalankan lagi."
+        Write-Err "Deploy dibatalkan - stop dulu bot di panel, lalu jalankan lagi."
         exit 1
     }
     Write-Host ""
@@ -138,7 +132,7 @@ Write-Step "Building $BinaryName (linux/amd64) [$BotVersion]..."
 $env:GOOS = "linux"
 $env:GOARCH = "amd64"
 
-go build -ldflags "-X wabot-go/internal/config.BotVersion=$BotVersion" -o $BinaryName .
+go build -buildvcs=false -ldflags "-X wabot-go/internal/config.BotVersion=$BotVersion" -o $BinaryName .
 
 if ($LASTEXITCODE -ne 0) {
     Write-Err "Build gagal. Sync dibatalkan."
@@ -161,7 +155,7 @@ Write-Host ""
 # PENTING: seluruh baris (carriage return + bar + teks + clear-to-end) ditulis
 # sebagai SATU string lewat [Console]::Write() dalam SATU panggilan. Versi
 # sebelumnya memakai beberapa panggilan Write-Host terpisah (satu per segmen
-# warna) — di terminal integrated VS Code, tiap panggilan Write-Host bisa
+# warna) - di terminal integrated VS Code, tiap panggilan Write-Host bisa
 # di-flush terpisah ke buffer, sehingga `r di awal tidak selalu "reset" posisi
 # kursor sebelum segmen berikutnya ditulis. Hasilnya baris menumpuk ke samping
 # alih-alih saling menimpa. Warna di sini memakai kode ANSI manual supaya tetap
@@ -200,7 +194,7 @@ function Write-SyncBar {
 # --sftp-concurrency 8            : upload ditulis PIPELINED (bukan serial seperti flag --sftp-disable-concurrent-writes lama yang
 #                                    menghasilkan ~95 KB/s / deploy 8,5 menit), tapi dibatasi 8 request in-flight supaya tetap
 #                                    ringan untuk server. Pipelining menaikkan throughput ~4x (410 KB/s). Trade-off: server bisa
-#                                    menulis offset out-of-order yang berujung file terpotong diam-diam — makanya ada langkah
+#                                    menulis offset out-of-order yang berujung file terpotong diam-diam - makanya ada langkah
 #                                    VERIFIKASI ukuran setelah sync.
 # --retries 3 --low-level-retries 5 : mengantisipasi koneksi SFTP yang sempat timeout.
 # --stats 250ms                    : rclone mencetak blok statistik tiap 250ms ke stderr (dengan newline asli, penting
@@ -230,7 +224,7 @@ $psi.UseShellExecute = $false
 # PENTING: ProcessStartInfo TIDAK otomatis mewarisi direktori kerja PowerShell
 # saat ini. Tanpa baris ini, rclone mencari $BinaryName relatif terhadap
 # direktori kerja default proses (biasanya home folder user Windows),
-# bukan folder project tempat script ini dijalankan — menyebabkan error
+# bukan folder project tempat script ini dijalankan - menyebabkan error
 # "directory not found" walau file binary-nya sebenarnya ada.
 $psi.WorkingDirectory = (Get-Location).Path
 
@@ -238,7 +232,7 @@ $proc = New-Object System.Diagnostics.Process
 $proc.StartInfo = $psi
 # Dibungkus try-catch karena beberapa terminal (termasuk sebagian konfigurasi
 # integrated terminal) melempar exception saat CursorVisible diakses/diubah.
-# Kegagalan di sini tidak fatal — bar tetap jalan, hanya cursor tetap kedip.
+# Kegagalan di sini tidak fatal - bar tetap jalan, hanya cursor tetap kedip.
 try { [Console]::CursorVisible = $false } catch {}
 
 # Semua baris stderr ditampung di sini. Baris statistik progres (yang cocok
@@ -356,6 +350,6 @@ Write-Host "  Durasi   : $elapsed" -ForegroundColor White
 Write-Host "  Mulai    : $startText" -ForegroundColor White
 Write-Host "  Selesai  : $finishTime" -ForegroundColor White
 Write-Divider
-Write-Host "  Deploy sukses ✔" -ForegroundColor Green
+Write-Host "  Deploy sukses [OK]" -ForegroundColor Green
 Write-Divider
 Write-Host ""

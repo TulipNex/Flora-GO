@@ -13,11 +13,13 @@ import (
 
 	"wabot-go/internal/ai"
 	"wabot-go/internal/arena"
-	"wabot-go/internal/diag"
 	"wabot-go/internal/config"
+	"wabot-go/internal/diag"
 	"wabot-go/internal/handler"
 	"wabot-go/internal/logfmt"
+	"wabot-go/internal/memlog"
 	"wabot-go/internal/metrics"
+	"wabot-go/internal/spool"
 	"wabot-go/internal/store"
 	"wabot-go/plugins"
 
@@ -31,6 +33,7 @@ import (
 	"wabot-go/internal/ai/tools/bridge"
 	_ "wabot-go/internal/ai/tools/native"
 
+	"github.com/mdp/qrterminal/v3"
 	whatsmeow "github.com/polymorfa/hypermeow"
 	"github.com/polymorfa/hypermeow/types"
 	qrcode "github.com/skip2/go-qrcode"
@@ -105,6 +108,9 @@ func main() {
 	//    bila env PPROF_ADDR diisi (default mati). Bind localhost saja.
 	// ==========================================================
 	diag.StartPprof()
+	// Pelepasan memori OS saat idle (opsional, default mati). Lihat env
+	// FREE_OS_MEMORY_IDLE_MINUTES.
+	diag.StartIdleMemoryRelease()
 
 	// ==========================================================
 	// 0a. Metrik ringan (counter + log periodik). Default 5 menit;
@@ -124,6 +130,28 @@ func main() {
 	//     Sejak perekaman diganti penghitung, semua itu sampah.
 	// ==========================================================
 	plugins.CleanStaleCallTemp()
+
+	// ==========================================================
+	// 0a3. Sapu sisa berkas pending .convert (convert-*.bin). Cleanup
+	//      in-memory hanya jalan saat ada command .convert berikutnya,
+	//      jadi tanpa sapuan ini berkas bisa menumpuk selamanya.
+	// ==========================================================
+	plugins.CleanStaleConvertPending()
+
+	// ==========================================================
+	// 0a4. Siapkan spool media besar (wabot-tmp) dan sapu sisa
+	//      wabot-spool-* yang tertinggal dari proses yang mati di
+	//      tengah unduhan. Tanpa ini berkas 500MB bisa menumpuk.
+	//      WAJIB wabot-tmp: /tmp panel adalah tmpfs 100MB.
+	// ==========================================================
+	if dir, err := store.BotTempDir(); err != nil {
+		logfmt.Warn("spool: direktori temp tidak siap (%v)\n", err)
+	} else {
+		spool.Configure(dir)
+		if n := spool.CleanStale(24 * time.Hour); n > 0 {
+			logfmt.Info("spool: %d berkas sementara lama dihapus\n", n)
+		}
+	}
 
 	// ==========================================================
 	// 0b. Siapkan database SQLite untuk pengaturan grup (kick, promote,
@@ -202,6 +230,17 @@ func main() {
 		logfmt.Warn("gagal inisialisasi absensi.db (absensi mati): %v\n", err)
 	}
 
+	// ==========================================================
+	// 0e5. Riwayat memori (data/memlog.db): sampel berkala + satu baris
+	//     per operasi berat (.memlog). Fail-soft — telemetri tidak boleh
+	//     membunuh bot. Nonaktif bila MEMLOG_SAMPLE_SECONDS=0.
+	// ==========================================================
+	if err := store.InitMemLog("data/memlog.db"); err != nil {
+		logfmt.Warn("gagal inisialisasi memlog.db (riwayat memori mati): %v\n", err)
+	} else {
+		memlog.Start(context.Background(), store.MemLog())
+	}
+
 	// Penyapu sesi idle → ringkas background. Hidup seumur proses;
 	// berhenti saat main return (tak pernah, kecuali shutdown).
 	ai.StartSummarySweeper(context.Background())
@@ -271,6 +310,11 @@ func main() {
 	// 2b5. Pasang client untuk laporan keuangan bulanan otomatis (reset +
 	//     arsip + laporan ke DM owner). Sama posisinya dengan di atas.
 	plugins.InitFinanceScheduler(client)
+
+	// 2b6. Pasang client untuk pengingat tren memori (.memlog): kalau median
+	//     heap/objek naik terus dibanding 24 jam sebelumnya, owner diberi
+	//     tahu sekali per hari. Sama posisinya dengan scheduler lain.
+	plugins.InitMemLogScheduler(client)
 
 	// ==========================================================
 	// 2c. Jaga nomor bot tampil "online" (bukan "terakhir dilihat").
@@ -359,14 +403,14 @@ func loginWithQR(client *whatsmeow.Client) error {
 	for evt := range qrChan {
 		switch evt.Event {
 		case "code":
+			fmt.Println("\nScan QR Code berikut di WhatsApp:")
+			qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+
 			if genErr := qrcode.WriteFile(evt.Code, qrcode.Medium, 512, qrImagePath); genErr != nil {
 				logfmt.Warn(" Gagal membuat file QR PNG: %v\n", genErr)
 			} else {
-				logfmt.Plain("\nQR code tersimpan sebagai gambar: %s\n", qrImagePath)
-				fmt.Println("   Buka file manager panel, download/preview file itu, lalu scan dari WhatsApp > Perangkat Tertaut.")
+				logfmt.Plain("\nQR code juga tersimpan sebagai gambar: %s\n", qrImagePath)
 			}
-			fmt.Println("\nAtau salin teks QR mentah ini ke generator QR online:")
-			fmt.Println(evt.Code)
 		case "success":
 			fmt.Println("\nBerhasil login lewat QR!")
 			// Hapus file QR setelah berhasil supaya tidak membingungkan di restart berikutnya

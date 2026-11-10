@@ -56,18 +56,38 @@ var horizontalRuleRegex = regexp.MustCompile(`^\s*(?:-\s*){3,}$|^\s*(?:\*\s*){3,
 // USSD "*888#" — karakter "#" di sana bukan di awal baris jadi tidak match.
 var markdownHeadingRegex = regexp.MustCompile(`^\s*#{1,6}\s+`)
 
+// markdownIndentedListRegex mendeteksi item list Markdown yang ter-indentasi
+// (nested list dengan spasi/tab di awal baris). WhatsApp tidak mendukung
+// indentasi list — spasi di depan bullet (*, -, •) membuat WhatsApp gagal
+// merendernya sebagai bullet list dan menampilkan karakter asterisk mentah.
+// Regex ini menangkap spasi/tab di depan marker list agar di-unindent ke kolom 0.
+var markdownIndentedListRegex = regexp.MustCompile(`^[ \t]+([*•+-]\s+|\d+[.)]\s+|\[\d+\]\s+)`)
+
+// parenAsteriskRegex mendeteksi tanda kurung yang memuat karakter asterisk (*).
+// WhatsApp tidak mendukung format tebal/miring bersarang (nested formatting) —
+// kemunculan asterisk di dalam tanda kurung pada baris tebal seperti
+// "*Judul (*Istilah Asing*)*" merusak pasangan format bintang WhatsApp.
+// Karakter asterisk di dalam kurung dibersihkan agar format tebal luar tetap utuh.
+var parenAsteriskRegex = regexp.MustCompile(`\([^)\n]*\*[^)\n]*\)`)
+
 // SanitizeForWhatsApp membersihkan format Markdown standar yang sering
 // dikeluarkan LLM tapi tidak dikenali (atau merusak tampilan) WhatsApp:
 //   - **teks** -> *teks* (bold WhatsApp memakai bintang tunggal)
+//   - hapus asterisk di dalam tanda kurung ("(*teks*)" -> "(teks)") agar tidak merusak bold
 //   - baris horizontal rule ("---", "***", dst) dibuang total
 //   - prefix heading ("### ", "## ", "# ") di awal baris dibuang, ISI
 //     barisnya tetap dipertahankan sebagai baris bold biasa
+//   - list ter-indentasi ("  * Poin", "   - Poin") diratakan ke kiri (kolom 0)
+//     supaya WhatsApp merendernya menjadi poin-poin (bullet), bukan asterisk mentah
 //
 // Prefix heading sengaja diubah jadi bold (bukan cuma dihapus polos)
 // supaya baris judul seperti "### Contoh Penerapan:" tidak melebur jadi
 // teks datar tanpa penekanan sama sekali.
 func SanitizeForWhatsApp(text string) string {
 	text = markdownBoldRegex.ReplaceAllString(text, "*$1*")
+	text = parenAsteriskRegex.ReplaceAllStringFunc(text, func(m string) string {
+		return strings.ReplaceAll(m, "*", "")
+	})
 
 	lines := strings.Split(text, "\n")
 	cleaned := make([]string, 0, len(lines))
@@ -87,6 +107,10 @@ func SanitizeForWhatsApp(text string) string {
 				rest = "*" + rest + "*"
 			}
 			trimmedRight = rest
+		}
+
+		if markdownIndentedListRegex.MatchString(trimmedRight) {
+			trimmedRight = markdownIndentedListRegex.ReplaceAllString(trimmedRight, "$1")
 		}
 
 		cleaned = append(cleaned, trimmedRight)

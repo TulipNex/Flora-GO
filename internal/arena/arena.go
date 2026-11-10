@@ -42,6 +42,7 @@ import (
 	"time"
 
 	"wabot-go/internal/external"
+	"wabot-go/internal/memlog"
 )
 
 // Error yang bisa dibedakan pemanggil untuk memberi pesan yang benar-benar
@@ -112,7 +113,7 @@ func GenerateImage(ctx context.Context, prompt string) ([]byte, []byte, error) {
 // image-to-image bila req.Images terisi) dan mengembalikan byte gambar plus
 // nama model yang dipakai. Dipanggil dari goroutine plugin; seluruh proses
 // diserialkan karena panel hanya punya 1 core dan Chrome ~300MB.
-func Generate(ctx context.Context, req Request) ([]byte, string, error) {
+func Generate(ctx context.Context, req Request) (img []byte, mdl string, err error) {
 	prompt := strings.TrimSpace(req.Prompt)
 	if prompt == "" {
 		return nil, "", fmt.Errorf("prompt kosong")
@@ -124,6 +125,10 @@ func Generate(ctx context.Context, req Request) ([]byte, string, error) {
 
 	genMu.Lock()
 	defer genMu.Unlock()
+
+	// Setelah lock: waktu tunggu antrean bukan biaya memori generate ini.
+	op := memlog.Begin("arena", arenaOpLabel(req))
+	defer func() { op.End(err == nil, "") }()
 
 	cookie, err := ReadCookie()
 	if err != nil {
@@ -178,6 +183,15 @@ func Generate(ctx context.Context, req Request) ([]byte, string, error) {
 	b.saveCookies()
 
 	return data, resolvedName, nil
+}
+
+// arenaOpLabel menamai satu operasi di riwayat memori: "edit" bila ada
+// gambar referensi (jalur unggah 4MB), selain itu "generate".
+func arenaOpLabel(req Request) string {
+	if len(req.Images) > 0 {
+		return "edit"
+	}
+	return "generate"
 }
 
 // WaitChromeExit disediakan untuk pemanggil yang ingin mematikan Chrome
@@ -356,9 +370,7 @@ const generateScriptTemplate = `(async () => {
   // --- unggah gambar referensi ------------------------------------------
   // arena.ai menolak attachment dengan URL sembarang ("Invalid content"),
   // termasuk data URL: server hanya menerima URL dari storage mereka (R2).
-  // Unggahan memakai Server Action aplikasi sendiri; id action berubah tiap
-  // deploy arena.ai, jadi dipanen dari bundle halaman lalu di-cache di
-  // window selama halaman hidup.
+  // Menggunakan API storage internal arena.ai (Hono RPC client).
   const b64Blob = (b64, mime) => {
     const bin = atob(b64);
     const arr = new Uint8Array(bin.length);
@@ -366,13 +378,19 @@ const generateScriptTemplate = `(async () => {
     return new Blob([arr], { type: mime });
   };
   const flatten = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ');
-  // Flight/RSC kadang meng-escape "/" dan "&" di dalam string JSON.
   const unescapeFlight = (s) => String(s || '').replace(/\\u0026/g, '&').replace(/\\\//g, '/');
   const pick = (text, key) => {
     const t = unescapeFlight(text);
+    try {
+      const obj = JSON.parse(t);
+      if (obj && typeof obj === 'object') {
+        if (obj[key]) return String(obj[key]);
+        if (obj.data && obj.data[key]) return String(obj.data[key]);
+      }
+    } catch (e) {}
     const patterns = [
-      new RegExp('"' + key + '":"([^"]+)"'),
-      new RegExp('\\\\"' + key + '\\\\":\\\\"([^"\\\\]+)')
+      new RegExp('"' + key + '"\\s*:\\s*"([^"]+)"'),
+      new RegExp('\\\\"' + key + '\\\\"\\s*:\\s*\\\\"([^"\\\\]+)')
     ];
     for (const re of patterns) {
       const m = t.match(re);
@@ -380,120 +398,116 @@ const generateScriptTemplate = `(async () => {
     }
     return '';
   };
-  // arena.ai membalas {"success":false,"error":"..."} untuk penolakan.
-  const failureOf = (text) => {
-    const t = unescapeFlight(flatten(text));
-    if (!/"success":false/.test(t)) return '';
-    const m = t.match(/"error":"([^"]*)"/);
-    return m ? m[1] : 'success:false';
-  };
-  // Sesi anonim membuat action unggah menjawab "Failed to generate upload
-  // url" — pesan itu menyesatkan. /api/me menjawab 401 untuk sesi mati, jadi
-  // diperiksa lebih dulu supaya owner mendapat pesan .seedream cookie yang benar.
   const checkSession = async () => {
     let r;
     try {
       r = await fetch('/api/me', { headers: { 'Accept': 'application/json' }, cache: 'no-store' });
     } catch (e) {
-      return; // gangguan jaringan: biarkan alur normal yang melapor
+      return;
     }
     if (r.status === 401 || r.status === 403) {
       throw new Error('auth: sesi arena.ai tidak dikenali (HTTP ' + r.status + ')');
     }
   };
-  const chunkSources = async () => {
-    const out = [];
-    const add = (u) => {
+  const uploadOne = async (img) => {
+    const endpoints = [
+      '/nextjs-api/storage/generate-upload-url',
+      '/api/storage/generate-upload-url'
+    ];
+    let uploadUrl = '', key = '', lastErr = '';
+    for (const ep of endpoints) {
       try {
-        const abs = new URL(u, location.href).href;
-        if (abs.startsWith(location.origin) && /\.js(\?|$)/.test(abs) && out.indexOf(abs) < 0) out.push(abs);
-      } catch (e) {}
-    };
-    for (const m of document.documentElement.innerHTML.matchAll(/["']([^"']+\.js(?:\?[^"']*)?)["']/g)) add(m[1]);
-    for (const s of document.scripts) add(s.src);
-    for (const e of performance.getEntriesByType('resource')) add(e.name);
-    return out;
-  };
-  const discoverActions = async (force) => {
-    if (!force && window.__arenaActions) return window.__arenaActions;
-    const srcs = await chunkSources();
-    let up = '', sign = '';
-    for (const u of srcs) {
-      let t = '';
-      try { t = await (await fetch(u, { cache: 'no-store' })).text(); } catch (e) { continue; }
-      if (!up) { const m = t.match(/([0-9a-f]{40,})"[^)]{0,240}"generateUploadUrl"/); if (m) up = m[1]; }
-      if (!sign) { const m = t.match(/([0-9a-f]{40,})"[^)]{0,240}"getSignedUrl"/); if (m) sign = m[1]; }
-      if (up && sign) break;
+        const r = await fetch(location.origin + ep, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({ fileName: img.name, contentType: img.mime })
+        });
+        const text = await r.text();
+        if (!r.ok) {
+          lastErr = ep + ' status ' + r.status + ' ' + flatten(text).slice(0, 120);
+          continue;
+        }
+        let json = null;
+        try { json = JSON.parse(text); } catch (e) {}
+        uploadUrl = (json && (json.uploadUrl || json.url)) || pick(text, 'uploadUrl') || pick(text, 'url');
+        key = (json && json.key) || pick(text, 'key');
+        if (uploadUrl && key) break;
+      } catch (e) {
+        lastErr = ep + ' error: ' + (e && e.message);
+      }
     }
-    if (!up || !sign) throw new Error('upload: id Server Action tidak ditemukan (' + srcs.length + ' chunk dipindai)');
-    window.__arenaActions = { up: up, sign: sign };
-    return window.__arenaActions;
-  };
-  const callAction = async (id, args) => {
-    // Selalu ke /image/direct: setelah generate, aplikasi bisa memindahkan
-    // history ke /c/<uuid> dan action di route itu tidak selalu tersedia.
-    const r = await fetch(location.origin + '/image/direct', {
-      method: 'POST',
-      headers: {
-        'Next-Action': id,
-        'Content-Type': 'text/plain;charset=UTF-8',
-        'Accept': 'text/x-component'
-      },
-      body: JSON.stringify(args)
-    });
-    const text = await r.text();
-    if (!r.ok) throw new Error('upload: Server Action HTTP ' + r.status + ' ' + flatten(text).slice(0, 160));
-    if (/^\s*</.test(text)) throw new Error('upload: balasan bukan RSC (HTML, HTTP ' + r.status + ')');
-    return text;
-  };
-  const uploadOne = async (ids, img) => {
-    const meta = await callAction(ids.up, [img.name, img.mime]);
-    const uploadUrl = pick(meta, 'uploadUrl');
-    const key = pick(meta, 'key');
+
     if (!uploadUrl || !key) {
-      const fail = failureOf(meta);
-      throw new Error('upload: uploadUrl/key tidak ada' + (fail ? ' (arena: ' + fail + ')' : '') +
-        ', balasan: ' + flatten(meta).slice(0, 240));
+      throw new Error('upload: gagal meminta uploadUrl (' + lastErr + ')');
     }
+
     const put = await fetch(uploadUrl, {
       method: 'PUT',
       headers: { 'Content-Type': img.mime },
       body: b64Blob(img.b64, img.mime)
     });
-    if (!put.ok) throw new Error('upload: storage menolak berkas HTTP ' + put.status + ' ' + flatten(await put.text()).slice(0, 160));
-    const signedText = await callAction(ids.sign, [key.replace(/^\//, '')]);
-    const url = pick(signedText, 'url');
-    if (!url) {
-      const fail = failureOf(signedText);
-      throw new Error('upload: signed URL tidak ada' + (fail ? ' (arena: ' + fail + ')' : '') +
-        ', balasan: ' + flatten(signedText).slice(0, 240));
+    if (!put.ok) {
+      const putBody = await put.text();
+      throw new Error('upload: storage menolak berkas HTTP ' + put.status + ' ' + flatten(putBody).slice(0, 160));
     }
-    return { name: img.name, contentType: img.mime, url: url };
+
+    const signEndpoints = [
+      '/nextjs-api/storage/get-signed-url',
+      '/nextjs-api/storage/get-download-url',
+      '/api/storage/get-signed-url',
+      '/api/storage/get-download-url'
+    ];
+    let finalUrl = '';
+    for (const sep of signEndpoints) {
+      try {
+        const sr = await fetch(location.origin + sep, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({ key: key.replace(/^\//, '') })
+        });
+        const stext = await sr.text();
+        if (!sr.ok) continue;
+        let sjson = null;
+        try { sjson = JSON.parse(stext); } catch (e) {}
+        finalUrl = (sjson && (sjson.url || sjson.signedUrl || sjson.downloadUrl)) || pick(stext, 'url') || pick(stext, 'downloadUrl');
+        if (finalUrl) break;
+      } catch (e) {}
+    }
+
+    if (!finalUrl && uploadUrl) {
+      try {
+        const u = new URL(uploadUrl);
+        finalUrl = u.origin + u.pathname;
+      } catch (e) {}
+    }
+
+    if (!finalUrl) {
+      throw new Error('upload: signed URL tidak didapatkan untuk key ' + key);
+    }
+
+    return { name: img.name, contentType: img.mime, url: finalUrl };
   };
   const buildAttachments = async () => {
     if (!IMAGES.length) return [];
     await checkSession();
-    const run = async (force) => {
-      const ids = await discoverActions(force);
-      const out = [];
-      for (const img of IMAGES) out.push(await uploadOne(ids, img));
-      return out;
-    };
-    try {
-      return await run(false);
-    } catch (e) {
-      // id action bisa basi kalau arena.ai deploy ulang saat halaman masih
-      // terbuka: buang cache, panen ulang, coba sekali lagi.
-      window.__arenaActions = null;
-      return await run(true);
+    const t0 = Date.now();
+    while (Date.now() - t0 < 10000) {
+      if (document.readyState === 'interactive' || document.readyState === 'complete') break;
+      await new Promise(r => setTimeout(r, 200));
     }
+    const out = [];
+    for (const img of IMAGES) out.push(await uploadOne(img));
+    return out;
   };
   try {
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const waitCaptcha = async () => {
-      // 45 detik, bukan 20: panel 1 core butuh waktu lama mem-parse halaman
-      // arena.ai + memuat skrip reCAPTCHA, dan halaman yang baru dimuat ulang
-      // (lihat wakeCaptcha di chrome.go) memulai dari nol.
       const started = Date.now();
       while (Date.now() - started < 45000) {
         if (window.grecaptcha && grecaptcha.enterprise && typeof grecaptcha.enterprise.execute === 'function') {
@@ -504,9 +518,6 @@ const generateScriptTemplate = `(async () => {
       }
       throw new Error('grecaptcha tidak siap');
     };
-    // Token dibuat sesaat setelah permintaan, jadi tunggu reCAPTCHA siap dan
-    // biarkan ia mengumpulkan sinyal dulu — token yang dipanen terlalu cepat
-    // cenderung berskor rendah dan ditolak server.
     await waitCaptcha();
     await sleep(1500);
     const attachments = await buildAttachments();
@@ -518,7 +529,7 @@ const generateScriptTemplate = `(async () => {
         modelAId: __MODEL__,
         userMessageId: uuidv7(),
         modelAMessageId: uuidv7(),
-		userMessage: { content: __PROMPT__, experimental_attachments: attachments, metadata: {} },
+        userMessage: { content: __PROMPT__, experimental_attachments: attachments, metadata: {} },
         modality: 'image',
         recaptchaV3Token: token,
 __CXLINE__
@@ -533,15 +544,14 @@ __CXLINE__
       return { status: r.status, images, errors, sample: text.slice(0, 400) };
     };
     let out = await post(await freshToken());
-    // Satu percobaan ulang dengan token baru: penolakan reCAPTCHA sering
-    // bersifat sesaat (token pertama dibuat saat halaman masih "dingin").
     if (out.status === 403 && /recaptcha/i.test(out.errors.join(' '))) {
       await sleep(2000);
       out = await post(await freshToken());
     }
     return JSON.stringify(out);
   } catch (e) {
-    return JSON.stringify({ status: 0, images: [], errors: [String((e && e.message) || e)], sample: '' });
+    const msg = String((e && e.message) || e);
+    return JSON.stringify({ status: 0, images: [], errors: [msg], sample: '' });
   }
 })()`
 

@@ -37,6 +37,9 @@ func RegisterStickerWatermark(r *Registry) {
 			}
 
 			packname, author := parseStickerWatermarkArgs(mctx.Args)
+			if strings.EqualFold(author, "@user") {
+				author = mctx.SenderPushName()
+			}
 
 			img, sticker, err := extractWatermarkMedia(mctx)
 			if err != nil {
@@ -101,7 +104,7 @@ func RegisterStickerWatermark(r *Registry) {
 //   - ".swm" tanpa argumen ditangani di handler (tampil help), jadi di sini
 //     tidak lagi memakai default author.
 func parseStickerWatermarkArgs(args []string) (packname, author string) {
-	packname = config.StickerPackname
+	packname = config.ResolveStickerPackname()
 
 	joined := strings.TrimSpace(strings.Join(args, " "))
 	if joined == "" {

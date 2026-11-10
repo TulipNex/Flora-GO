@@ -180,7 +180,8 @@ func bratGenerate(ctx context.Context, mctx *store.MessageContext, text string, 
 	if err != nil {
 		return fmt.Errorf("gagal convert ke stiker: %v", err)
 	}
-	webp, err = store.WriteStickerExif(webp, config.StickerPackname, config.StickerAuthor)
+	author := config.ResolveStickerAuthor(mctx.SenderPushName())
+	webp, err = store.WriteStickerExif(webp, config.ResolveStickerPackname(), author)
 	if err != nil {
 		return fmt.Errorf("gagal set metadata stiker: %v", err)
 	}

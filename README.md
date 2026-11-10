@@ -109,7 +109,7 @@ wabot-go/
 │   ├── version-bump.ps1           # tentukan naik versi otomatis dari file yang berubah (dipakai deploy.ps1)
 │   ├── push.ps1                   # script git add/commit/push cepat
 │   └── pair-lan.ps1               # pairing opencode via Wi-Fi (QR)
-├── go.mod / go.sum               # Go 1.26+, hypermeow terbaru
+├── go.mod / go.sum               # Go 1.27.3+, hypermeow terbaru
 ├── .env / .env.example
 └── .gitignore
 ```
@@ -118,7 +118,7 @@ wabot-go/
 
 ## 1. Setup di Laptop
 
-Pastikan sudah install [Go 1.26+](https://go.dev/dl/). Bot butuh **ffmpeg** di PATH server tempat ia jalan — bukan cuma untuk `.sticker`, tapi juga thumbnail video, konversi WebP, dan transcode video asing.
+Pastikan sudah install [Go 1.27.3+](https://go.dev/dl/). Bot butuh **ffmpeg** di PATH server tempat ia jalan — bukan cuma untuk `.sticker`, tapi juga thumbnail video, konversi WebP, dan transcode video asing.
 
 ```bash
 cd wabot-go
@@ -248,13 +248,10 @@ Diset lewat file `.env` di root panel (`run.sh` sudah otomatis `source .env` di 
 | `ARENA_MAX_DAILY`      | Kuota gambar `.seedream` per hari (default `20`)                           |
 | `ARENA_COOLDOWN_SECONDS` | Jeda antar permintaan `.seedream` (default `30`)                         |
 | `ARENA_TIMEOUT`        | Batas waktu satu proses gambar (default `240`, detik atau `4m`)            |
-| `GEMINI_MODEL_TEXT`    | Model chat `.gemini`: `lite` (generasi paling singkat), `flash`, atau `pro`  |
-| `GEMINI_THINKING`      | `1` = mode berpikir diperluas Gemini (lebih lambat, lebih teliti)          |
-| `GEMINI_MAX_UPLOAD_MB` | Batas ukuran lampiran yang diunggah ke Gemini (default `20`)               |
-| `GEMINI_CHROME_PATH`   | Path Chrome untuk mengunduh gambar `.gemini` (default cari di PATH/sistem) |
-| `GEMINI_XVFB_PATH`     | Path binary Xvfb untuk Chrome headed saat mengunduh gambar (default PATH)  |
-| `GEMINI_HEADED`        | `0` = paksa Chrome headless saat mengunduh gambar `.gemini`                |
-| `GOMEMLIMIT`           | Batas memori Go (mis. `512MiB`) — disarankan di panel 1,6GB                |
+| `MEMLOG_SAMPLE_SECONDS` | Interval sampel riwayat memori `.memlog` (default `60`; minimum `15`; `0` = matikan fitur) |
+| `MEMLOG_BURST_SECONDS` | Interval sampel saat ada operasi berat berjalan (default `5`, dijepit ≤ interval dasar) |
+| `MEMLOG_RETENTION_DAYS` | Retensi riwayat memori sebelum dipangkas otomatis (default `7`, maks `90`) |
+| `GOMEMLIMIT`           | Batas memori Go (mis. `512MiB`) — hanya berguna bila heap benar-benar mendekati batas; cek dulu lewat `.memlog` |
 
 Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan di `.env`, melainkan dikompilasi langsung ke binary lewat `internal/config/config.go` — ubah di sana lalu deploy ulang jika perlu mengganti nilainya.
 
@@ -277,7 +274,7 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 | Command | Keterangan |
 |---|---|
 | `.tiktok` / `.tt`, `.youtube` / `.yt`, `.instagram` / `.ig`, `.twitter` / `.x`, `.facebook` / `.fb`, `.pinterest` / `.pin`, `.spotify` / `.sp` + `<url>` | Download via scraper API per platform (YouTube primer yt-dlp; lainnya scraper-first + fallback) |
-| `.bk` `<link> [d]` | Download video embed |
+| `.bk` `<link> [d]` | Download video embed (maks 500MB; ≤100MB diputar sebagai video, di atasnya otomatis jadi dokumen — `d` memaksa dokumen) |
 | `.gitclone` / `.gh` + `<owner/repo[@branch]>` | Download repo GitHub publik sebagai ZIP (maks 100MB) |
 | `.youtubemp3` / `.ytmp3`, `.youtube --mp3` | Audio saja |
 | `.shazam` + reply VN/audio | Kenali lagu (tombol **Unduh** bila ada track Spotify, selain itu **Buka Spotify**) |
@@ -339,7 +336,10 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 ### Owner
 | Command | Keterangan |
 |---|---|
-| `.server` / `.si`, `.os`, `.rss` | Info server, OS + jaringan, memori proses |
+| `.server` / `.si`, `.os`, `.memory` / `.mem` / `.process` | Info server, OS + jaringan, memori proses (Go runtime) |
+| `.memlog` | Riwayat memori 24 jam + verdict tren (`now`, `day`, `raw 06`, `top`, `spike`, `ops`) — owner |
+| `.memlog heap` / `.memlog goroutine` | Kirim profil pprof ke chat (tanpa buka port; buka di laptop dengan `go tool pprof`) |
+| `.memlog export [24h\|7d]` / `.memlog prune [hari]` | Unduh ZIP berisi `samples.csv` + `events.csv`, atau pangkas riwayat manual |
 | `.jadibot qr/list/stop/start/hapus` | Kelola bot clone via scan QR (stop=start ulang tanpa QR, hapus=total + arsip grup) |
 | `.voicecall <target>[\|<jam>] [#kw]` (alias `.call`) | Panggilan suara WhatsApp keluar / terjadwal (zona aktif bot, tersimpan di SQLite) |
 | `.voicecall save\|del\|list` · `.voicecall jadwal` · `.voicecall cancel <id>` | Kelola aset suara (`#keyword`) & jadwal panggilan |
@@ -359,9 +359,10 @@ Identitas bot & owner (nama, versi, deskripsi, nomor owner) **tidak** disimpan d
 | `.seedream cookie <cookie>` / `.seedream cookie` | Perbarui cookie login arena.ai, atau (tanpa argumen) tampilkan status sesi: status, masa berlaku, sisa waktu, dan model — cookie tidak pernah dikembalikan ke chat |
 | `.rch <link pesan> <emoji>` | Kirim reaksi ke pesan WhatsApp Channel lewat auto.reactionwa.online, maks 5 emoji (owner) |
 | `.rch status` / `.rch login <refresh token>` | Cek sesi/akun, atau simpan refresh token Firebase sekali (tanpa argumen = petunjuk login) |
-| `.gemini on` / `off` / `new` | Sesi chat Gemini web di DM owner: aktifkan, akhiri, atau mulai percakapan baru (riwayat disimpan di server Gemini) |
-| `.gemini login <cookie>` / `.gemini status` / `.gemini diag` / `.gemini diag upload` / `.gemini diag image` | Simpan cookie akun Google bot (header `Cookie` dari gemini.google.com), cek status sesi, diagnosa cookie (TS basi vs sesi mati), uji jalur lampiran, atau uji generate + unduh gambar — cookie tidak pernah dikembalikan ke chat |
-| `gemini <pertanyaan>` / reply bubble bot | Kirim prompt ke Gemini saat sesi aktif (juga menerima gambar/PDF sebagai lampiran) |
+| `.gemini on` / `off` / `new` | Sesi chat Gemini (mode tamu): aktifkan, akhiri, atau mulai percakapan baru (riwayat di memori bot) |
+| `.gemini sistem [teks\|reset]` | Atur, lihat, atau hapus prompt sistem persisten Gemini (maks 4000 karakter, disimpan di bot_settings) |
+| `.gemini status` / `.gemini diag` | Cek mode, giliran, sisa umur sesi, dan kesehatan jalur tamu; `diag` menguji cookie → parameter halaman → satu percakapan sungguhan |
+| `gemini <pertanyaan>` / reply bubble bot | Kirim prompt ke Gemini; kata `gemini` membuka sesi sendiri, reply hanya berlaku selama sesi hidup (5 menit) |
 | `.listgrup` | Daftar grup bot + JID (untuk flag `-g`) |
 | `$ <perintah>` | Eksekusi shell di server (async, timeout 120 dtk, output dipotong) |
 | `\ <kode js>` | Eval JavaScript di dalam bot (async, timeout 30 dtk) |
@@ -372,7 +373,7 @@ Catatan keuangan (lewat AI): tiap transaksi menyimpan **waktu input** (tanggal +
 
 Catatan `.rch`: memakai situs **auto.reactionwa.online** (endpoint `POST https://api-v1.reactionwa.online`), bukan apikey. Login Google dilakukan **sekali** oleh owner di browser pribadinya; bot hanya menyimpan **refresh token** Firebase di `data/rwa-token.txt` (gitignored, ditulis atomik, tidak pernah di-echo) lewat `.rch login <refresh token>` (ambil dari DevTools > Console halaman `/Free/`: IndexedDB `firebaseLocalStorageDb` > `firebaseLocalStorage` > `stsTokenManager.refreshToken`). Access token dicetak bot sendiri dari `securetoken.googleapis.com` (wajib header `Origin`/`Referer` situs), lalu cache ±55 menit. Token Cloudflare Turnstile **wajib** dan diverifikasi server, jadi setiap kirim bot menyalakan **Chrome + Xvfb** di panel untuk membuka `/Free/` (tanpa login) dan memanen token dari `turnstile.getResponse()`; token itu dipakai ulang sampai ±4 menit supaya kiriman beruntun tidak menyalakan Chrome lagi. Link harus link **pesan** channel (ada nomor di belakang), bukan link profil. Maksimal 5 emoji per kirim (dipisah spasi/koma; emoji ZWJ tidak dipecah). Kuota gratis dibatasi **server** (1×/24 jam per akun/IP); kalau habis, bot menampilkan pesan limit dari server apa adanya (top up/upgrade lewat situs). Chrome/Xvfb memakai profil `rwa-profile/` (gitignored) agar cookie clearance Cloudflare bertahan, dan tidak dinyalakan bila sisa memori cgroup <350 MB.
 
-Catatan `.gemini`: chat Gemini lewat **antarmuka web** (bukan API resmi, bukan Chrome), memakai akun Google khusus bot. Pesan prompt ditandai **reaksi ✨** (berubah menjadi **⏳** bila jawaban belum selesai setelah ±10 detik; tidak ada bubble "sedang meneruskan…"), jawaban dirapikan dulu seperti balasan flora agent (bold Markdown → bold WhatsApp, heading/pemisah/karakter tak terlihat dibuang), dan jawaban panjang dipotong per 3500 karakter. Pembacaan balasan berhenti di penanda akhir stream (atau setelah diam 4 detik bila jawaban sudah ada), bukan menunggu koneksi ditutup — server Gemini kadang menahan koneksi ±20 detik setelah jawaban lengkap, dan itulah yang dulu membuat `.gemini` terasa lambat. Kredensial satu-satunya adalah cookie sesi di `data/gemini-cookie.txt` (gitignored, ditulis atomik 0600, tidak pernah di-echo ke chat) yang diisi lewat `.gemini login <cookie>` — ambil dari DevTools → Network → request `gemini.google.com/app` → header `Cookie`, cukup `__Secure-1PSID` (cookie pendamping ikut kalau ada). Setelah login, bot menyimpan **tembolok token halaman** (`at`/build/f.sid/push id) di `data/gemini-meta.json` (0600, umur pakai 1 jam, dihapus saat cookie identitas berganti), jadi restart tidak perlu membuka `/app` lagi dan tidak menuntut login ulang. Kalau `/app` tetap harus dibuka dan menolak, bot berlapis: rotasi cookie → coba lagi → coba lagi **tanpa cookie volatile** (`__Secure-1PSIDTS` basi kadang membuat permintaan dianggap tidak sah) → baru melaporkan cookie ditolak. `.gemini status` menampilkan keadaan berkas, dan `.gemini diag` menunjukkan apakah masalahnya cookie volatile (bisa diperbaiki bot) atau `__Secure-1PSID` yang sudah tidak berlaku (harus login ulang). Gambar hasil Gemini diunduh memakai sesi bot dengan beberapa percobaan berurutan (mirip permintaan browser: cookie, UA, `Sec-Fetch-*`, tanpa `Origin`; lalu tanpa cookie, tanpa parameter ukuran, dan `=s0`); kalau semuanya ditolak 403, bot menyalakan Chrome di panel sebentar untuk membuka URL yang sama dan mengambil gambar dari halaman yang berhasil dimuat (cookie tidak disuntikkan ke host media, profil `gemini-profile/`), lalu mematikan Chrome lagi — rung yang berhasil dicatat di log (`media ok via …`). Kalau semua gambar gagal diunduh, bot melaporkan alasan ringkasnya (mis. `403 · lh3.googleusercontent.com`), bukan mengirim pesan kosong. `.gemini diag image` meminta satu gambar, memindai semua URL media di payload (kandidat kanonik ditaruh paling depan) lalu menampilkan bentuk tiap kandidat + status tiap percobaan unduh (termasuk rung Chrome untuk kandidat pertama) + kesimpulan (masalah generasi, penolakan 403, atau jalur sehat); biayanya satu kuota generate. Semua kandidat URL tidak ditampilkan di chat, tapi ditulis ke `wabot-tmp/gemini-image-url-*.txt` agar bisa diuji di HP: berhasil di incognito = URL publik (berarti IP/TLS panel yang diblokir), hanya berhasil saat login = gambar butuh cookie `googleusercontent.com`, gagal di keduanya = URL rusak/kedaluwarsa. URL dari stream dibersihkan dulu (trim, `&amp;` → `&`, potong pada spasi/kuota/tanda penutup markup) karena satu karakter sisa markup sudah cukup membuat tanda tangan Google ditolak 403. Untuk balasan ber-lampiran yang bermasalah, `.gemini diag upload` menguji unggah + satu giliran chat dan menunjukkan tahap mana yang gagal (berkas dump mentah di `wabot-tmp/gemini-empty-*.txt` bisa diperiksa lalu dihapus). **Riwayat percakapan disimpan di server Gemini**, bukan di bot: yang ada di memori hanya pointer percakapan (`conv_id`/`resp_id`/`choice_id`), sehingga mode kembali nonaktif setelah bot restart dan `.gemini new` cukup membuang pointer. Pesan sesi ini sengaja **tidak masuk arsip CRM** (tidak ada transkrip lokal). Model: `GEMINI_MODEL_TEXT` (`lite` = generasi paling singkat, `flash`/`pro` untuk kualitas lebih tinggi), `GEMINI_THINKING=1` untuk mode berpikir. Catatan penting di panel: setelah perbaikan pembacaan stream, sisa latensi datang dari **server Gemini** (antrean 8–20 detik sebelum header balasan ditambah ±12 detik inferensi senyap), bukan dari bot — generasi aslinya hanya 2–5 detik, jadi mengecilkan model tidak lagi banyak menolong dan tidak ada setting env untuk memangkasnya. Uji tanpa WhatsApp: `GEMINI_SMOKE=1 go test ./internal/geminiapi/ -run TestSmoke -v` (teks), `=2` (unggah gambar), `=3` (minta gambar), `=4` (tiga giliran) — memakai cookie dan kuota akun asli.
+Catatan `.gemini`: chat Gemini lewat **antarmuka web dalam mode tamu** (bukan API resmi, tanpa login, tanpa cookie akun, tanpa Chrome). Cookie tamu (`NID`) diambil otomatis dari `gemini.google.com`, jadi tidak ada kredensial yang perlu disimpan atau dirawat — `.gemini login` hanya membalas "tidak diperlukan". Karena server tidak menyimpan percakapan tamu, riwayat disimpan bot **di memori** per pengirim dan ditempel ke prompt berikutnya; sesi mati setelah 5 menit tanpa pesan pemicu/balasan (riwayat ikut dibuang, tidak bertahan setelah restart). Prompt sistem dapat disetel lewat `.gemini sistem <teks>` (maks 4000 karakter, disimpan persisten di `bot_settings`, tahan restart); prompt sistem disertakan di giliran pertama sesi baru dan disimpan sebagai giliran pinned agar tidak hilang saat riwayat dipangkas. Bisa dipakai owner di DM maupun grup mana pun, tanpa cooldown. Pesan prompt ditandai **reaksi ✨** (berubah menjadi **⏳** bila jawaban belum selesai setelah ±10 detik; tidak ada bubble "sedang meneruskan…"), jawaban dirapikan dulu seperti balasan flora agent (bold Markdown → bold WhatsApp, heading/pemisah/karakter tak terlihat dibuang), dan jawaban panjang dipecah per 1000 karakter (dipotong di newline/spasi terdekat, jeda 3 detik antar bubble, tanpa batas jumlah bubble). Pembacaan balasan berhenti di penanda akhir stream (atau setelah diam 4 detik bila jawaban sudah ada), bukan menunggu koneksi ditutup — server Gemini kadang menahan koneksi ±20 detik setelah jawaban lengkap, dan itulah yang dulu membuat `.gemini` terasa lambat. Lampiran dan pembuatan gambar **tidak didukung** (jalur unggah/unduh sudah dihapus). `.gemini status` menampilkan mode, prompt sistem aktif, jumlah giliran, sisa umur sesi, dan kesehatan jalur tamu; `.gemini diag` menjalankan pemeriksaan cookie → parameter halaman → satu percakapan sungguhan (memakai satu kuota) untuk menunjukkan tahap mana yang gagal. Kalau IP panel diblokir/di-`429`, jalur ini bisa berhenti bekerja sampai batasnya lewat — itu batas server, bukan bug bot.
 
 Panggilan WhatsApp memakai library [meowcaller](https://github.com/purpshell/meowcaller). Data grup (setting, dsb) disimpan di SQLite lewat driver `modernc.org/sqlite` (pure Go, tanpa cgo).
 

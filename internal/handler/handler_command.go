@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"wabot-go/internal/ai"
+	"wabot-go/internal/diag"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/metrics"
 	"wabot-go/internal/store"
@@ -99,6 +100,10 @@ func executeNamedCommand(client *whatsmeow.Client, registry *plugins.Registry, e
 	if !ok {
 		return // command tidak ditemukan, diamkan saja (bisa diubah untuk balas "command tidak dikenal")
 	}
+
+	// Catat waktu selesai command (dipakai idle memory release). Defer supaya
+	// tetap tercatat walau handler error/return lebih awal.
+	defer diag.NoteCommandFinished()
 
 	metrics.IncCommand(cmdName)
 

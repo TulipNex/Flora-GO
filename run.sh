@@ -16,6 +16,8 @@ mkdir -p data
 # tidak akan pernah sampai ke proses Go, walau file .env-nya sudah benar.
 if [ -f ".env" ]; then
     echo "📄 Memuat variabel dari .env..."
+    # Hapus carriage return Windows (\r) jika file diedit/diunggah dari Windows
+    sed -i 's/\r$//' .env 2>/dev/null || true
     set -a
     source .env
     set +a

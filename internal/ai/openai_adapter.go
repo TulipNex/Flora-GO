@@ -70,7 +70,7 @@ func requestTimeout() time.Duration {
 // tersangkut dan Cloudflare akan memutusnya dengan 524 di sekitar 125 detik —
 // lebih baik gagal cepat lalu retry sekali (murah) daripada menunggu 2 menit.
 // Var (bukan const) supaya tes bisa memendekkannya.
-var streamHeaderTimeout = 25 * time.Second
+var streamHeaderTimeout = 60 * time.Second
 
 // slowStreamHeader adalah ambang "header lambat" yang dicatat ke log sebagai
 // peringatan diagnostik (gejala awal gateway antre sebelum akhirnya 524).

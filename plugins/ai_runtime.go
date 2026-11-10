@@ -15,6 +15,7 @@ import (
 	"wabot-go/internal/ai"
 	"wabot-go/internal/config"
 	"wabot-go/internal/logfmt"
+	"wabot-go/internal/memlog"
 	"wabot-go/internal/store"
 	"wabot-go/internal/timex"
 )
@@ -37,7 +38,14 @@ import (
 // TERPISAH antara chat private-nya dan chat dia di sebuah grup (dan
 // terpisah lagi per grup) — sebelumnya semua konteks ini keliru berbagi
 // satu histori yang sama karena kunci sesi hanya memakai sender JID.
-func HandleAIMessage(ctx context.Context, mctx *store.MessageContext, text string) error {
+func HandleAIMessage(ctx context.Context, mctx *store.MessageContext, text string) (retErr error) {
+	// Satu baris riwayat memori per giliran AI: adapter provider membuat objek
+	// baru tiap request, jadi alokasi per giliran inilah yang perlu
+	// dibandingkan dari hari ke hari. Giliran yang ditolak spam/lock tercatat
+	// dengan alloc ~0 (murah, tidak mengganggu peringkat .memlog top).
+	op := memlog.Begin("ai", "turn")
+	defer func() { op.End(retErr == nil, "") }()
+
 	isGroup := mctx.IsGroup()
 	sessionKey := ai.BuildSessionKey(isGroup, mctx.Chat.String(), mctx.Sender.String())
 

@@ -1,6 +1,8 @@
 package config
 
 import (
+	_ "wabot-go/internal/envload"
+
 	"os"
 	"strings"
 )
@@ -60,14 +62,14 @@ func PrimaryOwnerNumber() string {
 // Dipakai bersama oleh plugin manapun yang perlu menampilkan
 // info bot (misal plugin .menu atau pesan startup di main.go).
 const (
-	// BotName adalah nama bot.
-	BotName = "Flora GO"
-
-	// BotDescription adalah deskripsi singkat bot ini.
-	BotDescription = "Sistem otomatis (Bot WhatsApp) yang dapat membantu melakukan sesuatu, mencari dan mendapatkan data/informasi hanya melalui WhatsApp"
+	// DefaultBotName adalah nama fallback jika BOT_NAME di .env kosong.
+	DefaultBotName = "Flora GO"
 )
 
 var (
+	// BotName adalah nama bot yang dibaca dari env BOT_NAME (fallback DefaultBotName).
+	BotName = ResolveBotName()
+
 	// BotVersion mengikuti versi rilis bot ini.
 	//
 	// Format CalVer: v<bulan>.<tanggal>.<urut> — tanggal deploy (waktu lokal)
@@ -85,18 +87,59 @@ var (
 	BotVersion = "v0.0.0-dev"
 )
 
+// ResolveBotName mengembalikan nama bot: dibaca dari env BOT_NAME (fallback DefaultBotName).
+func ResolveBotName() string {
+	for _, key := range []string{"BOT_NAME", "BOTNAME"} {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			return v
+		}
+	}
+	return DefaultBotName
+}
+
 // ==========================
 // Metadata Sticker
 // ==========================
-// Dipakai sebagai nilai default oleh plugin .sticker dan .stickerwatermark
+// Dipakai sebagai nilai default oleh plugin .sticker, .smeme, .brat, dsb
 // saat user tidak menentukan packname/author sendiri lewat command.
 const (
-	// StickerPackname adalah nama pack default yang muncul di stiker.
-	StickerPackname = "Flora GO"
-
-	// StickerAuthor adalah nama author/publisher default yang muncul di stiker.
-	StickerAuthor = "By Mitra"
+	// DefaultStickerAuthor adalah author default stiker jika STICKER_AUTHOR kosong.
+	DefaultStickerAuthor = "By Mitra"
 )
+
+// ResolveStickerPackname mengembalikan nama pack default untuk stiker:
+// dibaca on-demand dari env STICKER_PACKNAME atau STICKER_PACK_NAME, fallback ke ResolveBotName().
+func ResolveStickerPackname() string {
+	for _, key := range []string{"STICKER_PACKNAME", "STICKER_PACK_NAME"} {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			return v
+		}
+	}
+	return ResolveBotName()
+}
+
+func resolveStickerAuthor() string {
+	for _, key := range []string{"STICKER_AUTHOR", "STICKER_AUTHOR_NAME"} {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			return v
+		}
+	}
+	return DefaultStickerAuthor
+}
+
+// ResolveStickerAuthor mengembalikan author stiker:
+// jika diset "@user", akan menggunakan pushName pengirim (fallback DefaultStickerAuthor jika kosong).
+// jika diset teks biasa, mengembalikan nilai tersebut.
+func ResolveStickerAuthor(pushName string) string {
+	authorCfg := resolveStickerAuthor()
+	if strings.EqualFold(authorCfg, "@user") {
+		if s := strings.TrimSpace(pushName); s != "" {
+			return s
+		}
+		return DefaultStickerAuthor
+	}
+	return authorCfg
+}
 
 // ==========================
 // Konfigurasi AI Agent

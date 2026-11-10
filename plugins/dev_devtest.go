@@ -86,6 +86,12 @@ func devTestSteps(group string) []devTestStep {
 		}},
 	}
 
+	event := []devTestStep{
+		{"eventtest invite", func(ctx context.Context, mctx *store.MessageContext) error {
+			return eventTestSend(ctx, mctx, "NIXCODE")
+		}},
+	}
+
 	switch group {
 	case "btn", "btntest":
 		return btn
@@ -93,25 +99,32 @@ func devTestSteps(group string) []devTestStep {
 		return book
 	case "carousel":
 		return carousel
+	case "event", "eventtest":
+		return event
 	default:
-		all := make([]devTestStep, 0, len(btn)+len(book)+len(carousel))
+		all := make([]devTestStep, 0, len(btn)+len(book)+len(carousel)+len(event))
 		all = append(all, btn...)
 		all = append(all, book...)
 		all = append(all, carousel...)
+		all = append(all, event...)
 		return all
 	}
 }
 
 func handleDevTest(ctx context.Context, mctx *store.MessageContext) error {
+	// Command uji pengembang: hanya owner.
+	if msg := requireOwner(mctx); msg != "" {
+		return store.ReplyText(ctx, mctx, msg)
+	}
 	group := ""
 	if len(mctx.Args) > 0 {
 		group = strings.ToLower(strings.TrimSpace(mctx.Args[0]))
 	}
 	switch group {
-	case "", "all", "btn", "btntest", "book", "booktest", "carousel":
+	case "", "all", "btn", "btntest", "book", "booktest", "carousel", "event", "eventtest":
 		// dikenali
 	default:
-		return store.ReplyText(ctx, mctx, "Bentuk: .devtest [all|btn|book|carousel]")
+		return store.ReplyText(ctx, mctx, "Bentuk: .devtest [all|btn|book|carousel|event]")
 	}
 
 	steps := devTestSteps(group)

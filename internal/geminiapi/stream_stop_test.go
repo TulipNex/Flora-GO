@@ -7,10 +7,10 @@ import (
 )
 
 // TestParseStreamStopsAtEndMarker memastikan pembacaan berhenti di penanda
-// tutup stream walau koneksi TIDAK ditutup server. Inilah penyebab jawaban
-// terasa lambat ±20 dtk di panel: dulu parseStream menunggu EOF.
+// tutup stream walau koneksi TIDAK ditutup server. Tanpa ini jawaban terasa
+// lambat karena menunggu koneksi (server kadang menahannya ±20 dtk).
 func TestParseStreamStopsAtEndMarker(t *testing.T) {
-	line := buildStreamLine(t, streamInner([]string{"Halo"}, false))
+	line := buildStreamLine(t, streamInner([]string{"Halo"}))
 	pr, pw := io.Pipe()
 	go func() {
 		// sengaja tidak Close: meniru server yang menahan koneksi
@@ -45,7 +45,7 @@ func TestParseStreamStopsAtEndMarker(t *testing.T) {
 // TestParseStreamIdleStop memastikan stream yang diam setelah jawaban
 // dianggap selesai (tanpa penanda tutup, tanpa EOF).
 func TestParseStreamIdleStop(t *testing.T) {
-	line := buildStreamLine(t, streamInner([]string{"Halo dunia"}, false))
+	line := buildStreamLine(t, streamInner([]string{"Halo dunia"}))
 	pr, pw := io.Pipe()
 	go func() {
 		_, _ = pw.Write([]byte(line + "\n"))
@@ -68,7 +68,7 @@ func TestParseStreamIdleStop(t *testing.T) {
 // TestParseStreamWaitsForFirstText memastikan jeda panjang SEBELUM jawaban
 // pertama tidak dipotong (server bisa "berpikir" puluhan detik).
 func TestParseStreamWaitsForFirstText(t *testing.T) {
-	line := buildStreamLine(t, streamInner([]string{"Terlambat"}, false))
+	line := buildStreamLine(t, streamInner([]string{"Terlambat"}))
 	pr, pw := io.Pipe()
 	go func() {
 		time.Sleep(400 * time.Millisecond) // > idle 150ms
@@ -99,8 +99,8 @@ func TestParseStreamEndMarkerWithoutAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if res.Text != "" || len(res.Images) != 0 {
-		t.Fatalf("harus kosong, dapat %q / %d gambar", res.Text, len(res.Images))
+	if res.Text != "" {
+		t.Fatalf("harus kosong, dapat %q", res.Text)
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("berhenti terlalu lambat: %v", elapsed)
@@ -114,28 +114,11 @@ func TestIsStreamEnd(t *testing.T) {
 	if !isStreamEnd(`[["e",4,null,null,131]]`) {
 		t.Fatal("penanda tutup tidak dikenali")
 	}
-	line := buildStreamLine(t, streamInner([]string{"huruf e di teks"}, false))
+	line := buildStreamLine(t, streamInner([]string{"huruf e di teks"}))
 	if isStreamEnd(line) {
 		t.Fatal("baris jawaban salah dianggap penanda tutup")
 	}
 	if isStreamEnd(`["e"]`) {
 		t.Fatal("array bersarang yang tidak berbentuk penanda tidak boleh cocok")
-	}
-}
-
-// TestCannedRefusalDetection memastikan kalimat penolakan generik dikenali
-// (dipakai untuk menyimpan payload diagnostik), tanpa menandai jawaban biasa.
-func TestCannedRefusalDetection(t *testing.T) {
-	refusals := []string{
-		"Saya tidak bisa membantu Anda karena saya hanya model bahasa dan tidak mampu memahami hal tersebut.",
-		"Sebagai model bahasa, saya tidak dirancang untuk membantu soal itu.",
-	}
-	for _, s := range refusals {
-		if !isCannedRefusal(s) {
-			t.Fatalf("tidak dikenali: %q", s)
-		}
-	}
-	if isCannedRefusal("Sejarah internet dimulai pada 1969.") {
-		t.Fatal("jawaban biasa salah dianggap penolakan")
 	}
 }

@@ -34,7 +34,7 @@ Legenda: `•` = command publik, `◇` = helper/modul pendukung (bukan command),
 | `tts.go` | `• .tts` |
 | `delete.go` | `• .delete` / `• .del` |
 | `speedtest.go` | `• .speedtest` |
-| `rssinfo.go` | `• .rss` |
+| `rssinfo.go` | `• .rss` / `• .mem` / `• .memory` / `• .process` |
 
 ## Media & unduh
 

@@ -72,13 +72,6 @@ func ArchiveIncoming(client *whatsmeow.Client, evt *events.Message) {
 	if store.CRM() == nil || evt == nil {
 		return
 	}
-	// Sesi Gemini owner tidak diarsipkan: transkripnya sengaja hanya
-	// disimpan di server Gemini, dan command .gemini login bisa memuat
-	// cookie akun (jangan sampai masuk SQLite). Dicek paling awal supaya
-	// tidak ada jalur yang tetap menulis.
-	if geminiPrivateMessage(evt) {
-		return
-	}
 	msg := store.UnwrapMessage(evt.Message)
 	if msg == nil || evt.Info.ID == "" {
 		return

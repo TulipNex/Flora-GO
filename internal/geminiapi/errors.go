@@ -5,23 +5,26 @@ import "errors"
 // Kesalahan yang bisa ditindaklanjuti oleh plugin. Semua error dari paket ini
 // membungkus salah satu di bawah supaya pemanggil bisa memilih pesan yang
 // tepat tanpa membaca string mentah dari server.
+//
+// Sejak mekanisme diganti ke mode tamu (tanpa login), tidak ada lagi error
+// "cookie ditolak" atau "unggah gagal": kredensial diambil otomatis dari
+// HEAD gemini.google.com, dan lampiran/gambar sudah dihapus.
 var (
-	// ErrNoCookie: file cookie belum ada atau tidak memuat __Secure-1PSID.
-	ErrNoCookie = errors.New("cookie gemini belum ada")
-	// ErrCookieRejected: Google menolak sesi (401/403 atau token at hilang).
-	ErrCookieRejected = errors.New("cookie gemini ditolak")
-	// ErrLimit: kuota/rate limit akun (429 atau pesan limit dari Gemini).
+	// ErrGuestCookie: cookie tamu gagal diambil dari HEAD gemini.google.com
+	// (jaringan, blokir IP, atau Set-Cookie kosong).
+	ErrGuestCookie = errors.New("gagal mendapatkan cookie tamu gemini")
+	// ErrMeta: halaman /app tidak memberi parameter yang dibutuhkan
+	// (build label `bl` atau `f.sid`); biasanya tanda protokol berubah.
+	ErrMeta = errors.New("gagal membaca parameter halaman gemini")
+	// ErrLimit: kuota/rate limit tamu (HTTP 429 atau kode limit dari Gemini).
 	ErrLimit = errors.New("batas penggunaan gemini")
-	// ErrUpload: unggah lampiran gagal.
-	ErrUpload = errors.New("gagal unggah lampiran ke gemini")
-	// ErrShape: balasan server tidak berbentuk seperti yang diharapkan
-	// (biasanya tanda protokol web berubah).
-	ErrShape = errors.New("bentuk balasan gemini tidak dikenali")
+	// ErrStaleConv: server menolak lanjutan percakapan. Mode tamu memang tidak
+	// mendukung lanjutan, jadi ini hanya bisa muncul kalau protokolnya berubah.
+	ErrStaleConv = errors.New("percakapan gemini tidak berlaku")
+	// ErrProtocol: balasan server tidak berbentuk seperti yang diharapkan.
+	ErrProtocol = errors.New("bentuk balasan gemini tidak dikenali")
 	// ErrHTTP: status HTTP lain yang tidak punya kategori khusus.
 	ErrHTTP = errors.New("permintaan gemini gagal")
-	// ErrEmpty: permintaan dianggap sukses tapi tidak ada teks/gambar.
-	ErrEmpty = errors.New("gemini tidak mengembalikan jawaban")
-	// ErrStaleConv: id percakapan tidak berlaku lagi (BardErrorInfo 1096);
-	// pemanggil harus membuang pointer sesi lalu mencoba sekali lagi.
-	ErrStaleConv = errors.New("percakapan gemini sudah tidak berlaku")
+	// ErrEmpty: permintaan dianggap sukses tapi tidak ada teks.
+	ErrEmpty = errors.New("gemini tidak mengirim jawaban")
 )

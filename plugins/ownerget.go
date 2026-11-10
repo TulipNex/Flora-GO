@@ -11,13 +11,16 @@ import (
 	"mime"
 	"net"
 	"net/url"
+	"os"
 	"path"
 	"regexp"
 	"strings"
 	"time"
 
+	"wabot-go/internal/memlog"
 	"wabot-go/internal/messaging"
 	"wabot-go/internal/netx"
+	"wabot-go/internal/spool"
 	"wabot-go/internal/store"
 	"wabot-go/internal/textx"
 
@@ -306,7 +309,9 @@ func sendGetMedia(ctx context.Context, mctx *store.MessageContext, data []byte, 
 			return fmt.Errorf("gagal siapkan gambar %s: %v", logLabel, err)
 		}
 	}
+	uploadOp := memlog.Begin("upload", logLabel)
 	uploaded, err := mctx.Client.Upload(ctx, data, mediaType)
+	uploadOp.End(err == nil, "")
 	if err != nil {
 		return fmt.Errorf("gagal upload %s: %v", logLabel, err)
 	}
@@ -376,7 +381,9 @@ func sendGetMedia(ctx context.Context, mctx *store.MessageContext, data []byte, 
 
 // sendGetDocument mengupload + mengirim hasil fetch sebagai dokumen.
 func sendGetDocument(ctx context.Context, mctx *store.MessageContext, data []byte, contentType, filename string) error {
+	op := memlog.Begin("upload", "document")
 	uploaded, err := mctx.Client.Upload(ctx, data, whatsmeow.MediaDocument)
+	op.End(err == nil, "")
 	if err != nil {
 		return fmt.Errorf("gagal upload dokumen: %v", err)
 	}
@@ -399,4 +406,65 @@ func sendGetDocument(ctx context.Context, mctx *store.MessageContext, data []byt
 	store.LogOutgoing(mctx, "get-document", filename)
 	store.TrackBotMessageID(resp.ID, filename)
 	return nil
+}
+
+// sendGetDocumentPath mengirim berkas di disk sebagai dokumen TANPA
+// menampungnya di RAM.
+//
+// UploadReader (third_party/hypermeow/upload.go) mengenkripsi streaming ke
+// file yang sama dengan plaintext: isinya ditimpa menjadi ciphertext, lalu
+// diupload dari file itu. Jadi satu berkas besar tidak pernah punya salinan
+// kedua - baik di RAM (cbcutil.Encrypt) maupun di disk. Ini yang membuat
+// `.bk` 500MB tidak lagi menaikkan RSS ~1GB saat upload.
+//
+// File dibuka baca-tulis (bukan read-only) karena UploadReader menulis hasil
+// enkripsi ke handle yang sama; jangan pindahkan ke os.Open.
+func sendGetDocumentPath(ctx context.Context, mctx *store.MessageContext, path, contentType, filename string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("gagal buka berkas: %v", err)
+	}
+	defer f.Close()
+
+	op := memlog.Begin("upload", "document-file")
+	uploaded, err := mctx.Client.UploadReader(ctx, f, f, whatsmeow.MediaDocument)
+	op.End(err == nil, "")
+	if err != nil {
+		return fmt.Errorf("gagal upload dokumen: %v", err)
+	}
+
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{
+		DocumentMessage: &waE2E.DocumentMessage{
+			URL:           proto.String(uploaded.URL),
+			DirectPath:    proto.String(uploaded.DirectPath),
+			MediaKey:      uploaded.MediaKey,
+			Mimetype:      proto.String(contentType),
+			FileEncSHA256: uploaded.FileEncSHA256,
+			FileSHA256:    uploaded.FileSHA256,
+			FileLength:    proto.Uint64(uploaded.FileLength),
+			FileName:      proto.String(filename),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("gagal kirim dokumen: %v", err)
+	}
+	store.LogOutgoing(mctx, "get-document", filename)
+	store.TrackBotMessageID(resp.ID, filename)
+	return nil
+}
+
+// sendGetDocumentBlob memilih jalur sesuai tempat isi blob: di RAM untuk
+// berkas kecil (jalur lama), dari file untuk berkas besar (streaming).
+func sendGetDocumentBlob(ctx context.Context, mctx *store.MessageContext, blob *spool.Blob, contentType, filename string) error {
+	if blob == nil {
+		return fmt.Errorf("gagal upload dokumen: isi kosong")
+	}
+	if blob.InMemory() {
+		data, err := blob.Bytes()
+		if err != nil {
+			return fmt.Errorf("gagal baca berkas: %v", err)
+		}
+		return sendGetDocument(ctx, mctx, data, contentType, filename)
+	}
+	return sendGetDocumentPath(ctx, mctx, blob.Path(), contentType, filename)
 }

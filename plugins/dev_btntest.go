@@ -57,6 +57,10 @@ func btnTestSend(ctx context.Context, mctx *store.MessageContext, msg *waE2E.Mes
 }
 
 func handleButtonTest(ctx context.Context, mctx *store.MessageContext) error {
+	// Command uji pengembang: hanya owner.
+	if msg := requireOwner(mctx); msg != "" {
+		return store.ReplyText(ctx, mctx, msg)
+	}
 	sub := ""
 	if len(mctx.Args) > 0 {
 		sub = strings.ToLower(strings.TrimSpace(mctx.Args[0]))

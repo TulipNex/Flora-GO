@@ -253,7 +253,14 @@ func toOpenAITools(decls []FunctionDecl) []openAITool {
 			Function: openAIToolFunction{
 				Name:        d.Name,
 				Description: d.Description,
-				Parameters:  d.Parameters,
+				// Normalisasi tipe skema ke lowercase (JSON Schema standar):
+				// tool didefinisikan dengan tipe uppercase ("STRING"/"OBJECT"/
+				// "ARRAY"), tetapi backend OpenAI-compatible yang ketat
+				// (mis. gpt-5.6-luna) menolak nilai uppercase sebagai tipe
+				// yang tidak valid. Normalisasi di sini menjaga definisi tool
+				// tetap readable sambil mengirim format yang diterima semua
+				// provider.
+				Parameters: normalizeParameterSchema(d.Parameters),
 			},
 		})
 	}
@@ -301,4 +308,36 @@ func fillOpenAIResponse(resp *AgentResponse, parsed *openAIResponse, provider, m
 	resp.Provider = provider
 	resp.Model = model
 	return resp
+}
+
+// normalizeSchemaType mengubah nama tipe skema JSON (mis. "STRING"/"OBJECT")
+// menjadi bentuk lowercase standar ("string"/"object"). Nilai kosong
+// dikembalikan apa adanya.
+func normalizeSchemaType(t string) string {
+	return strings.ToLower(strings.TrimSpace(t))
+}
+
+// normalizePropertySchema menormalisasi satu PropertySchema secara rekursif,
+// termasuk skema elemen array (Items).
+func normalizePropertySchema(p PropertySchema) PropertySchema {
+	p.Type = normalizeSchemaType(p.Type)
+	if p.Items != nil {
+		ni := normalizePropertySchema(*p.Items)
+		p.Items = &ni
+	}
+	return p
+}
+
+// normalizeParameterSchema menormalisasi root ParameterSchema: tipe root dan
+// semua properti (beserta item array-nya).
+func normalizeParameterSchema(p ParameterSchema) ParameterSchema {
+	p.Type = normalizeSchemaType(p.Type)
+	if p.Properties != nil {
+		out := make(map[string]PropertySchema, len(p.Properties))
+		for k, v := range p.Properties {
+			out[k] = normalizePropertySchema(v)
+		}
+		p.Properties = out
+	}
+	return p
 }

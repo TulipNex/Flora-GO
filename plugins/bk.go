@@ -8,8 +8,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"wabot-go/internal/external"
+	"wabot-go/internal/spool"
 	"wabot-go/internal/store"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
@@ -18,6 +20,21 @@ import (
 func init() {
 	registerPlugin(RegisterBK)
 }
+
+// Batas ukuran .bk:
+//   - berkas sampai 500MB diterima,
+//   - hasil <= 100MB dikirim sebagai video (bisa diputar langsung di chat),
+//   - di atas 100MB dikirim sebagai dokumen (video sebesar itu tidak wajar
+//     diputar inline; WhatsApp juga menolak streaming sebesar itu).
+const (
+	xpvidMaxFileSize  = 500 << 20
+	xpvidVideoMaxSize = 100 << 20
+)
+
+// xpvidHLSTimeout batas remux HLS. dlTimeout (4 menit, milik downloader
+// yt-dlp) terlalu pendek untuk berkas sampai 500MB: ffmpeg harus menarik
+// seluruh segmen dari jaringan, dan pada ~1MB/s 500MB saja butuh >8 menit.
+const xpvidHLSTimeout = 15 * time.Minute
 
 // RegisterBK mendaftarkan command `.bk` (alias `.po`) kategori Media:
 // download video dari link embed berpola /(e|d)/{id} di host APAPUN (tanpa
@@ -55,7 +72,7 @@ func handleBK(ctx context.Context, mctx *store.MessageContext) error {
 
 // fetchSendXpvid menjalankan alur download di goroutine: gate antrean
 // bersama downloader → status → resolve → kirim.
-// docMode=true (argumen "d") memaksa hasil direct dikirim sebagai dokumen.
+// docMode=true (argumen "d") memaksa hasil dikirim sebagai dokumen.
 func fetchSendXpvid(ctx context.Context, mctx *store.MessageContext, rawURL string, docMode bool) error {
 	// Antrean global downloader ikut berlaku (unduh + remux boros
 	// bandwidth/CPU; penuh = tolak langsung, bukan antre diam).
@@ -83,42 +100,64 @@ func fetchSendXpvid(ctx context.Context, mctx *store.MessageContext, rawURL stri
 }
 
 // resolveAndSendXpvid adalah engine-nya: resolve URL → info reply →
-// HLS diremux jadi MP4 dokumen / direct diunduh jadi video (atau dokumen
-// bila mode d). Error berupa pesan ramah siap-balas ("media tidak
-// ditemukan" untuk tiap kegagalan resolve/unduh).
+// HLS diremux jadi MP4 / direct diunduh, lalu dikirim (video bila <=100MB,
+// dokumen bila lebih besar atau mode d). Error berupa pesan ramah siap-balas
+// ("media tidak ditemukan" untuk tiap kegagalan resolve/unduh).
 func resolveAndSendXpvid(ctx context.Context, mctx *store.MessageContext, rawURL string, docMode bool) error {
 	info, err := external.FetchXpvid(ctx, rawURL)
 	if err != nil {
 		return fmt.Errorf("gagal ambil video: %v%v", err, xpvidBlockHint(err))
 	}
 
-	// Info dulu (judul + URL sumber), media menyusul — pola bk.js referensi.
-	_ = store.ReplyText(ctx, mctx, fmt.Sprintf("%s\n%s", info.Title, info.VideoURL))
+	// Info dulu (link sumber), media menyusul — pola bk.js referensi.
+	// Link sengaja ditampilkan UTUH (tanpa dipotong/dipendekkan): owner perlu
+	// melihat URL lengkapnya untuk memeriksa hasil resolve.
+	_ = store.ReplyText(ctx, mctx, "Mengunduh\n"+info.VideoURL)
 
 	if info.IsHLS {
-		return sendXpvidHLS(ctx, mctx, info)
+		return sendXpvidHLS(ctx, mctx, info, docMode)
 	}
 
-	data, err := external.DownloadBytesWithHeaders(ctx, info.VideoURL, map[string]string{
+	blob, err := external.DownloadBlobLimit(ctx, info.VideoURL, map[string]string{
 		"Referer": info.Referer,
-	})
+	}, xpvidMaxFileSize)
 	if err != nil {
 		return fmt.Errorf("gagal unduh video: %v", err)
 	}
-	filename := xpvidFilename(info.Title)
-	if docMode {
-		return sendGetDocument(ctx, mctx, data, "video/mp4", filename)
+	defer blob.Close()
+	return sendXpvidBlob(ctx, mctx, blob, info.Title, docMode)
+}
+
+// sendXpvidBlob mengirim hasil unduhan sesuai ukurannya: <=100MB dibaca ke
+// RAM supaya bisa diputar inline, di atas itu tetap di disk dan diupload
+// streaming (tidak pernah utuh di memori).
+func sendXpvidBlob(ctx context.Context, mctx *store.MessageContext, blob *spool.Blob, title string, docMode bool) error {
+	filename := xpvidFilename(title)
+	if xpvidSendAsDocument(int(blob.Size()), docMode) {
+		return sendGetDocumentBlob(ctx, mctx, blob, "video/mp4", filename)
+	}
+	data, err := blob.Bytes()
+	if err != nil {
+		return fmt.Errorf("gagal baca video: %v", err)
 	}
 	return sendGetMedia(ctx, mctx, data, "video/mp4", whatsmeow.MediaVideo, filename, "video")
 }
 
+// xpvidSendAsDocument memutuskan bentuk kiriman berdasarkan ukuran hasil:
+// dokumen bila mode d diminta atau berkas melebihi 100MB, selain itu video.
+// Dipisah supaya ambangnya bisa diuji tanpa jaringan/klien WhatsApp.
+func xpvidSendAsDocument(size int, docMode bool) bool {
+	return docMode || size > xpvidVideoMaxSize
+}
+
 // sendXpvidHLS me-remux stream HLS jadi MP4 tanpa re-encode (copy video,
-// AAC audio — pola convertHLS referensi) lalu mengirimnya sebagai dokumen
-// (WhatsApp tidak memutar .m3u8). Input berupa URL remote sehingga tidak
-// reuse runFfmpegConvert (yang didesain untuk input byte lokal) — exec
-// ditulis eksplisit dengan pola temp+stderr+timeout yang sama. Output dicek
-// ke cap .get (100MB).
-func sendXpvidHLS(ctx context.Context, mctx *store.MessageContext, info *external.XpvidInfo) error {
+// AAC audio — pola convertHLS referensi) lalu mengirimnya sebagai video bila
+// <=100MB, selain itu (atau docMode) sebagai dokumen — WhatsApp tidak
+// memutar .m3u8. Input berupa URL remote sehingga tidak reuse
+// runFfmpegConvert (yang didesain untuk input byte lokal) — exec ditulis
+// eksplisit dengan pola temp+stderr+timeout yang sama. Output dicek ke batas
+// .bk (500MB).
+func sendXpvidHLS(ctx context.Context, mctx *store.MessageContext, info *external.XpvidInfo, docMode bool) error {
 	baseTmp, err := store.BotTempDir()
 	if err != nil {
 		return fmt.Errorf("gagal siapkan temp: %v", err)
@@ -130,7 +169,7 @@ func sendXpvidHLS(ctx context.Context, mctx *store.MessageContext, info *externa
 	defer os.RemoveAll(dir)
 	outPath := filepath.Join(dir, "out.mp4")
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, dlTimeout)
+	timeoutCtx, cancel := context.WithTimeout(ctx, xpvidHLSTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(timeoutCtx, "ffmpeg",
 		"-headers", "Referer: "+xpvidRefererDomain(info.VideoURL)+"\r\n",
@@ -142,19 +181,28 @@ func sendXpvidHLS(ctx context.Context, mctx *store.MessageContext, info *externa
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		if timeoutCtx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("konversi melebihi %s, dibatalkan.", dlTimeout)
+			return fmt.Errorf("konversi melebihi %s, dibatalkan.", xpvidHLSTimeout)
 		}
 		return fmt.Errorf("gagal konversi stream: %v", firstDlErrorLine(stderr.Bytes()))
 	}
 
-	mp4, err := os.ReadFile(outPath)
-	if err != nil || len(mp4) == 0 {
+	st, err := os.Stat(outPath)
+	if err != nil || st.Size() == 0 {
 		return fmt.Errorf("hasil konversi kosong")
 	}
-	if len(mp4) > getMaxFileSize {
-		return fmt.Errorf("hasil %.0f MB melebihi batas %d MB.", float64(len(mp4))/(1<<20), getMaxFileSize/(1<<20))
+	if st.Size() > xpvidMaxFileSize {
+		return fmt.Errorf("hasil %.0f MB melebihi batas %d MB.", float64(st.Size())/(1<<20), xpvidMaxFileSize>>20)
 	}
-	return sendGetDocument(ctx, mctx, mp4, "video/mp4", xpvidFilename(info.Title))
+	// Berkas besar dikirim langsung dari disk: os.ReadFile di sini dulu
+	// menambah salinan 500MB di RAM tepat sebelum upload.
+	if xpvidSendAsDocument(int(st.Size()), docMode) {
+		return sendGetDocumentPath(ctx, mctx, outPath, "video/mp4", xpvidFilename(info.Title))
+	}
+	mp4, err := os.ReadFile(outPath)
+	if err != nil {
+		return fmt.Errorf("gagal baca hasil konversi: %v", err)
+	}
+	return sendGetMedia(ctx, mctx, mp4, "video/mp4", whatsmeow.MediaVideo, xpvidFilename(info.Title), "video")
 }
 
 // xpvidBlockHint menambahkan penjelasan saat error mengarah ke pemblokiran

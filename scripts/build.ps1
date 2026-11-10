@@ -1,4 +1,4 @@
-﻿# build.ps1
+# build.ps1
 # Build binary Linux untuk panel — TANPA sync/upload. Hasilnya di root proyek
 # (`wabot-go-linux`), siap diunggah manual lewat File Manager panel Pterodactyl.
 #
@@ -37,19 +37,13 @@ Set-Location -LiteralPath $Root
 # ---------- Helper tampilan ----------
 
 function Write-Divider {
-    Write-Host ("─" * 65) -ForegroundColor DarkGray
+    Write-Host ("-" * 65) -ForegroundColor DarkGray
 }
 
-# Banner ASCII "FLORA GO" — sama dengan deploy.ps1 supaya tampilannya konsisten.
+# Banner ASCII "FLORA GO" - sama dengan deploy.ps1 supaya tampilannya konsisten.
 function Write-Banner {
-    $banner = @"
-███████╗██╗      ██████╗ ██████╗  █████╗      ██████╗  ██████╗
-██╔════╝██║     ██╔═══██╗██╔══██╗██╔══██╗    ██╔════╝ ██╔═══██╗
-█████╗  ██║     ██║   ██║██████╔╝███████║    ██║  ███╗██║   ██║
-██╔══╝  ██║     ██║   ██║██╔══██╗██╔══██║    ██║   ██║██║   ██║
-██║     ███████╗╚██████╔╝██║  ██║██║  ██║    ╚██████╔╝╚██████╔╝
-╚═╝     ╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝     ╚═════╝  ╚═════╝
-"@
+    $bannerB64 = "4paI4paI4paI4paI4paI4paI4paI4pWX4paI4paI4pWXICAgICAg4paI4paI4paI4paI4paI4paI4pWXIOKWiOKWiOKWiOKWiOKWiOKWiOKVlyAg4paI4paI4paI4paI4paI4pWXICAgICAg4paI4paI4paI4paI4paI4paI4pWXICDilojilojilojilojilojilojilZcK4paI4paI4pWU4pWQ4pWQ4pWQ4pWQ4pWd4paI4paI4pWRICAgICDilojilojilZTilZDilZDilZDilojilojilZfilojilojilZTilZDilZDilojilojilZfilojilojilZTilZDilZDilojilojilZcgICAg4paI4paI4pWU4pWQ4pWQ4pWQ4pWQ4pWdIOKWiOKWiOKVlOKVkOKVkOKVkOKWiOKWiOKVlwrilojilojilojilojilojilZcgIOKWiOKWiOKVkSAgICAg4paI4paI4pWRICAg4paI4paI4pWR4paI4paI4paI4paI4paI4paI4pWU4pWd4paI4paI4paI4paI4paI4paI4paI4pWRICAgIOKWiOKWiOKVkSAg4paI4paI4paI4pWX4paI4paI4pWRICAg4paI4paI4pWRCuKWiOKWiOKVlOKVkOKVkOKVnSAg4paI4paI4pWRICAgICDilojilojilZEgICDilojilojilZHilojilojilZTilZDilZDilojilojilZfilojilojilZTilZDilZDilojilojilZEgICAg4paI4paI4pWRICAg4paI4paI4pWR4paI4paI4pWRICAg4paI4paI4pWRCuKWiOKWiOKVkSAgICAg4paI4paI4paI4paI4paI4paI4paI4pWX4pWa4paI4paI4paI4paI4paI4paI4pWU4pWd4paI4paI4pWRICDilojilojilZHilojilojilZEgIOKWiOKWiOKVkSAgICDilZrilojilojilojilojilojilojilZTilZ3ilZrilojilojilojilojilojilojilZTilZ0K4pWa4pWQ4pWdICAgICDilZrilZDilZDilZDilZDilZDilZDilZ0g4pWa4pWQ4pWQ4pWQ4pWQ4pWQ4pWdIOKVmuKVkOKVnSAg4pWa4pWQ4pWd4pWa4pWQ4pWdICDilZrilZDilZ0gICAgIOKVmuKVkOKVkOKVkOKVkOKVkOKVnSAg4pWa4pWQ4pWQ4pWQ4pWQ4pWQ4pWd"
+    $banner = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($bannerB64))
     Write-Host $banner -ForegroundColor Green
 }
 
@@ -62,17 +56,17 @@ function Write-Header {
 
 function Write-Step {
     param([string]$Text)
-    Write-Host " → $Text" -ForegroundColor Yellow
+    Write-Host " -> $Text" -ForegroundColor Yellow
 }
 
 function Write-Ok {
     param([string]$Text)
-    Write-Host " ✔ $Text" -ForegroundColor Green
+    Write-Host " [OK] $Text" -ForegroundColor Green
 }
 
 function Write-Err {
     param([string]$Text)
-    Write-Host " ✘ $Text" -ForegroundColor Red
+    Write-Host " [X] $Text" -ForegroundColor Red
 }
 
 function Format-Size {
@@ -98,7 +92,7 @@ Write-Step "Menentukan versi..."
 
 if ($Keep) {
     if (-not (Test-Path "VERSION")) {
-        Write-Err "VERSION tidak ditemukan — jalankan tanpa -Keep agar dibuat otomatis."
+        Write-Err "VERSION tidak ditemukan - jalankan tanpa -Keep agar dibuat otomatis."
         exit 1
     }
     $BotVersion = (Get-Content "VERSION" -Raw).Trim()
@@ -134,7 +128,7 @@ $env:GOARCH = "amd64"
 # lintas-platform tidak bergantung pada toolchain C di mesin Windows.
 $env:CGO_ENABLED = "0"
 
-go build -ldflags "-X wabot-go/internal/config.BotVersion=$BotVersion" -o $Out .
+go build -buildvcs=false -ldflags "-X wabot-go/internal/config.BotVersion=$BotVersion" -o $Out .
 
 if ($LASTEXITCODE -ne 0) {
     Write-Err "Build gagal."
@@ -158,7 +152,7 @@ try {
 
 Write-Ok "Build sukses ($sizeText)"
 if (-not $isElf) {
-    Write-Err "PERINGATAN: file tidak ber-magic ELF — kemungkinan target build salah."
+    Write-Err "PERINGATAN: file tidak ber-magic ELF - kemungkinan target build salah."
 }
 
 # SHA-256 berguna untuk memastikan file yang ter-upload di panel memang file ini.
@@ -186,6 +180,6 @@ Write-Host "   1. Stop bot di panel Pterodactyl." -ForegroundColor DarkYellow
 Write-Host "   2. Upload '$Out' ke folder root panel (timpa file lama)." -ForegroundColor DarkYellow
 Write-Host "   3. Start bot, lalu cek versi lewat perintah bot." -ForegroundColor DarkYellow
 Write-Divider
-Write-Host "  Build selesai ✔" -ForegroundColor Green
+Write-Host "  Build selesai [OK]" -ForegroundColor Green
 Write-Divider
 Write-Host ""

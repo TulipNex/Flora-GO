@@ -27,7 +27,7 @@ func init() {
 			"Hanya untuk OWNER (ditolak untuk non-owner). " +
 			"Semua filter opsional dan digabung AND; makin banyak patokan makin sedikit hasil. " +
 			"Kosongkan dari+sampai untuk 30 hari terakhir; limit default 50 (maks 500, terbaru dulu). " +
-			"Hasil berupa baris {id,transaksi,masuk,keluar,sumber,tanggal,input} — rujuk baris via id.",
+			"Hasil berupa baris {id,transaksi,masuk,keluar,sumber,tanggal,saldo(kas,rek,total),input} — rujuk baris via id.",
 		Parameters: ai.ParameterSchema{
 			Type: "OBJECT",
 			Properties: map[string]ai.PropertySchema{
@@ -122,6 +122,13 @@ func init() {
 			for _, r := range rows {
 				fmt.Fprintf(&sb, "\n%v | %v | masuk:%v keluar:%v | sumber:%v | %v",
 					r.ID, r.Transaksi, numOrDashInt(r.Masuk), numOrDashInt(r.Keluar), r.Sumber, r.Tanggal)
+				if r.SaldoKas != nil && r.SaldoRekening != nil {
+					if r.Saldo != nil {
+						fmt.Fprintf(&sb, " | saldo(kas:%v, rek:%v, total:%v)", *r.SaldoKas, *r.SaldoRekening, *r.Saldo)
+					} else {
+						fmt.Fprintf(&sb, " | saldo(kas:%v, rek:%v)", *r.SaldoKas, *r.SaldoRekening)
+					}
+				}
 				if r.InputAt != "" {
 					fmt.Fprintf(&sb, " | input:%v", r.InputAt)
 				}

@@ -70,6 +70,10 @@ func parseCarouselArgs(raw string) (mode, title string) {
 }
 
 func handleCarouselTest(ctx context.Context, mctx *store.MessageContext) error {
+	// Command uji pengembang: hanya owner.
+	if msg := requireOwner(mctx); msg != "" {
+		return store.ReplyText(ctx, mctx, msg)
+	}
 	mode, title := parseCarouselArgs(mctx.RawArgs)
 	if err := carouselSend(ctx, mctx, mode, title); err != nil {
 		return store.ReplyText(ctx, mctx, "Gagal kirim carousel: "+err.Error())

@@ -16,6 +16,7 @@ import (
 
 	"wabot-go/internal/config"
 	"wabot-go/internal/logfmt"
+	"wabot-go/internal/sqlxlsx"
 	"wabot-go/internal/store"
 	"wabot-go/internal/timex"
 
@@ -32,8 +33,10 @@ func init() {
 // backup.go — backup database bot untuk owner (khusus DM/pribadi, owner-only).
 //
 //   - .backup            : snapshot SEMUA file data/*.db → ZIP dikirim ke chat.
-//   - .backup list       : daftar file database + ukuran.
-//   - .backup get <nama> : snapshot 1 file database → dikirim sebagai .db.
+//   - .backup list       : daftar file database + ukuran + nomor urut.
+//   - .backup <nomor>    : ambil 1 file DB berdasarkan nomor urut (default output .xlsx).
+//   - .backup <nomor> -db: ambil 1 file DB berdasarkan nomor urut (output format .db).
+//   - .backup get <nama> : backward-compatible: snapshot 1 file database via nama.
 //   - .backup jadwal ... : backup otomatis berinterval, hasil ke DM owner.
 //
 // Semua snapshot dibuat lewat store.SnapshotDB (VACUUM INTO) supaya konsisten
@@ -57,12 +60,20 @@ func RegisterBackup(r *Registry) {
 	})
 }
 
-const backupUsage = `*Backup Database*
-.backup — kirim semua DB (ZIP)
-.backup list — daftar file DB
-.backup get <nama> — kirim 1 file .db
-.backup jadwal <interval|off> — backup otomatis
-  contoh: 30m · 6h · 1d`
+const backupUsage = `*DATABASE BACKUP*
+Panel cadangan & ekspor database SQLite.
+
+*Perintah:*
+• *.backup*
+> Unduh seluruh database (arsip .zip)
+• *.backup list*
+> Lihat daftar file database & nomor urut
+• *.backup <nomor>*
+> Ekspor database terpilih ke Excel (.xlsx)
+• *.backup <nomor> -db*
+> Unduh file database asli (.db)
+• *.backup jadwal <interval|off>*
+> Atur backup otomatis (contoh: 30m, 6h, 1d)`
 
 func handleBackup(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireOwner(mctx); msg != "" {
@@ -80,6 +91,12 @@ func handleBackup(ctx context.Context, mctx *store.MessageContext) error {
 	if len(mctx.Args) > 0 {
 		sub = strings.ToLower(strings.TrimSpace(mctx.Args[0]))
 	}
+
+	// Cek apakah argumen pertama adalah nomor urut
+	if _, err := strconv.Atoi(sub); err == nil {
+		return backupByNumber(ctx, mctx)
+	}
+
 	switch sub {
 	case "":
 		return backupAll(ctx, mctx)
@@ -111,7 +128,7 @@ func backupAll(ctx context.Context, mctx *store.MessageContext) error {
 	if err != nil || len(paths) == 0 {
 		return store.ReplyText(ctx, mctx, "Tidak ada file database ditemukan.")
 	}
-	if err := store.ReplyText(ctx, mctx, "Menyiapkan backup…"); err != nil {
+	if err := store.ReplyText(ctx, mctx, "Menyiapkan snapshot seluruh database…"); err != nil {
 		return err
 	}
 	chat := mctx.Chat
@@ -139,19 +156,100 @@ func backupList(ctx context.Context, mctx *store.MessageContext) error {
 	if err != nil || len(paths) == 0 {
 		return store.ReplyText(ctx, mctx, "Tidak ada file database ditemukan.")
 	}
-	var sb strings.Builder
-	sb.WriteString("*Database Flora*\n")
 	var total int64
+	for _, p := range paths {
+		if fi, err := os.Stat(p); err == nil {
+			total += fi.Size()
+		}
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "*DAFTAR DATABASE*\nTotal: %d file (%s)\n\n", len(paths), humanBytes(total))
 	for i, p := range paths {
 		var size int64
 		if fi, err := os.Stat(p); err == nil {
 			size = fi.Size()
 		}
-		total += size
-		fmt.Fprintf(&sb, "%d. %s — %s\n", i+1, filepath.Base(p), humanBytes(size))
+		fmt.Fprintf(&sb, "%d. *%s* (%s)\n", i+1, filepath.Base(p), humanBytes(size))
 	}
-	fmt.Fprintf(&sb, "\nTotal: %d file · %s\nAmbil satu: .backup get <nama>", len(paths), humanBytes(total))
+	sb.WriteString("\n_Ketik *.backup <no>* untuk unduh Excel (.xlsx)_\n")
+	sb.WriteString("_Ketik *.backup <no> -db* untuk file SQLite (.db)_")
 	return store.ReplyText(ctx, mctx, sb.String())
+}
+
+// backupByNumber snapshot satu file DB berdasarkan nomor urut di listDBFiles.
+// Default format: Excel (.xlsx). Jika diberi flag "-db", format: SQLite (.db).
+func backupByNumber(ctx context.Context, mctx *store.MessageContext) error {
+	numStr := strings.TrimSpace(mctx.Args[0])
+	num, err := strconv.Atoi(numStr)
+	if err != nil || num <= 0 {
+		return store.ReplyText(ctx, mctx, "Nomor urut tidak valid. Ketik .backup list untuk melihat daftar.")
+	}
+
+	paths, err := listDBFiles()
+	if err != nil || len(paths) == 0 {
+		return store.ReplyText(ctx, mctx, "Tidak ada file database ditemukan.")
+	}
+	if num > len(paths) {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Nomor urut %d tidak ditemukan (maksimal %d).\nKetik .backup list untuk melihat daftar.", num, len(paths)))
+	}
+
+	src := paths[num-1]
+	want := filepath.Base(src)
+
+	formatDB := false
+	for _, a := range mctx.Args[1:] {
+		if strings.EqualFold(strings.TrimSpace(a), "-db") {
+			formatDB = true
+			break
+		}
+	}
+
+	if formatDB {
+		_ = store.ReplyText(ctx, mctx, fmt.Sprintf("Menyiapkan file database %s…", want))
+	} else {
+		_ = store.ReplyText(ctx, mctx, fmt.Sprintf("Mengonversi %s ke Excel (.xlsx)…", want))
+	}
+
+	workDir, err := os.MkdirTemp(store.MustBotTempDir(), "backup-*")
+	if err != nil {
+		return store.ReplyText(ctx, mctx, "Gagal menyiapkan temp: "+err.Error())
+	}
+	defer os.RemoveAll(workDir)
+
+	stamp := time.Now().In(timex.Zone()).Format("20060102-150405")
+	baseNoExt := strings.TrimSuffix(want, ".db")
+
+	snap := filepath.Join(workDir, baseNoExt+"-"+stamp+".db")
+	if err := store.SnapshotDB(src, snap); err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal snapshot %s: %v", want, err))
+	}
+
+	if formatDB {
+		data, err := os.ReadFile(snap)
+		if err != nil {
+			return store.ReplyText(ctx, mctx, "Gagal membaca snapshot: "+err.Error())
+		}
+		outName := baseNoExt + "-" + stamp + ".db"
+		caption := fmt.Sprintf("*SNAPSHOT DATABASE SQLITE*\n• *File:* %s\n• *Ukuran:* %s\n• *Waktu:* %s",
+			want, humanBytes(int64(len(data))), time.Now().In(timex.Zone()).Format("02 Jan 2006, 15:04 MST"))
+		return sendDocBytes(ctx, mctx.Client, mctx.Chat, outName, "application/vnd.sqlite3", data, caption)
+	}
+
+	// Format default: XLSX
+	f := sqlxlsx.NewWorkbook()
+	rep, err := sqlxlsx.ConvertInto(f, snap, "", sqlxlsx.Options{IncludeInfo: true})
+	if err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal konversi ke Excel: %v", err))
+	}
+	xlsxBytes, err := sqlxlsx.Render(f)
+	if err != nil {
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal render Excel: %v", err))
+	}
+
+	outName := baseNoExt + "-" + stamp + ".xlsx"
+	caption := fmt.Sprintf("*EXPORT DATABASE EXCEL*\n• *File:* %s\n• *Tabel:* %d sheet\n• *Total Baris:* %d baris\n• *Ukuran:* %s\n• *Waktu:* %s",
+		want, len(rep.Tables), rep.TotalRows, humanBytes(int64(len(xlsxBytes))), time.Now().In(timex.Zone()).Format("02 Jan 2006, 15:04 MST"))
+	return sendDocBytes(ctx, mctx.Client, mctx.Chat, outName, xlsxMIME, xlsxBytes, caption)
 }
 
 // backupGet snapshot satu file DB → dikirim sebagai .db.
@@ -191,8 +289,8 @@ func backupGet(ctx context.Context, mctx *store.MessageContext) error {
 	if err != nil {
 		return store.ReplyText(ctx, mctx, "Gagal membaca snapshot: "+err.Error())
 	}
-	caption := fmt.Sprintf("*%s*\nSnapshot %s · %s", want,
-		time.Now().In(timex.Zone()).Format("02 Jan 2006 15:04"), humanBytes(int64(len(data))))
+	caption := fmt.Sprintf("*SNAPSHOT DATABASE SQLITE*\n• *File:* %s\n• *Ukuran:* %s\n• *Waktu:* %s",
+		want, humanBytes(int64(len(data))), time.Now().In(timex.Zone()).Format("02 Jan 2006, 15:04 MST"))
 	return sendDocBytes(ctx, mctx.Client, mctx.Chat, outName, "application/vnd.sqlite3", data, caption)
 }
 
@@ -207,7 +305,7 @@ func backupSchedule(ctx context.Context, mctx *store.MessageContext) error {
 		if err := g.SetBackupSchedule(ctx, 0); err != nil {
 			return store.ReplyText(ctx, mctx, "Gagal menyimpan: "+err.Error())
 		}
-		return store.ReplyText(ctx, mctx, "*Backup Otomatis*\nDimatikan.")
+		return store.ReplyText(ctx, mctx, "*BACKUP OTOMATIS DIMATIKAN*\nJadwal rutin telah dinonaktifkan. Anda tetap dapat melakukan backup manual kapan saja dengan *.backup*.")
 	}
 	mins, err := parseBackupInterval(arg)
 	if err != nil {
@@ -223,24 +321,24 @@ func backupSchedule(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	next := now.Add(time.Duration(mins) * time.Minute)
 	return store.ReplyText(ctx, mctx, fmt.Sprintf(
-		"*Backup Otomatis*\nDiaktifkan: tiap %s\nBackup pertama: %s\nHasil dikirim otomatis ke DM owner.",
-		humanDuration(mins), next.In(timex.Zone()).Format("02 Jan 2006 15:04")))
+		"*JADWAL BACKUP BERHASIL DIATUR*\n• *Interval:* Tiap %s\n• *Eksekusi Pertama:* %s\n• *Tujuan:* DM Owner (dokumen .zip)",
+		humanDuration(mins), next.In(timex.Zone()).Format("02 Jan 2006, 15:04 MST")))
 }
 
 func backupScheduleStatus(ctx context.Context, g *store.GroupDB) string {
 	mins, _ := g.GetBackupSchedule(ctx)
 	if mins <= 0 {
-		return "*Backup Otomatis*\nStatus: mati\nAtur: .backup jadwal 6h   (contoh: 30m · 6h · 1d)"
+		return "*STATUS BACKUP OTOMATIS*\n• *Status:* Nonaktif\n\n_Aktifkan dengan: *.backup jadwal <interval>*_\n_Contoh: *.backup jadwal 6h* (pilihan: 30m, 6h, 1d)_"
 	}
 	last, _ := g.GetBackupLastRun(ctx)
 	next := last.Add(time.Duration(mins) * time.Minute)
 	lastStr := "belum pernah"
 	if !last.IsZero() {
-		lastStr = last.In(timex.Zone()).Format("02 Jan 2006 15:04")
+		lastStr = last.In(timex.Zone()).Format("02 Jan 2006, 15:04 MST")
 	}
 	return fmt.Sprintf(
-		"*Backup Otomatis*\nStatus: aktif — tiap %s\nTerakhir: %s\nBerikutnya: %s\nMatikan: .backup jadwal off",
-		humanDuration(mins), lastStr, next.In(timex.Zone()).Format("02 Jan 2006 15:04"))
+		"*STATUS BACKUP OTOMATIS*\n• *Status:* Aktif\n• *Interval:* Tiap %s\n• *Terakhir:* %s\n• *Berikutnya:* %s\n\n_Untuk mematikan: *.backup jadwal off*_",
+		humanDuration(mins), lastStr, next.In(timex.Zone()).Format("02 Jan 2006, 15:04 MST"))
 }
 
 // parseBackupInterval menerima "30m", "6h"/"6j", "1d", atau angka polos
@@ -352,9 +450,8 @@ func backupZipCaption(name string, dbPaths []string) string {
 			total += fi.Size()
 		}
 	}
-	return fmt.Sprintf("*Backup Flora — %s*\n%s\n%d file · %s",
-		time.Now().In(timex.Zone()).Format("02 Jan 2006 15:04"),
-		name, len(dbPaths), humanBytes(total))
+	return fmt.Sprintf("*FULL DATABASE BACKUP*\n• *Arsip:* %s\n• *Jumlah:* %d file database (.db)\n• *Total Ukuran:* %s\n• *Waktu:* %s",
+		name, len(dbPaths), humanBytes(total), time.Now().In(timex.Zone()).Format("02 Jan 2006, 15:04 MST"))
 }
 
 // sendDocBytes mengunggah byte dan mengirimnya sebagai dokumen WhatsApp.

@@ -66,6 +66,10 @@ func parseBooktestArgs(raw string) (variant, title string) {
 }
 
 func handleBooktest(ctx context.Context, mctx *store.MessageContext) error {
+	// Command uji pengembang: hanya owner.
+	if msg := requireOwner(mctx); msg != "" {
+		return store.ReplyText(ctx, mctx, msg)
+	}
 	variant, title := parseBooktestArgs(mctx.RawArgs)
 	if err := booktestSend(ctx, mctx, variant, title); err != nil {
 		return store.ReplyText(ctx, mctx, "Gagal kirim kartu booking: "+err.Error())

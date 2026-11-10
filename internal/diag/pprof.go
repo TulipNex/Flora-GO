@@ -9,7 +9,7 @@
 package diag
 
 import (
-	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -25,7 +25,7 @@ import (
 // Keamanan: host selain localhost/127.0.0.1/::1 dipaksa ke 127.0.0.1
 // (dengan port yang diminta) agar endpoint profil tidak pernah terekspos
 // ke jaringan publik secara tidak sengaja. Server berjalan di goroutine
-// terpisah; kegagalan bind hanya dicatat, tidak mematikan bot.
+// terpisah secara hening.
 func StartPprof() {
 	raw := strings.TrimSpace(os.Getenv("PPROF_ADDR"))
 	if raw == "" {
@@ -38,7 +38,6 @@ func StartPprof() {
 		if n, perr := strconv.Atoi(raw); perr == nil && n > 0 {
 			host, port = "127.0.0.1", raw
 		} else {
-			fmt.Printf("diag: PPROF_ADDR %q tidak valid (%v) — pprof tidak dinyalakan.\n", raw, err)
 			return
 		}
 	}
@@ -47,15 +46,16 @@ func StartPprof() {
 	}
 	low := strings.ToLower(host)
 	if low != "localhost" && low != "127.0.0.1" && low != "::1" {
-		fmt.Printf("diag: PPROF_ADDR host %q bukan localhost — dipaksa ke 127.0.0.1 (port %s).\n", host, port)
 		host = "127.0.0.1"
 	}
 	addr := net.JoinHostPort(host, port)
 
 	go func() {
-		fmt.Printf("diag: pprof aktif di http://%s/debug/pprof/ (matikan dengan kosongkan PPROF_ADDR)\n", addr)
+		// Sengaja dicatat: kalau bind gagal (port terpakai / izin), fitur
+		// profiling diam-diam tidak jalan dan dulu tidak ada jejaknya sama
+		// sekali. Pakai log stdlib karena paket ini leaf (tanpa impor repo).
 		if err := http.ListenAndServe(addr, nil); err != nil {
-			fmt.Printf("diag: server pprof berhenti: %v\n", err)
+			log.Printf("pprof: gagal listen di %s: %v", addr, err)
 		}
 	}()
 }

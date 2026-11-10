@@ -57,7 +57,8 @@ func RegisterSticker(r *Registry) {
 				return store.ReplyText(ctx, mctx, ErrMsg("Stiker", "Gagal convert ke stiker, coba file lain."))
 			}
 
-			webpBytes, err = store.WriteStickerExif(webpBytes, config.StickerPackname, config.StickerAuthor)
+			author := config.ResolveStickerAuthor(mctx.SenderPushName())
+			webpBytes, err = store.WriteStickerExif(webpBytes, config.ResolveStickerPackname(), author)
 			if err != nil {
 				logfmt.Warn("sticker: exif gagal (%v)\n", err)
 				return store.ReplyText(ctx, mctx, ErrMsg("Stiker", "Gagal siapkan stiker, coba lagi."))
@@ -84,10 +85,12 @@ func RegisterSticker(r *Registry) {
 // AI bisa menyampaikannya ke user.
 func BuildAndSendSticker(ctx context.Context, mctx *store.MessageContext, packname, author string) error {
 	if strings.TrimSpace(packname) == "" {
-		packname = config.StickerPackname
+		packname = config.ResolveStickerPackname()
 	}
 	if strings.TrimSpace(author) == "" {
-		author = config.StickerAuthor
+		author = config.ResolveStickerAuthor(mctx.SenderPushName())
+	} else if strings.EqualFold(author, "@user") {
+		author = mctx.SenderPushName()
 	}
 
 	img, vid, err := extractStickerMedia(mctx)
