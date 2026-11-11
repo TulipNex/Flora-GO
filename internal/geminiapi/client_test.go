@@ -3,6 +3,7 @@ package geminiapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,9 +29,18 @@ type fakeGemini struct {
 	setCookies []string
 
 	// lastReq mencatat permintaan chat terakhir untuk diperiksa tes.
-	lastQuery string
-	lastForm  string
-	lastCook  string
+	lastQuery  string
+	lastForm   string
+	lastCook   string
+	lastHeader http.Header
+
+	// headCook mencatat header Cookie pada HEAD halaman utama (dipakai tes
+	// cookie persetujuan).
+	headCook string
+
+	// rotateCookies membuat setiap HEAD mengembalikan NID berbeda, meniru
+	// sesi tamu baru (rotasi cookie / proses baru setelah restart).
+	rotateCookies bool
 }
 
 func newFakeGemini(t *testing.T, answer string) *fakeGemini {
@@ -46,9 +56,13 @@ func newFakeGemini(t *testing.T, answer string) *fakeGemini {
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodHead && r.URL.Path == "/":
-			atomic.AddInt32(&f.headCalls, 1)
+			n := atomic.AddInt32(&f.headCalls, 1)
 			f.mu.Lock()
+			f.headCook = r.Header.Get("Cookie")
 			cookies := append([]string(nil), f.setCookies...)
+			if f.rotateCookies {
+				cookies = []string{fmt.Sprintf("NID=guest-%d; Path=/", n)}
+			}
 			f.mu.Unlock()
 			for _, c := range cookies {
 				w.Header().Add("Set-Cookie", c)
@@ -68,6 +82,7 @@ func newFakeGemini(t *testing.T, answer string) *fakeGemini {
 			f.mu.Lock()
 			f.lastQuery = r.URL.RawQuery
 			f.lastCook = r.Header.Get("Cookie")
+			f.lastHeader = r.Header.Clone()
 			_ = r.ParseForm()
 			f.lastForm = r.PostForm.Get("f.req")
 			status, body := f.chatStatus, f.chatBody
@@ -137,7 +152,7 @@ func TestAskGuestFlowCachesCredentials(t *testing.T) {
 	if !strings.Contains(form, "lagi") {
 		t.Fatalf("f.req tidak memuat prompt terakhir: %q", form)
 	}
-	if cookie != "NID=guest-1" {
+	if cookie != "SOCS=CAI; NID=guest-1" {
 		t.Fatalf("cookie dikirim = %q", cookie)
 	}
 }
@@ -187,9 +202,12 @@ func TestAskLimitNotRetried(t *testing.T) {
 	}
 }
 
-// TestFetchGuestCookieUsesFirstSetCookie memastikan cookie yang dipakai adalah
-// Set-Cookie pertama (sama seperti referensi JS), bukan yang terakhir.
-func TestFetchGuestCookieUsesFirstSetCookie(t *testing.T) {
+// TestGuestCookieJarKeepsAllCookies mengunci perilaku keranjang cookie: SELURUH
+// Set-Cookie dipakai (bukan hanya yang pertama) dan cookie persetujuan selalu
+// ikut di depan. Versi lama hanya memakai cookie pertama; di panel itu
+// `__Secure-ENID` sehingga `NID` terbuang dan percakapan lanjutan dijawab
+// `1097` — bug yang dibuktikan lewat probe panel (Nov 2026).
+func TestGuestCookieJarKeepsAllCookies(t *testing.T) {
 	f := newFakeGemini(t, buildStreamLine(t, streamInner([]string{"ok"})))
 	f.mu.Lock()
 	f.setCookies = []string{"NID=pertama; Path=/", "AEC=kedua; Path=/"}
@@ -201,8 +219,49 @@ func TestFetchGuestCookieUsesFirstSetCookie(t *testing.T) {
 	f.mu.Lock()
 	cookie := f.lastCook
 	f.mu.Unlock()
-	if cookie != "NID=pertama" {
-		t.Fatalf("cookie = %q, mau NID=pertama", cookie)
+	if cookie != "SOCS=CAI; NID=pertama; AEC=kedua" {
+		t.Fatalf("cookie = %q, mau SOCS=CAI; NID=pertama; AEC=kedua", cookie)
+	}
+}
+
+// TestGuestCookieSendsConsentOnHead memastikan HEAD halaman utama sudah membawa
+// cookie persetujuan. Tanpa itu, IP yang kena dinding persetujuan (panel Eropa)
+// tidak diberi `NID` sama sekali.
+func TestGuestCookieSendsConsentOnHead(t *testing.T) {
+	f := newFakeGemini(t, buildStreamLine(t, streamInner([]string{"ok"})))
+	if _, err := New().Ask(context.Background(), "halo"); err != nil {
+		t.Fatalf("ask: %v", err)
+	}
+	f.mu.Lock()
+	cookie := f.headCook
+	f.mu.Unlock()
+	if cookie != consentCookie {
+		t.Fatalf("HEAD cookie = %q, mau %q", cookie, consentCookie)
+	}
+}
+
+// TestGuestCookieKeepsNIDWhenNotFirst meniru urutan cookie panel: `__Secure-ENID`
+// lebih dulu, `NID` menyusul. `NID` wajib tetap terkirim saat chat.
+func TestGuestCookieKeepsNIDWhenNotFirst(t *testing.T) {
+	f := newFakeGemini(t, buildStreamLine(t, streamInner([]string{"ok"})))
+	f.mu.Lock()
+	f.setCookies = []string{"__Secure-ENID=enid; Path=/", "NID=nid-1; Path=/", "COMPASS=compass; Path=/"}
+	f.mu.Unlock()
+
+	c := New()
+	if _, err := c.Ask(context.Background(), "halo"); err != nil {
+		t.Fatalf("ask: %v", err)
+	}
+	f.mu.Lock()
+	cookie := f.lastCook
+	f.mu.Unlock()
+	for _, want := range []string{"NID=nid-1", "COMPASS=compass", consentCookie} {
+		if !strings.Contains(cookie, want) {
+			t.Fatalf("cookie chat %q tidak memuat %q", cookie, want)
+		}
+	}
+	if names := strings.Join(c.CookieNames(), ","); names != "SOCS,__Secure-ENID,NID,COMPASS" {
+		t.Fatalf("CookieNames = %q", names)
 	}
 }
 
@@ -281,5 +340,99 @@ func TestPingForcesFreshCredentials(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&f.headCalls); got != 2 {
 		t.Fatalf("HEAD dipanggil %d kali, mau 2", got)
+	}
+}
+
+// TestCookieIdentityUsesNIDOnly mengunci dasar sidik jari sesi tamu: hanya
+// nilai `NID` yang menentukan identitas percakapan. Cookie lain atau urutan
+// yang berbeda tidak boleh membatalkan tiket, karena tiket hanya berlaku
+// selama `NID` yang membuatnya sama (probe Nov 2026).
+func TestCookieIdentityUsesNIDOnly(t *testing.T) {
+	a := cookieIdentity("SOCS=CAI; NID=abc; COMPASS=x")
+	b := cookieIdentity("SOCS=CAI; AEC=y; NID=abc")
+	if a == "" || a != b {
+		t.Fatalf("sidik jari harus sama walau cookie lain berbeda: %q vs %q", a, b)
+	}
+	if a == cookieIdentity("SOCS=CAI; NID=lain") {
+		t.Fatal("NID berbeda harus menghasilkan sidik jari berbeda")
+	}
+	if cookieIdentity("") != "" {
+		t.Fatal("cookie kosong harus menghasilkan sidik jari kosong")
+	}
+	if cookieIdentity("SOCS=CAI") == "" {
+		t.Fatal("cookie tanpa NID tetap harus punya sidik jari (cadangan)")
+	}
+}
+
+// TestTicketStaleWhenCookieChanged mengunci penghematan kuota: tiket dari sesi
+// tamu lain (cookie/NID berbeda) tidak dikirim sama sekali, karena server pasti
+// menjawab `1097`. Tanpa ini setiap rotasi cookie membakar satu permintaan dan
+// mencetak baris "tiket percakapan ditolak" yang menyesatkan.
+func TestTicketStaleWhenCookieChanged(t *testing.T) {
+	f := newFakeGemini(t, buildStreamLine(t, streamInner([]string{"Halo"})))
+	c := New()
+	ctx := context.Background()
+	if _, err := c.Ask(ctx, "halo"); err != nil {
+		t.Fatalf("ask: %v", err)
+	}
+	id := c.CookieID()
+	if id == "" {
+		t.Fatal("CookieID kosong setelah cookie diambil")
+	}
+
+	before := atomic.LoadInt32(&f.chatCalls)
+	_, err := c.AskWith(ctx, "lanjut", Resume{ConversationID: "c_lama", CookieID: "sidik-jari-lain"})
+	if !errors.Is(err, ErrTicketStale) {
+		t.Fatalf("err = %v, mau ErrTicketStale", err)
+	}
+	if got := atomic.LoadInt32(&f.chatCalls); got != before {
+		t.Fatalf("permintaan tetap dikirim (%d → %d), harusnya tidak dikirim", before, got)
+	}
+	if c.TicketRejected() {
+		t.Fatal("tiket basi tidak boleh memicu jeda tiket (bukan penolakan server)")
+	}
+
+	// Sidik jari yang cocok tetap dipakai.
+	if _, err := c.AskWith(ctx, "lanjut", Resume{ConversationID: "c_baru", CookieID: id}); err != nil {
+		t.Fatalf("ask dengan tiket cocok: %v", err)
+	}
+}
+
+// TestDiagAndPingKeepSessionCookie mengunci bug nyata Nov 2026: `.gemini status`
+// memanggil Ping dan `.gemini diag` memanggil Diag, keduanya mengambil cookie
+// baru. Cookie baru = sesi tamu baru (NID lain) = tiket percakapan yang sedang
+// hidup langsung jadi asing. Owner melihat `1097` tepat setelah menjalankan
+// status/diag. Keduanya harus mengembalikan kredensial lama.
+func TestDiagAndPingKeepSessionCookie(t *testing.T) {
+	f := newFakeGemini(t, buildStreamLine(t, streamInner([]string{"Halo"})))
+	f.mu.Lock()
+	f.rotateCookies = true
+	f.mu.Unlock()
+
+	c := New()
+	ctx := context.Background()
+	if _, err := c.Ask(ctx, "halo"); err != nil {
+		t.Fatalf("ask: %v", err)
+	}
+	id := c.CookieID()
+
+	if err := c.Ping(ctx); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+	if got := c.CookieID(); got != id {
+		t.Fatalf("Ping mengganti sesi tamu: %q → %q", id, got)
+	}
+	if d := c.Diag(ctx); !d.Chat.OK {
+		t.Fatalf("diag chat gagal: %+v", d.Chat)
+	}
+	if got := c.CookieID(); got != id {
+		t.Fatalf("Diag mengganti sesi tamu: %q → %q", id, got)
+	}
+	// Tiket yang dibuat sebelum status/diag harus tetap diterima.
+	if _, err := c.AskWith(ctx, "lanjut", Resume{ConversationID: "c_1", CookieID: id}); err != nil {
+		t.Fatalf("tiket jadi basi gara-gara status/diag: %v", err)
+	}
+	if got := atomic.LoadInt32(&f.headCalls); got < 3 {
+		t.Fatalf("Ping/Diag harus tetap mengambil cookie baru (HEAD = %d)", got)
 	}
 }

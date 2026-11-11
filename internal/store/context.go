@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
@@ -72,6 +73,49 @@ func ReplyText(ctx context.Context, mctx *MessageContext, text string) error {
 		TrackBotMessageID(resp.ID, text)
 		// Arsip keluar FIORA/CRM: async fire-and-forget supaya latensi
 		// reply nol; fail-soft di dalam bila DB arsip mati.
+		archiveOutgoingIfMain(mctx, string(resp.ID), outMsg)
+	}
+	return err
+}
+
+// ReplyLocation mengirim "pin lokasi" (LocationMessage) yang me-reply pesan
+// pemicu. Dipakai `.gemini` untuk mengganti link Google Maps di jawaban dengan
+// bubble lokasi sungguhan: nama tampil tebal, alamat di baris bawahnya, dan
+// tombol "Buka di peta" mengikuti koordinat. Konteks chat WA sendiri tidak bisa
+// menampilkan pratinjau peta untuk link mentah, jadi pin inilah bentuk yang
+// bisa diketuk langsung.
+func ReplyLocation(ctx context.Context, mctx *MessageContext, name, address string, lat, lng float64) error {
+	return sendLocation(ctx, mctx, true, name, address, lat, lng)
+}
+
+// SendLocation mengirim pin lokasi sebagai pesan lepas (tanpa quote), dipakai
+// bubble lanjutan pada jawaban multi-bubble.
+func SendLocation(ctx context.Context, mctx *MessageContext, name, address string, lat, lng float64) error {
+	return sendLocation(ctx, mctx, false, name, address, lat, lng)
+}
+
+func sendLocation(ctx context.Context, mctx *MessageContext, reply bool, name, address string, lat, lng float64) error {
+	if mctx == nil || mctx.Client == nil {
+		return fmt.Errorf("konteks pesan tidak tersedia")
+	}
+	outMsg := &waE2E.Message{
+		LocationMessage: &waE2E.LocationMessage{
+			DegreesLatitude:  proto.Float64(lat),
+			DegreesLongitude: proto.Float64(lng),
+			Name:             proto.String(name),
+			Address:          proto.String(address),
+		},
+	}
+	if reply && mctx.RawEvt != nil && mctx.RawEvt.Info.ID != "" {
+		outMsg.LocationMessage.ContextInfo = &waE2E.ContextInfo{
+			StanzaID:      proto.String(mctx.RawEvt.Info.ID),
+			Participant:   proto.String(mctx.Sender.String()),
+			QuotedMessage: mctx.RawEvt.Message,
+		}
+	}
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, outMsg)
+	if err == nil {
+		LogOutgoing(mctx, "location", name)
 		archiveOutgoingIfMain(mctx, string(resp.ID), outMsg)
 	}
 	return err

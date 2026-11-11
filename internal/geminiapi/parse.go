@@ -10,35 +10,6 @@ import (
 	"time"
 )
 
-// buildChatRequest menyusun nilai f.req untuk mode tamu (tanpa login).
-// Bentuknya tiga slot:
-//
-//	[[prompt], [lang], []]
-//
-// Slot ketiga adalah resumeArray percakapan. Mode tamu tidak bisa melanjutkan
-// percakapan (server membalas 1097), jadi selalu dikirim kosong dan konteks
-// dibawa sendiri oleh bot lewat prompt (lihat plugins/gemini.go).
-func buildChatRequest(prompt, lang string) string {
-	if strings.TrimSpace(lang) == "" {
-		lang = defaultLang
-	}
-	inner, err := json.Marshal([]any{
-		[]any{prompt},
-		[]any{lang},
-		[]any{},
-	})
-	if err != nil {
-		// Isinya hanya tipe JSON dasar; kegagalan di sini berarti bug
-		// pemrograman, bukan masukan pengguna.
-		return "[]"
-	}
-	outer, err := json.Marshal([]any{nil, string(inner)})
-	if err != nil {
-		return "[]"
-	}
-	return string(outer)
-}
-
 // defaultStreamIdle adalah lama diam yang dianggap "jawaban selesai" setelah
 // teks terakhir tiba. Server Gemini kadang tidak segera menutup koneksi
 // StreamGenerate setelah jawaban lengkap, jadi menunggu EOF membuat setiap
@@ -224,9 +195,50 @@ func handleLine(line string, res *Result) {
 		return // baris non-JSON (mis. penanda chunk) diabaikan
 	}
 	for _, p := range collectPayloads(v, nil, 0) {
+		extractPayloadIDs(p, res)
 		if text := extractPayloadText(p); len(text) > len(res.Text) {
 			res.Text = text
 		}
+	}
+}
+
+// extractPayloadIDs mengambil "tiket percakapan" dari payload balasan: id
+// percakapan (c_...) dan respons (r_...) di slot 1, serta id balasan di blok
+// pertama slot 4.
+//
+// Satu balasan bisa memuat LEBIH DARI SATU payload, dan payload berikutnya
+// membawa id percakapan LAIN — bukan lanjutan yang dipakai server. Uji live
+// (Nov 2026) membuktikannya: id dari payload pertama diterima (jawaban benar),
+// sedangkan id dari payload lain selalu ditolak `1097`. Karena itu tiket
+// diambil dari payload PERTAMA yang membawa `c_...`, beserta pasangan `r_...`
+// dari payload yang sama, lalu tidak pernah ditimpa. Id balasan (`rc_...`)
+// hanya diisi bila belum ada, karena sebagian baris tidak membawanya.
+func extractPayloadIDs(p []any, res *Result) {
+	if len(p) > 1 && res.ConversationID == "" {
+		if ids, ok := p[1].([]any); ok && len(ids) > 0 {
+			if s, ok := ids[0].(string); ok && strings.HasPrefix(s, "c_") {
+				res.ConversationID = s
+				if len(ids) > 1 {
+					if r, ok := ids[1].(string); ok && strings.HasPrefix(r, "r_") {
+						res.ResponseID = r
+					}
+				}
+			}
+		}
+	}
+	if len(p) <= 4 || res.ReplyID != "" {
+		return
+	}
+	blocks, ok := p[4].([]any)
+	if !ok || len(blocks) == 0 {
+		return
+	}
+	block, ok := blocks[0].([]any)
+	if !ok || len(block) == 0 {
+		return
+	}
+	if s, ok := block[0].(string); ok && s != "" {
+		res.ReplyID = s
 	}
 }
 
@@ -313,7 +325,7 @@ var (
 	citeMarkRe         = regexp.MustCompile(`\[cite:\s*[0-9, ]+\]`)
 	// errCodeRe hanya cadangan untuk kode yang muncul sebagai teks di dalam
 	// string payload; bentuk aslinya adalah array (lihat findErrorCode).
-	errCodeRe  = regexp.MustCompile(`BardErrorInfo[\s\S]{0,120}?\[\s*(\d+)`)
+	errCodeRe    = regexp.MustCompile(`BardErrorInfo[\s\S]{0,120}?\[\s*(\d+)`)
 	multiSpaceRe = regexp.MustCompile(`[ \t]{2,}`)
 )
 

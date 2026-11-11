@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -343,7 +344,7 @@ func TestGeminiBuildPromptFitsLimit(t *testing.T) {
 	}
 }
 
-// TestGeminiSessionTTL memastikan sesi (dan riwayatnya) mati setelah 5 menit
+// TestGeminiSessionTTL memastikan sesi (dan riwayatnya) mati setelah 10 menit
 // tanpa pesan.
 func TestGeminiSessionTTL(t *testing.T) {
 	geminiResetForTest(t)
@@ -477,6 +478,25 @@ func TestGeminiDiagVerdict(t *testing.T) {
 	}
 }
 
+// TestGeminiDiagVerdictMissingNID mengunci temuan probe panel (Nov 2026): sesi
+// tamu tanpa cookie NID tetap bisa satu giliran, tapi percakapan lanjutan
+// ditolak server (`1097`). Diagnosa harus menyebut NID, bukan menyimpulkan
+// "sehat" lalu menyalahkan tiket.
+func TestGeminiDiagVerdictMissingNID(t *testing.T) {
+	healthy := geminiapi.Diag{
+		Cookie: geminiapi.Stage{OK: true},
+		Meta:   geminiapi.Stage{OK: true},
+		Chat:   geminiapi.Stage{OK: true},
+		Ticket: geminiapi.Resume{ConversationID: "c_x"},
+	}
+	if got := geminiDiagVerdictFor(&healthy, []string{"SOCS", "COMPASS"}, false); !strings.Contains(got, "NID") {
+		t.Fatalf("verdict tanpa NID = %q", got)
+	}
+	if got := geminiDiagVerdictFor(&healthy, []string{"SOCS", "NID"}, false); !strings.Contains(got, "sehat") {
+		t.Fatalf("verdict dengan NID = %q", got)
+	}
+}
+
 func TestGeminiErrorText(t *testing.T) {
 	cases := []struct {
 		err  error
@@ -501,8 +521,9 @@ func TestGeminiErrorText(t *testing.T) {
 
 func TestGeminiHelpBlockMentionsTTL(t *testing.T) {
 	help := geminiHelpBlock()
-	if !strings.Contains(help, "5 menit") {
-		t.Fatalf("help tidak menyebut TTL: %s", help)
+	want := fmt.Sprintf("%d menit", int(geminiSessionTTL.Minutes()))
+	if !strings.Contains(help, want) {
+		t.Fatalf("help tidak menyebut TTL %q: %s", want, help)
 	}
 	if strings.Contains(strings.ToLower(help), "login <cookie>") {
 		t.Fatalf("help masih menawarkan login cookie: %s", help)
@@ -535,5 +556,270 @@ func TestGeminiCleanAnswerAsteriskInParentheses(t *testing.T) {
 	got := geminiCleanAnswer(in)
 	if got != want {
 		t.Fatalf("geminiCleanAnswer() =\n%q\nmau:\n%q", got, want)
+	}
+}
+
+// TestGeminiSessionTTLIsTenMinutes mengunci umur sesi yang disepakati (10
+// menit): lebih lama dari versi awal (5 menit), tetap pendek supaya obrolan
+// lama tidak terbawa ke topik baru.
+func TestGeminiSessionTTLIsTenMinutes(t *testing.T) {
+	if geminiSessionTTL != 10*time.Minute {
+		t.Fatalf("geminiSessionTTL = %v, mau 10 menit", geminiSessionTTL)
+	}
+}
+
+// TestGeminiSessionClearDropsTicket memastikan `.gemini new` membuang tiket
+// percakapan juga, bukan hanya riwayat di memori.
+func TestGeminiSessionClearDropsTicket(t *testing.T) {
+	geminiResetForTest(t)
+	key := "chat|user"
+	geminiSessionEnsure(key)
+
+	ticket := geminiapi.Resume{ConversationID: "c_1", ResponseID: "r_1", ReplyID: "rc_1"}
+	geminiSessionSetResume(key, ticket, "UID-1")
+	if got, uid := geminiSessionResume(key); got != ticket || uid != "UID-1" {
+		t.Fatalf("tiket tersimpan = %+v uid=%q", got, uid)
+	}
+
+	geminiSessionClear(key)
+	if got, uid := geminiSessionResume(key); !got.Empty() || uid != "" {
+		t.Fatalf("setelah clear tiket masih ada: %+v uid=%q", got, uid)
+	}
+}
+
+// TestGeminiStateKeyStable memastikan kunci penyimpanan riwayat pendek, stabil,
+// dan tidak memuat JID mentah.
+func TestGeminiStateKeyStable(t *testing.T) {
+	a := geminiStateKey("628123@s.whatsapp.net|628123@s.whatsapp.net")
+	if !strings.HasPrefix(a, geminiHistoryPrefix) {
+		t.Fatalf("kunci = %q, mau berawalan %q", a, geminiHistoryPrefix)
+	}
+	if a != geminiStateKey("628123@s.whatsapp.net|628123@s.whatsapp.net") {
+		t.Fatal("kunci harus stabil untuk sesi yang sama")
+	}
+	if a == geminiStateKey("628999@s.whatsapp.net|628123@s.whatsapp.net") {
+		t.Fatal("sesi berbeda harus punya kunci berbeda")
+	}
+	if strings.Contains(a, "@") || strings.Contains(a, "|") {
+		t.Fatalf("kunci tidak boleh memuat JID mentah: %q", a)
+	}
+	if len(a) != len(geminiHistoryPrefix)+16 {
+		t.Fatalf("panjang kunci = %d, mau %d", len(a), len(geminiHistoryPrefix)+16)
+	}
+}
+
+// TestGeminiTicketMatchesCookie mengunci arti "tiket masih berlaku": tiket
+// kosong tidak pernah cocok, tiket tanpa sidik jari (versi lama) dianggap cocok,
+// dan tiket bersidik jari hanya cocok bila cookie tamu yang sekarang sama.
+func TestGeminiTicketMatchesCookie(t *testing.T) {
+	geminiResetForTest(t)
+	if geminiTicketMatchesCookie(geminiapi.Resume{}) {
+		t.Fatal("tiket kosong tidak boleh dianggap berlaku")
+	}
+	if !geminiTicketMatchesCookie(geminiapi.Resume{ConversationID: "c_1"}) {
+		t.Fatal("tiket tanpa sidik jari harus dianggap berlaku")
+	}
+	// Klien tes tidak pernah mengambil cookie, jadi CookieID kosong: tiket
+	// tidak boleh dinyatakan basi hanya karena identitas tamu belum diketahui.
+	if !geminiTicketMatchesCookie(geminiapi.Resume{ConversationID: "c_1", CookieID: "sidik"}) {
+		t.Fatal("tanpa cookie di memori, tiket tidak boleh dianggap basi")
+	}
+}
+
+// TestGeminiHistorySurvivesRestart mengunci inti perbaikan "tahan restart":
+// riwayat giliran harus bisa ditulis, dibaca kembali, dan ditolak setelah
+// lewat geminiSessionTTL. Tiket percakapan TIDAK ikut disimpan, karena sesi
+// tamu terikat cookie `NID` yang selalu baru setelah proses restart.
+func TestGeminiHistorySurvivesRestart(t *testing.T) {
+	geminiResetForTest(t)
+	now := time.Date(2026, 11, 11, 13, 0, 0, 0, time.UTC)
+	geminiNow = func() time.Time { return now }
+
+	turns := []geminiTurn{
+		{User: "ingat angka 4711, jawab siap.", Bot: "Siap."},
+		{User: "angka berapa tadi?", Bot: "4711"},
+	}
+	raw, ok := geminiEncodeHistory(turns, now)
+	if !ok {
+		t.Fatal("riwayat tidak ter-encode")
+	}
+	if strings.Contains(raw, "NID") || strings.Contains(raw, "cookie") {
+		t.Fatalf("state riwayat tidak boleh memuat kredensial: %s", raw)
+	}
+
+	got := geminiDecodeHistory(raw, now.Add(9*time.Minute))
+	if len(got) != 2 || got[1].Bot != "4711" {
+		t.Fatalf("riwayat terbaca = %+v", got)
+	}
+
+	if got := geminiDecodeHistory(raw, now.Add(geminiSessionTTL+time.Second)); got != nil {
+		t.Fatalf("riwayat kedaluwarsa harus dibuang, dapat %+v", got)
+	}
+	if got := geminiDecodeHistory("{rusak", now); got != nil {
+		t.Fatalf("riwayat rusak harus diabaikan, dapat %+v", got)
+	}
+	if _, ok := geminiEncodeHistory(nil, now); ok {
+		t.Fatal("riwayat kosong tidak perlu disimpan")
+	}
+}
+
+// TestGeminiPromptForTurn memastikan prompt hanya membawa riwayat saat tiket
+// percakapan tidak tersedia; dengan tiket, server yang mengingat konteks.
+func TestGeminiPromptForTurn(t *testing.T) {
+	history := []geminiTurn{{User: "siapa presiden pertama", Bot: "Ir. Soekarno"}}
+
+	withTicket := geminiPromptForTurn(history, "  dan wakilnya?  ",
+		geminiapi.Resume{ConversationID: "c_1", ResponseID: "r_1"})
+	if withTicket != "dan wakilnya?" {
+		t.Fatalf("prompt bertiket = %q, mau pertanyaan apa adanya", withTicket)
+	}
+
+	withoutTicket := geminiPromptForTurn(history, "dan wakilnya?", geminiapi.Resume{})
+	if !strings.Contains(withoutTicket, "siapa presiden pertama") {
+		t.Fatalf("prompt tanpa tiket harus memuat riwayat:\n%s", withoutTicket)
+	}
+	if !strings.Contains(withoutTicket, "dan wakilnya?") {
+		t.Fatalf("prompt tanpa tiket harus memuat pertanyaan:\n%s", withoutTicket)
+	}
+}
+
+// --- konteks waktu & lokasi ---
+
+// TestGeminiContextBlock mengunci isi blok konteks: waktu lokal, zona, lokasi
+// pengguna, dan larangan memakai lokasi server. Blok inilah yang membantah
+// tebakan Gemini bahwa pengguna berada di Jerman.
+func TestGeminiContextBlock(t *testing.T) {
+	now := time.Date(2026, 11, 11, 13, 5, 0, 0, time.UTC)
+
+	withLoc := geminiContextBlock(now, "Makassar, Sulawesi Selatan")
+	for _, want := range []string{
+		"11 Nov 2026 13:05",
+		"UTC+00:00",
+		"Lokasi pengguna: Makassar, Sulawesi Selatan.",
+		"Jangan memakai lokasi server",
+		"Jangan mengarang nama tempat",
+	} {
+		if !strings.Contains(withLoc, want) {
+			t.Fatalf("blok konteks tidak memuat %q:\n%s", want, withLoc)
+		}
+	}
+
+	noLoc := geminiContextBlock(now, "")
+	if !strings.Contains(noLoc, "belum disetel") {
+		t.Fatalf("tanpa lokasi, blok harus meminta kota/daerah:\n%s", noLoc)
+	}
+	if strings.Contains(noLoc, "Lokasi pengguna: .") {
+		t.Fatalf("lokasi kosong tidak boleh jadi titik kosong:\n%s", noLoc)
+	}
+}
+
+// TestGeminiTurnContext mengunci baris pendek yang ditempel tiap giliran:
+// jam tetap segar dan lokasi ikut berubah tanpa `.gemini new`.
+func TestGeminiTurnContext(t *testing.T) {
+	now := time.Date(2026, 11, 11, 13, 5, 0, 0, time.UTC)
+
+	withLoc := geminiTurnContext(now, "Makassar")
+	if !strings.Contains(withLoc, "11 Nov 2026 13:05") || !strings.Contains(withLoc, "· Makassar") {
+		t.Fatalf("baris konteks = %q", withLoc)
+	}
+	if !strings.HasPrefix(withLoc, "[Sekarang: ") || !strings.HasSuffix(withLoc, "]") {
+		t.Fatalf("bentuk baris konteks salah: %q", withLoc)
+	}
+
+	noLoc := geminiTurnContext(now, "  ")
+	if strings.Contains(noLoc, "·") {
+		t.Fatalf("tanpa lokasi tidak boleh ada pemisah: %q", noLoc)
+	}
+}
+
+// TestGeminiMergeSystem memastikan blok konteks tidak menimpa prompt sistem
+// owner, dan tetap ada walau owner belum menyetel apa pun.
+func TestGeminiMergeSystem(t *testing.T) {
+	block := geminiContextBlock(time.Date(2026, 11, 11, 13, 5, 0, 0, time.UTC), "Makassar")
+
+	merged := geminiMergeSystem("Jawab singkat.", block)
+	if !strings.HasPrefix(merged, "Jawab singkat.") || !strings.Contains(merged, "[Konteks]") {
+		t.Fatalf("gabungan salah:\n%s", merged)
+	}
+	if got := geminiMergeSystem("", block); got != block {
+		t.Fatalf("tanpa sistem owner, hasil harus blok konteks saja: %q", got)
+	}
+	if got := geminiMergeSystem("Jawab singkat.", ""); got != "Jawab singkat." {
+		t.Fatalf("tanpa blok, hasil harus teks owner: %q", got)
+	}
+}
+
+// TestGeminiStripAgentTags mengunci pembersihan penanda media internal Gemini
+// (`<Image .../>`): src-nya id internal, bukan gambar, jadi harus dibuang.
+func TestGeminiStripAgentTags(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "tag satu baris",
+			in:   "Rekomendasi:\n\n<Image alt=\"Masjid Al Alam\" caption=\"Masjid di teluk\" src=\"image_agent_tag_1634513376826124782\"/>\n\n1. *Masjid Al-Alam*",
+			want: "Rekomendasi:\n\n1. *Masjid Al-Alam*",
+		},
+		{
+			name: "tag sendiri tanpa baris kosong",
+			in:   "Daftar tempat:\n<Image src=\"image_agent_tag_9\"/>\n1. *Masjid Al-Alam*",
+			want: "Daftar tempat:\n1. *Masjid Al-Alam*",
+		},
+		{
+			name: "tag di baris terakhir",
+			in:   "Selesai.\n<Image src=\"image_agent_tag_10\"/>",
+			want: "Selesai.",
+		},
+		{
+			name: "tag di tengah kalimat",
+			in:   "Lihat ini <Image alt=\"x\" src=\"image_agent_tag_1\"/> sekarang.",
+			want: "Lihat ini sekarang.",
+		},
+		{
+			name: "atribut memuat > di dalam kutip",
+			in:   "A <Image caption=\"a > b\" src=\"image_agent_tag_2\"/> B",
+			want: "A B",
+		},
+		{
+			name: "huruf besar dan img",
+			in:   "A <IMAGE src=\"image_agent_tag_3\">B<img src=\"image_agent_tag_4\"/> C",
+			want: "A B C",
+		},
+		{
+			name: "video dengan penanda agent",
+			in:   "A <Video src=\"video_agent_tag_5\"/> B",
+			want: "A B",
+		},
+		{
+			name: "tag tanpa penanda agent dibiarkan",
+			in:   "Tulis <Video tutorial> kalau perlu.",
+			want: "Tulis <Video tutorial> kalau perlu.",
+		},
+		{
+			name: "teks biasa dengan kurung sudut",
+			in:   "1 < 3 > 2",
+			want: "1 < 3 > 2",
+		},
+	}
+
+	for _, tc := range cases {
+		if got := geminiStripAgentTags(tc.in); got != tc.want {
+			t.Fatalf("%s:\ndapat %q\nmau   %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestGeminiCleanAnswerDropsImageTag memastikan pembersihan akhir (yang dipakai
+// jalur kirim) benar-benar bebas dari tag media dan tidak menyisakan sampah.
+func TestGeminiCleanAnswerDropsImageTag(t *testing.T) {
+	in := "Rekomendasi tempat wisata:\n\n<Image alt=\"Masjid Al Alam Kendari di tengah laut\" caption=\"Masjid Al Alam di Teluk Kendari\" src=\"image_agent_tag_1634513376826124782\"/>\n\n1. *Masjid Al-Alam*"
+	got := geminiCleanAnswer(in)
+	if strings.Contains(got, "image_agent_tag") || strings.Contains(got, "<Image") {
+		t.Fatalf("tag masih tersisa:\n%s", got)
+	}
+	if !strings.Contains(got, "Rekomendasi tempat wisata") || !strings.Contains(got, "*Masjid Al-Alam*") {
+		t.Fatalf("teks penting ikut hilang:\n%s", got)
 	}
 }

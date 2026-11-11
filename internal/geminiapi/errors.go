@@ -21,6 +21,12 @@ var (
 	// ErrStaleConv: server menolak lanjutan percakapan. Mode tamu memang tidak
 	// mendukung lanjutan, jadi ini hanya bisa muncul kalau protokolnya berubah.
 	ErrStaleConv = errors.New("percakapan gemini tidak berlaku")
+	// ErrTicketStale: tiket percakapan berasal dari sesi tamu lain — cookie
+	// (`NID`) yang membuatnya sudah berganti. Server pasti menjawab `1097`,
+	// jadi permintaan TIDAK dikirim sama sekali dan pemanggil memakai riwayat
+	// prompt. Bukan kegagalan jaringan dan tidak boleh memicu jeda tiket:
+	// rotasi cookie tiap 30 menit memang membuat tiket lama basi.
+	ErrTicketStale = errors.New("tiket percakapan gemini dari sesi tamu lain")
 	// ErrProtocol: balasan server tidak berbentuk seperti yang diharapkan.
 	ErrProtocol = errors.New("bentuk balasan gemini tidak dikenali")
 	// ErrHTTP: status HTTP lain yang tidak punya kategori khusus.

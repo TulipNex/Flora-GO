@@ -2,6 +2,9 @@ package plugins
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -16,6 +19,7 @@ import (
 	"wabot-go/internal/identity"
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
+	"wabot-go/internal/timex"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
 	"github.com/polymorfa/hypermeow/types"
@@ -35,11 +39,20 @@ func init() {
 // diambil dari HEAD gemini.google.com, jadi tidak ada lagi berkas kredensial
 // yang harus dirawat.
 //
-// Konsekuensinya: server TIDAK menyimpan percakapan tamu (lanjutan selalu
-// ditolak dengan kode 1097). Riwayat karena itu disimpan bot di memori dan
-// ditempel ke prompt berikutnya. Memori dipilih (bukan SQLite) supaya cocok
-// dengan umur sesi yang pendek: 5 menit tanpa pesan = sesi mati, riwayat
-// dibuang.
+// Konteks percakapan ditangani dua lapis:
+//  1. Tiket percakapan (lihat geminiapi.Resume) — bila server mengembalikan id
+//     percakapan, giliran berikutnya cukup mengirim tiket itu dan server yang
+//     mengingat. Tiket hanya hidup di MEMORI: percakapan tamu terikat NILAI
+//     cookie `NID`, dan cookie itu selalu baru di proses baru (atau tiap
+//     rotasi 30 menit), sehingga tiket simpanan pasti dijawab `1097`. Tiket
+//     yang sidik jari cookienya sudah berbeda dibuang sebelum dikirim
+//     (`ErrTicketStale`), jadi tidak ada kuota yang terbuang.
+//  2. Riwayat di dalam prompt — jalan cadangan bila tiket tidak ada atau
+//     ditolak server (kode 1097). Riwayat giliran disalin ke bot_settings
+//     (tanpa kredensial apa pun), sehingga konteks tetap hidup setelah restart.
+//
+// Tiket hanya akselerator: kegagalan mengambil/memakainya tidak boleh
+// menggagalkan jawaban, cukup kembali ke riwayat tanpa memberi tahu owner.
 //
 // Pemakaian (owner, boleh di DM maupun grup):
 //
@@ -47,7 +60,8 @@ func init() {
 //	(reply bubble bot)       lanjutkan tanpa kata pemicu
 //	.gemini on               aktifkan sesi kosong (opsional)
 //	.gemini off              akhiri sesi + buang riwayat
-//	.gemini new              buang riwayat, sesi tetap aktif
+//	.gemini new              buang riwayat + tiket, sesi tetap aktif
+//	.gemini lokasi <kota>    lokasi acuan jawaban (bukan lokasi server)
 //	.gemini status           status sesi + koneksi
 //	.gemini diag             diagnosa jalur tamu (cookie → halaman → chat)
 const (
@@ -62,15 +76,37 @@ const (
 	geminiBubbleDelay    = 3 * time.Second
 	geminiMaxSystemRunes = 4000
 
+	// geminiMaxLocationRunes membatasi teks lokasi: cukup untuk
+	// "Makassar, Sulawesi Selatan" tanpa membengkakkan blok konteks.
+	geminiMaxLocationRunes = 160
+
+	// geminiLocationKey adalah baris bot_settings tempat lokasi pengguna
+	// disimpan (teks biasa, bukan kredensial). Kosong = belum disetel, dan blok
+	// konteks meminta Gemini menanyakan kota/daerah lebih dulu.
+	geminiLocationKey = "gemini_lokasi"
+
 	// geminiSessionTTL: sesi (beserta riwayatnya) mati setelah selama ini
 	// tanpa pesan pemicu/balasan. Tanpa TTL, riwayat percakapan owner akan
-	// menumpuk di memori selamanya.
-	geminiSessionTTL = 5 * time.Minute
+	// menumpuk di memori selamanya. Nilai ini juga menjadi batas umur riwayat
+	// yang disimpan di bot_settings, supaya keduanya tidak bertentangan
+	// (riwayat hidup lebih lama dari sesi = konteks tak terduga).
+	geminiSessionTTL = 10 * time.Minute
 
 	// Batas riwayat yang ditempel ke prompt. Semua angka dalam rune.
 	geminiMaxTurns        = 8
 	geminiMaxHistoryRunes = 6000
 	geminiTurnFieldRunes  = 1200
+
+	// geminiHistoryPrefix menandai baris bot_settings yang menyimpan riwayat
+	// giliran. Isinya teks percakapan + waktu simpan — TIDAK ADA cookie/token,
+	// karena percakapan tamu terikat nilai cookie `NID` yang selalu baru
+	// (tiket yang disimpan ke disk pasti basi setelah restart).
+	geminiHistoryPrefix = "gemini_hist:"
+
+	// geminiLegacyResumePrefix adalah kunci versi lama yang menyimpan tiket
+	// percakapan. Tiket itu tidak bisa dipakai lagi setelah restart (cookie
+	// baru), jadi setiap pembersihan ikut membuang sisa barisnya.
+	geminiLegacyResumePrefix = "gemini_resume:"
 )
 
 // geminiAckEmoji adalah reaksi yang dikirim ke pesan prompt sebagai tanda
@@ -95,10 +131,24 @@ type geminiTurn struct {
 }
 
 // geminiSession adalah keadaan sesi satu pengirim di satu chat. last dipakai
-// TTL: sesi yang tidak disentuh selama geminiSessionTTL dibuang.
+// TTL: sesi yang tidak disentuh selama geminiSessionTTL dibuang. resume/uid
+// adalah tiket percakapan yang membuat server mengingat konteks; tiket hanya
+// hidup di memori (percakapan tamu terikat cookie `NID` yang berganti tiap
+// proses/rotasi, jadi menyimpannya ke disk tidak ada gunanya). Riwayat giliran
+// yang disalin ke bot_settings itulah yang membuat konteks tahan restart.
 type geminiSession struct {
 	history []geminiTurn
+	resume  geminiapi.Resume
+	uid     string
 	last    time.Time
+}
+
+// geminiSessionState adalah bentuk JSON riwayat yang disimpan di bot_settings.
+// Isinya hanya giliran percakapan + waktu simpan (untuk menegakkan umur sesi
+// setelah restart) — bukan cookie, token, atau kredensial apa pun.
+type geminiSessionState struct {
+	Turns []geminiTurn `json:"turns"`
+	At    int64        `json:"at"`
 }
 
 var (
@@ -158,6 +208,8 @@ func handleGemini(ctx context.Context, mctx *store.MessageContext) error {
 		return geminiNewChat(ctx, mctx)
 	case "sistem", "system":
 		return geminiSystemCmd(ctx, mctx, rest)
+	case "lokasi", "location":
+		return geminiLocationCmd(ctx, mctx, rest)
 	case "login", "cookie":
 		return store.ReplyText(ctx, mctx, Block("Gemini",
 			Row("Login", "tidak diperlukan"),
@@ -196,11 +248,13 @@ func geminiHelpBlock() string {
 		Opt("Matikan", ".gemini off"),
 		Opt("Riwayat baru", ".gemini new"),
 		Opt("Prompt sistem", ".gemini sistem <teks>"),
+		Opt("Lokasi acuan", ".gemini lokasi <kota/daerah>"),
 		Opt("Status", ".gemini status"),
 		Opt("Diagnosa", ".gemini diag"),
 		"",
-		"Mode tamu, tanpa login. Riwayat disimpan di memori bot dan",
-		fmt.Sprintf("dibuang setelah %d menit tanpa pesan.", int(geminiSessionTTL.Minutes())),
+		"Mode tamu, tanpa login. Bot mengingat percakapan; bila server mendukung,",
+		"konteks juga disimpan di sisi server. Sesi dibuang setelah",
+		fmt.Sprintf("%d menit tanpa pesan.", int(geminiSessionTTL.Minutes())),
 	)
 }
 
@@ -289,6 +343,7 @@ func geminiSessionClear(key string) bool {
 		return false
 	}
 	st.history = nil
+	st.resume, st.uid = geminiapi.Resume{}, ""
 	st.last = geminiNow()
 	return true
 }
@@ -313,6 +368,153 @@ func geminiSessionInfo(key string) (turns int, left time.Duration, active bool) 
 		return 0, 0, false
 	}
 	return len(st.history), geminiSessionTTL - now.Sub(st.last), true
+}
+
+// geminiSessionResume mengembalikan tiket percakapan dari memori.
+func geminiSessionResume(key string) (geminiapi.Resume, string) {
+	geminiMu.Lock()
+	defer geminiMu.Unlock()
+	geminiPruneLocked(geminiNow())
+	if st := geminiSessions[key]; st != nil {
+		return st.resume, st.uid
+	}
+	return geminiapi.Resume{}, ""
+}
+
+// geminiSessionSetResume menyimpan tiket percakapan di memori (sesi dibuat
+// bila belum ada; TTL tidak diperbarui — itu tugas geminiSessionTouch).
+func geminiSessionSetResume(key string, r geminiapi.Resume, uid string) {
+	geminiMu.Lock()
+	defer geminiMu.Unlock()
+	st := geminiSessions[key]
+	if st == nil {
+		st = &geminiSession{}
+		geminiSessions[key] = st
+	}
+	st.resume, st.uid = r, uid
+}
+
+// geminiTicketMatchesCookie melaporkan apakah tiket masih mungkin diterima
+// server: tiket hanya berlaku selama cookie tamu (`NID`) yang membuatnya masih
+// sama. Tiket tanpa sidik jari (versi lama) dianggap cocok; tiket yang sidik
+// jarinya berbeda dibuang pemanggil sebelum dikirim.
+func geminiTicketMatchesCookie(r geminiapi.Resume) bool {
+	if r.Empty() {
+		return false
+	}
+	if r.CookieID == "" {
+		return true
+	}
+	id := geminiAPI().CookieID()
+	return id == "" || id == r.CookieID
+}
+
+// geminiSessionRestore mengisi riwayat sesi dari database (mis. setelah
+// restart). Sesi yang sudah punya riwayat tidak ditimpa, dan waktu sentuh
+// terakhir tidak diubah — TTL tetap dihitung dari aktivitas terakhir pemanggil.
+func geminiSessionRestore(key string, turns []geminiTurn) {
+	geminiMu.Lock()
+	defer geminiMu.Unlock()
+	st := geminiSessions[key]
+	if st == nil {
+		st = &geminiSession{}
+		geminiSessions[key] = st
+	}
+	if len(st.history) == 0 {
+		st.history = turns
+	}
+}
+
+// geminiStateKey memetakan kunci sesi (chat|pengirim) menjadi kunci
+// bot_settings yang aman: hash pendek, tanpa karakter JID.
+func geminiStateKey(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return geminiHistoryPrefix + hex.EncodeToString(sum[:8])
+}
+
+// geminiEncodeHistory membungkus riwayat menjadi JSON untuk bot_settings.
+// Dipisah dari I/O supaya umur/batasnya bisa diuji tanpa database.
+func geminiEncodeHistory(turns []geminiTurn, at time.Time) (string, bool) {
+	if len(turns) == 0 {
+		return "", false
+	}
+	raw, err := json.Marshal(geminiSessionState{Turns: turns, At: at.Unix()})
+	if err != nil {
+		return "", false
+	}
+	return string(raw), true
+}
+
+// geminiDecodeHistory membaca riwayat dari JSON. Riwayat yang lebih tua dari
+// geminiSessionTTL dianggap sudah mati (sama seperti sesi di memori), begitu
+// pula data yang tidak terbaca: hasilnya nil, bukan error.
+func geminiDecodeHistory(raw string, now time.Time) []geminiTurn {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var st geminiSessionState
+	if err := json.Unmarshal([]byte(raw), &st); err != nil {
+		logfmt.Warn("gemini riwayat tidak terbaca: %v\n", err)
+		return nil
+	}
+	if st.At <= 0 || now.Sub(time.Unix(st.At, 0)) > geminiSessionTTL {
+		return nil
+	}
+	return st.Turns
+}
+
+// geminiLoadHistory membaca riwayat giliran dari bot_settings. Riwayat
+// kedaluwarsa langsung dihapus supaya arti "sesi mati" tetap sama dengan versi
+// yang hanya di memori.
+func geminiLoadHistory(client *whatsmeow.Client, key string) []geminiTurn {
+	gdb := store.GroupsFor(client)
+	if gdb == nil {
+		return nil
+	}
+	raw, err := gdb.GetGeminiState(context.Background(), geminiStateKey(key))
+	if err != nil {
+		logfmt.Warn("gemini baca riwayat: %v\n", err)
+		return nil
+	}
+	turns := geminiDecodeHistory(raw, geminiNow())
+	if turns == nil && strings.TrimSpace(raw) != "" {
+		geminiDeleteState(client, key)
+	}
+	return turns
+}
+
+// geminiSaveHistory menyimpan riwayat giliran (fail-soft: gagal menyimpan hanya
+// berarti kehilangan keunggulan lintas restart, bukan kegagalan balasan).
+func geminiSaveHistory(client *whatsmeow.Client, key string, turns []geminiTurn) {
+	gdb := store.GroupsFor(client)
+	if gdb == nil {
+		return
+	}
+	raw, ok := geminiEncodeHistory(turns, geminiNow())
+	if !ok {
+		return
+	}
+	if err := gdb.SetGeminiState(context.Background(), geminiStateKey(key), raw); err != nil {
+		logfmt.Warn("gemini simpan riwayat: %v\n", err)
+	}
+}
+
+// geminiDeleteState membuang riwayat percakapan dari bot_settings, sekaligus
+// sisa tiket versi lama yang sudah tidak bisa dipakai.
+func geminiDeleteState(client *whatsmeow.Client, key string) {
+	gdb := store.GroupsFor(client)
+	if gdb == nil {
+		return
+	}
+	ctx := context.Background()
+	if err := gdb.DeleteGeminiState(ctx, geminiStateKey(key)); err != nil {
+		logfmt.Warn("gemini hapus riwayat: %v\n", err)
+	}
+	legacy := geminiLegacyResumePrefix + strings.TrimPrefix(geminiStateKey(key), geminiHistoryPrefix)
+	if err := gdb.DeleteGeminiState(ctx, legacy); err != nil {
+		logfmt.Warn("gemini hapus tiket lama: %v\n", err)
+	}
 }
 
 // geminiChatClaim menandai satu chat sedang memproses permintaan.
@@ -432,6 +634,16 @@ func geminiBuildPrompt(history []geminiTurn, prompt string) string {
 	return prompt
 }
 
+// geminiPromptForTurn memilih isi permintaan: bila tiket percakapan ada, server
+// sudah mengingat konteks sehingga prompt dikirim apa adanya; bila tidak, riwayat
+// ditempel seperti versi awal fitur ini.
+func geminiPromptForTurn(history []geminiTurn, prompt string, resume geminiapi.Resume) string {
+	if !resume.Empty() {
+		return strings.TrimSpace(prompt)
+	}
+	return geminiBuildPrompt(history, prompt)
+}
+
 func geminiClipRunes(s string, max int) string {
 	s = strings.TrimSpace(s)
 	if max <= 0 || utf8.RuneCountInString(s) <= max {
@@ -465,7 +677,12 @@ func geminiEnable(ctx context.Context, mctx *store.MessageContext) error {
 
 func geminiDisable(ctx context.Context, mctx *store.MessageContext) error {
 	key := geminiKeyOf(mctx)
-	if !geminiSessionDrop(key) {
+	// Riwayat di disk ikut dibuang, supaya sesi benar-benar bersih setelah
+	// restart sekalipun. Riwayat yang hanya ada di database (proses baru)
+	// tetap dihitung sebagai sesi aktif.
+	hadDisk := len(geminiLoadHistory(mctx.Client, key)) > 0
+	geminiDeleteState(mctx.Client, key)
+	if !geminiSessionDrop(key) && !hadDisk {
 		return store.ReplyText(ctx, mctx, ErrMsg("Gemini", "Sesi memang sedang nonaktif."))
 	}
 	return store.ReplyText(ctx, mctx, Block("Gemini",
@@ -478,7 +695,11 @@ func geminiDisable(ctx context.Context, mctx *store.MessageContext) error {
 
 func geminiNewChat(ctx context.Context, mctx *store.MessageContext) error {
 	key := geminiKeyOf(mctx)
-	if !geminiSessionClear(key) {
+	// Riwayat di disk juga dibuang: tanpa ini, "new" hanya mengosongkan memori
+	// sementara riwayat lama masih tersimpan dan bisa dimuat lagi.
+	hadDisk := len(geminiLoadHistory(mctx.Client, key)) > 0
+	geminiDeleteState(mctx.Client, key)
+	if !geminiSessionClear(key) && !hadDisk {
 		geminiSessionEnsure(key)
 		return store.ReplyText(ctx, mctx, Block("Gemini",
 			Row("Mode", "aktif"),
@@ -514,13 +735,43 @@ func geminiStatus(ctx context.Context, mctx *store.MessageContext) error {
 		}
 	}
 
+	// Konteks: tiket percakapan (server yang mengingat) atau riwayat di prompt.
+	// Bila server sudah menolak tiket, atau cookie tamu sudah berganti (tiket
+	// pasti ditolak `1097`), tulis apa adanya supaya tidak terlihat berhasil
+	// padahal konteks dibawa lewat riwayat.
+	api := geminiAPI()
+	contextText := "dari riwayat bot"
+	if api.TicketRejected() {
+		contextText = "dari riwayat bot (server menolak)"
+	}
+	storageText := "memori bot"
+	if len(geminiLoadHistory(mctx.Client, key)) > 0 {
+		storageText = "memori + database"
+	}
+	if api.TicketEnabled() {
+		if resume, _ := geminiSessionResume(key); !resume.Empty() {
+			if geminiTicketMatchesCookie(resume) {
+				contextText = "diingat server"
+			} else {
+				contextText = "dari riwayat bot (sesi tamu berganti)"
+			}
+		}
+	}
+
+	locationText := "belum disetel"
+	if loc := geminiLocationGet(ctx, mctx.Client); loc != "" {
+		locationText = loc
+	}
+
 	rows := []string{
 		Row("Mode", mode),
 		Row("Sistem", sysText),
+		Row("Lokasi", locationText),
 		Row("Riwayat", geminiTurnsText(turns)),
+		Row("Konteks", contextText),
 		Row("Kedaluwarsa", geminiLeftText(active, left)),
 		Row("Koneksi", state),
-		Row("Penyimpanan", "memori bot"),
+		Row("Penyimpanan", storageText),
 	}
 	if !active {
 		rows = append(rows, "", "Sesi dibuka otomatis oleh *gemini <pertanyaan>*.")
@@ -541,6 +792,125 @@ func geminiSystemAction(rest string) string {
 		return "reset"
 	default:
 		return "set"
+	}
+}
+
+// --- lokasi pengguna & konteks waktu ---
+
+// geminiLocationGet membaca lokasi acuan pengguna dari bot_settings. Fail-soft:
+// kegagalan baca hanya berarti blok konteks memakai teks "belum disetel".
+func geminiLocationGet(ctx context.Context, client *whatsmeow.Client) string {
+	gdb := store.GroupsFor(client)
+	if gdb == nil {
+		return ""
+	}
+	raw, err := gdb.GetGeminiState(ctx, geminiLocationKey)
+	if err != nil {
+		logfmt.Warn("gemini baca lokasi: %v\n", err)
+		return ""
+	}
+	return strings.TrimSpace(raw)
+}
+
+// geminiLocationSet menyimpan lokasi acuan (nilai kosong menghapusnya).
+func geminiLocationSet(ctx context.Context, client *whatsmeow.Client, value string) error {
+	gdb := store.GroupsFor(client)
+	if gdb == nil {
+		return fmt.Errorf("database penyimpanan tidak tersedia")
+	}
+	return gdb.SetGeminiState(ctx, geminiLocationKey, strings.TrimSpace(value))
+}
+
+// geminiContextBlock menyusun blok konteks yang ditempel pada giliran pertama
+// sesi. Ini jawaban atas masalah nyata: Gemini mode tamu menebak lokasi dari IP
+// server (Jerman), sehingga "toko roti terdekat" dijawab alamat Jerman. Tanpa
+// akun, satu-satunya cara membantah tebakan itu adalah memberi tahu waktu &
+// lokasi pengguna di dalam prompt.
+func geminiContextBlock(now time.Time, location string) string {
+	var b strings.Builder
+	b.WriteString("[Konteks]\n")
+	fmt.Fprintf(&b, "Waktu sekarang: %s (%s, UTC%s).\n",
+		now.Format("Senin, 02 Jan 2006 15:04"), timex.Name(), now.Format("-07:00"))
+	if loc := strings.TrimSpace(location); loc != "" {
+		fmt.Fprintf(&b, "Lokasi pengguna: %s.\n", loc)
+	} else {
+		b.WriteString("Lokasi pengguna: belum disetel. Kalau jawaban bergantung pada lokasi, tanyakan dulu kota/daerahnya.\n")
+	}
+	b.WriteString("Pakai waktu dan lokasi pengguna di atas sebagai acuan. Jangan memakai lokasi server atau IP sebagai lokasi pengguna. " +
+		"Jangan mengarang nama tempat, alamat, atau jam buka: kalau datanya tidak ada, katakan tidak tahu dan sarankan mencari di Google Maps.")
+	return b.String()
+}
+
+// geminiTurnContext adalah baris pendek yang ditempel di SETIAP giliran. Blok
+// penuh di atas cukup sekali, tapi jam harus tetap benar setelah sesi berjalan
+// lama atau bot restart (blok penuh ikut tersimpan bersama riwayat lama), dan
+// perubahan `.gemini lokasi` harus langsung berlaku tanpa `.gemini new`.
+func geminiTurnContext(now time.Time, location string) string {
+	line := fmt.Sprintf("[Sekarang: %s %s", now.Format("02 Jan 2006 15:04"), timex.Name())
+	if loc := strings.TrimSpace(location); loc != "" {
+		line += " · " + loc
+	}
+	return line + "]"
+}
+
+// geminiMergeSystem menggabungkan prompt sistem owner dengan blok konteks
+// otomatis. Blok konteks TIDAK boleh menimpa teks owner.
+func geminiMergeSystem(sys, block string) string {
+	sys = strings.TrimSpace(sys)
+	block = strings.TrimSpace(block)
+	if sys == "" {
+		return block
+	}
+	if block == "" {
+		return sys
+	}
+	return sys + "\n\n" + block
+}
+
+// geminiLocationCmd menangani .gemini lokasi (tampil / setel / reset).
+func geminiLocationCmd(ctx context.Context, mctx *store.MessageContext, rest string) error {
+	current := geminiLocationGet(ctx, mctx.Client)
+	value := strings.TrimSpace(rest)
+
+	switch {
+	case value == "":
+		shown := "belum disetel"
+		if current != "" {
+			shown = current
+		}
+		return store.ReplyText(ctx, mctx, Block("Gemini lokasi",
+			Row("Lokasi", shown),
+			"",
+			"Setel dengan *.gemini lokasi <kota/daerah>*.",
+			"Berlaku pada pesan berikutnya, tanpa perlu *.gemini new*.",
+			"*.gemini lokasi reset* mengosongkan.",
+		))
+
+	case strings.EqualFold(value, "reset"), strings.EqualFold(value, "hapus"):
+		if err := geminiLocationSet(ctx, mctx.Client, ""); err != nil {
+			logfmt.Warn("gemini hapus lokasi: %v\n", err)
+			return store.ReplyText(ctx, mctx, ErrMsg("Gemini", "Gagal menghapus lokasi."))
+		}
+		return store.ReplyText(ctx, mctx, Block("Gemini lokasi",
+			Row("Lokasi", "dikosongkan"),
+			"",
+			"Gemini akan menanyakan kota/daerah bila jawaban bergantung pada lokasi.",
+		))
+
+	default:
+		if count := utf8.RuneCountInString(value); count > geminiMaxLocationRunes {
+			return store.ReplyText(ctx, mctx, ErrMsg("Gemini",
+				fmt.Sprintf("Lokasi kepanjangan (%d karakter, maks %d).", count, geminiMaxLocationRunes)))
+		}
+		if err := geminiLocationSet(ctx, mctx.Client, value); err != nil {
+			logfmt.Warn("gemini simpan lokasi: %v\n", err)
+			return store.ReplyText(ctx, mctx, ErrMsg("Gemini", "Gagal menyimpan lokasi."))
+		}
+		return store.ReplyText(ctx, mctx, Block("Gemini lokasi",
+			Row("Lokasi", value),
+			"",
+			"Berlaku pada pesan berikutnya, tanpa perlu *.gemini new*.",
+		))
 	}
 }
 
@@ -657,11 +1027,32 @@ func geminiDiag(ctx context.Context, mctx *store.MessageContext) error {
 		Row("Halaman", geminiStageText(d.Meta)),
 		Row("Chat", geminiStageText(d.Chat)),
 	}
+	// Nama cookie (tanpa nilainya) ditampilkan karena hilangnya `NID` adalah
+	// penyebab nyata percakapan lanjutan ditolak `1097`: server menganggap
+	// setiap permintaan sebagai sesi tamu baru.
+	if names := geminiAPI().CookieNames(); len(names) > 0 {
+		rows = append(rows, Row("Isi cookie", strings.Join(names, ", ")))
+	}
 	// Durasi ditampilkan juga saat chat gagal: beda antara "berhenti di 30,0
 	// dtk" (batas transport) dan "gagal dalam 0,2 dtk" (ditolak server) adalah
 	// petunjuk utama saat mendiagnosis jalur tamu.
 	if d.Latency > 0 {
 		rows = append(rows, Row("Durasi", d.Latency.Round(time.Millisecond).String()))
+	}
+	if d.Shape != "" {
+		rows = append(rows, Row("Bentuk", d.Shape))
+	}
+	if d.Chat.OK {
+		ticketText := "tidak ada (riwayat prompt)"
+		if !d.Ticket.Empty() {
+			ticketText = "ya · " + d.Ticket.ConversationID
+		}
+		rows = append(rows, Row("Tiket", ticketText))
+		// Tiket yang baru diterima diagnosa belum tentu dipakai: bila server
+		// sudah menolak tiket sebelumnya, status itu ditulis apa adanya.
+		if geminiAPI().TicketRejected() {
+			rows = append(rows, Row("Pemakaian", "dimatikan · server menolak tiket, pakai riwayat"))
+		}
 	}
 	if d.Answer != "" {
 		rows = append(rows, Row("Jawaban", geminiTruncateText(d.Answer, 120)))
@@ -685,6 +1076,14 @@ func geminiStageText(s geminiapi.Stage) string {
 
 // geminiDiagVerdict menyimpulkan penyebab kegagalan dari tahap pertama yang mati.
 func geminiDiagVerdict(d *geminiapi.Diag) string {
+	api := geminiAPI()
+	return geminiDiagVerdictFor(d, api.CookieNames(), api.TicketRejected())
+}
+
+// geminiDiagVerdictFor memisahkan keputusan dari klien supaya bisa diuji tanpa
+// jaringan. cookieNames hanya nama (tanpa nilai) — cukup untuk memastikan `NID`
+// ada, karena tanpanya server menolak melanjutkan percakapan (`1097`).
+func geminiDiagVerdictFor(d *geminiapi.Diag, cookieNames []string, ticketRejected bool) string {
 	switch {
 	case !d.Cookie.OK:
 		return "Cookie tamu gagal diambil: masalahnya jaringan/blokir IP, bukan akun."
@@ -697,12 +1096,38 @@ func geminiDiagVerdict(d *geminiapi.Diag) string {
 		case errors.Is(d.Chat.Err, geminiapi.ErrEmpty):
 			return "Server menjawab tanpa teks: bentuk permintaan berubah (periksa Dump)."
 		case errors.Is(d.Chat.Err, geminiapi.ErrStaleConv):
-			return "Server menolak percakapan; mode tamu memang tidak mendukung lanjutan."
+			return "Server menolak percakapan (kode 1096/1097): sesi tamu basi, bukan bug bot."
 		default:
 			return "Chat gagal: lihat baris Chat di atas."
 		}
 	}
-	return "Jalur tamu sehat: cookie, halaman, dan chat bekerja."
+	if d.Shape == "minimal" {
+		return "Jalur tamu sehat dengan bentuk permintaan minimal: konteks dibawa lewat riwayat prompt, bukan tiket."
+	}
+	// NID hilang = percakapan lanjutan pasti ditolak 1097 (terbukti lewat probe
+	// panel). Satu giliran tetap jalan, jadi kegagalan ini mudah disalahartikan
+	// sebagai "tiket ditolak server".
+	if len(cookieNames) > 0 && !geminiNamesHaveNID(cookieNames) {
+		return "Jalur tamu sehat untuk satu giliran, tapi cookie NID tidak ada: percakapan lanjutan akan ditolak server (1097). Periksa jaringan/IP keluar bot."
+	}
+	if ticketRejected {
+		return "Jalur tamu sehat. Server pernah menolak tiket percakapan, jadi bot memakai riwayat prompt sampai sesi tamu diperbarui (cookie baru)."
+	}
+	if d.Ticket.Empty() {
+		return "Jalur tamu sehat: cookie, halaman, dan chat bekerja. Server tidak memberi tiket percakapan, jadi konteks dibawa lewat riwayat prompt."
+	}
+	return "Jalur tamu sehat: cookie, halaman, chat bekerja, dan server memberi tiket percakapan (konteks diingat server)."
+}
+
+// geminiNamesHaveNID melaporkan apakah sesi tamu memuat cookie NID. Tanpa NID,
+// server tidak mau melanjutkan percakapan (`1097`) walau satu giliran berhasil.
+func geminiNamesHaveNID(names []string) bool {
+	for _, name := range names {
+		if name == "NID" {
+			return true
+		}
+	}
+	return false
 }
 
 // --- routing pasif ---
@@ -720,6 +1145,14 @@ func CheckGeminiSession(client *whatsmeow.Client, evt *events.Message, text stri
 
 	key := geminiKey(client, evt.Info.Chat, evt.Info.Sender, evt.Info.SenderAlt)
 	_, active := geminiSessionGet(key)
+	if !active && store.IsReplyToBot(evt) {
+		// Setelah restart, sesi di memori hilang tapi riwayat masih tersimpan
+		// di database. Anggap sesi hidup selama riwayatnya belum kedaluwarsa,
+		// supaya membalas bubble bot tetap bekerja seperti sebelum restart.
+		if len(geminiLoadHistory(client, key)) > 0 {
+			active = true
+		}
+	}
 
 	prompt, triggered := geminiTriggerOf(evt, text, active)
 	if !triggered {
@@ -830,9 +1263,18 @@ func geminiRun(client *whatsmeow.Client, evt *events.Message, prompt string) {
 	defer cancel()
 
 	// Prompt yang diterima memperbarui TTL sesi; riwayat lama ikut dibaca
-	// sebelum giliran ini ditambahkan.
+	// sebelum giliran ini ditambahkan. Riwayat yang hanya ada di database
+	// (proses baru setelah restart) dimuat di sini: tiket percakapan tidak bisa
+	// diandalkan lintas proses karena sesi tamu terikat cookie `NID` yang
+	// selalu baru.
 	geminiSessionEnsure(key)
 	history, _ := geminiSessionGet(key)
+	if len(history) == 0 {
+		if diskTurns := geminiLoadHistory(client, key); len(diskTurns) > 0 {
+			geminiSessionRestore(key, diskTurns)
+			history, _ = geminiSessionGet(key)
+		}
+	}
 
 	// Reaksi sebagai tanda diterima (tanpa bubble teks tunggu).
 	if err := store.SendReaction(ctx, mctx, geminiAckEmoji); err != nil {
@@ -869,13 +1311,70 @@ func geminiRun(client *whatsmeow.Client, evt *events.Message, prompt string) {
 		}
 	}
 
-	isPinned := first && sysPrompt != ""
-	reqPrompt := prompt
-	if isPinned {
-		reqPrompt = geminiSystemRequest(sysPrompt, prompt)
+	// Konteks waktu & lokasi selalu ditempel, tanpa perlu disetel owner. Gemini
+	// mode tamu menebak lokasi dari IP server (Jerman), jadi tanpa konteks ini
+	// "toko roti terdekat" dijawab alamat Jerman. Blok penuh hanya sekali (di
+	// giliran pertama, ikut tersimpan bersama riwayat); baris pendek ditempel
+	// tiap giliran supaya jam tetap benar setelah sesi lama/restart, dan
+	// perubahan `.gemini lokasi` langsung berlaku tanpa `.gemini new`.
+	now := timex.Now()
+	location := geminiLocationGet(ctx, client)
+	sysText := geminiMergeSystem(sysPrompt, geminiContextBlock(now, location))
+
+	// Tiket percakapan: hanya dari memori. Tiket tidak disimpan ke disk karena
+	// percakapan tamu terikat cookie `NID`, dan cookie itu selalu baru di
+	// proses baru — tiket hasil proses sebelumnya pasti ditolak `1097`.
+	// Tiket kosong berarti konteks dibawa lewat riwayat di dalam prompt. Saat
+	// bentuk permintaan minimal dipakai (GEMINI_FULL_PAYLOAD=0 atau fallback),
+	// server tidak menerima tiket, jadi konteks juga dari riwayat.
+	api := geminiAPI()
+	resume, uid := geminiSessionResume(key)
+	if !api.TicketEnabled() {
+		resume = geminiapi.Resume{}
 	}
 
-	res, err := geminiAPI().Ask(ctx, geminiBuildPrompt(history, reqPrompt))
+	// Giliran "pinned" menyimpan teks sistem + blok konteks. Saat tiket dipakai,
+	// server sudah memegang percakapan, jadi blok penuh tidak diulang; baris
+	// waktu singkat di bawah tetap ikut di setiap permintaan.
+	isPinned := first && resume.Empty()
+	reqPrompt := geminiTurnContext(now, location) + "\n\n" + prompt
+	if isPinned {
+		reqPrompt = geminiSystemRequest(sysText, prompt)
+		reqPrompt = geminiTurnContext(now, location) + "\n\n" + reqPrompt
+	}
+
+	if uid == "" {
+		uid = api.UID()
+	}
+
+	res, err := api.AskRequest(ctx, geminiapi.AskRequest{
+		Prompt: geminiPromptForTurn(history, reqPrompt, resume),
+		Resume: resume,
+		UID:    uid,
+	})
+	if err != nil && !resume.Empty() &&
+		(errors.Is(err, geminiapi.ErrStaleConv) || errors.Is(err, geminiapi.ErrTicketStale)) {
+		// Dua sebab tiket tidak dipakai lagi:
+		//   ErrStaleConv   = server menolak (percakapan tamu kedaluwarsa);
+		//   ErrTicketStale = cookie/NID sudah berganti, jadi permintaan TIDAK
+		//                    dikirim (server pasti menjawab 1097).
+		// Yang kedua normal (rotasi cookie tiap 30 menit / restart), jadi
+		// tidak perlu dicetak: dulu baris "tiket ditolak" di console membuat
+		// owner mengira ada kerusakan.
+		if errors.Is(err, geminiapi.ErrStaleConv) {
+			logfmt.Warn("gemini: tiket percakapan ditolak (%v), pakai riwayat prompt\n", err)
+		}
+		resume = geminiapi.Resume{}
+		geminiSessionSetResume(key, resume, uid)
+		retryNow := timex.Now()
+		isPinned = first
+		reqPrompt = geminiSystemRequest(sysText, prompt)
+		reqPrompt = geminiTurnContext(retryNow, location) + "\n\n" + reqPrompt
+		res, err = api.AskRequest(ctx, geminiapi.AskRequest{
+			Prompt: geminiPromptForTurn(history, reqPrompt, resume),
+			UID:    uid,
+		})
+	}
 	if err != nil {
 		logfmt.Warn("gemini: %v\n", err)
 		_ = store.ReplyText(bg, mctx, ErrMsg("Gemini", geminiErrorText(err)))
@@ -892,8 +1391,24 @@ func geminiRun(client *whatsmeow.Client, evt *events.Message, prompt string) {
 		Bot:    text,
 		Pinned: isPinned,
 	})
+	// Riwayat disalin ke database: inilah yang membuat konteks tetap ada
+	// setelah restart (bukan tiket, yang selalu basi karena cookie baru).
+	if turns, _ := geminiSessionGet(key); len(turns) > 0 {
+		geminiSaveHistory(client, key, turns)
+	}
 
-	if err := geminiSendText(ctx, mctx, text); err != nil {
+	// Tiket untuk giliran berikutnya (memori saja). Sidik jari sesi tamu ikut
+	// ditandai supaya giliran berikutnya tahu apakah tiket masih berlaku.
+	// Bila server tidak mengembalikan id, tiket lama tidak ditimpa supaya
+	// konteks tidak hilang. Bentuk minimal tidak memakai tiket.
+	if api.TicketEnabled() {
+		if ticket := res.Resume(); !ticket.Empty() {
+			ticket.CookieID = api.CookieID()
+			geminiSessionSetResume(key, ticket, uid)
+		}
+	}
+
+	if err := geminiSendAnswer(ctx, mctx, text); err != nil {
 		logfmt.Warn("gemini kirim: %v\n", err)
 		_ = store.ReplyText(bg, mctx, ErrMsg("Gemini", err.Error()))
 		return
@@ -914,31 +1429,164 @@ var (
 func geminiCleanAnswer(text string) string {
 	text = geminiInvisibleRe.ReplaceAllString(text, "")
 	text = geminiCtrlTagRe.ReplaceAllString(text, "")
+	text = geminiStripAgentTags(text)
 	return strings.TrimSpace(ai.SanitizeForWhatsApp(text))
 }
 
-// geminiSendText mengirim jawaban; potongan pertama me-reply perintah user,
-// sisanya pesan lepas (pola multi-bubble AI).
-func geminiSendText(ctx context.Context, mctx *store.MessageContext, text string) error {
-	text = geminiCleanAnswer(text)
-	chunks := geminiSplitReply(text, geminiBubbleRunes)
-	if len(chunks) == 0 {
-		return fmt.Errorf("jawaban kosong")
+// geminiStripAgentTags membuang penanda media internal Gemini, misalnya
+//
+//	<Image alt="Masjid Al Alam" caption="Masjid Al Alam di Teluk Kendari" src="image_agent_tag_123"/>
+//
+// Tag itu BUKAN gambar sungguhan: src-nya id internal, bukan URL, jadi kalau
+// dibiarkan hanya menjadi teks kotor di chat. Pemindaian mengikuti tanda kutip
+// supaya atribut yang memuat ">" tidak memotong tag di tengah (regex `<[^>]*>`
+// gagal pada kasus itu dan menyisakan potongan seperti `b"/>`).
+//
+// Tag `<Image>`/`<img>` selalu dibuang; tag lain (`<Video>`, `<Audio>`, …) hanya
+// dibuang bila memuat penanda `_agent_tag_`, sehingga teks biasa yang memakai
+// kurung sudut tidak ikut terhapus.
+func geminiStripAgentTags(text string) string {
+	if !strings.Contains(text, "<") {
+		return text
 	}
-	if err := store.ReplyText(ctx, mctx, chunks[0]); err != nil {
-		return err
-	}
-	for _, chunk := range chunks[1:] {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(geminiBubbleDelay):
+	buf := make([]byte, 0, len(text))
+	skipSpace := false
+	removed := false
+	for i := 0; i < len(text); {
+		if text[i] == '<' {
+			if end, ok := geminiAgentTagEnd(text, i); ok {
+				removed = true
+				if next, ok := geminiTagLineEnd(text, i, end, &buf); ok {
+					// Tag berdiri sendiri di barisnya: buang seluruh barisnya,
+					// bukan hanya tag-nya. Kalau tidak, jawaban berisi lubang
+					// dua baris kosong di tempat gambar yang dibuang.
+					i = next
+					skipSpace = false
+					continue
+				}
+				i = end
+				skipSpace = true
+				continue
+			}
 		}
-		if err := store.SendText(ctx, mctx, chunk); err != nil {
-			return err
+		if skipSpace && (text[i] == ' ' || text[i] == '\t') && (len(buf) == 0 || geminiIsSpaceByte(buf[len(buf)-1])) {
+			i++
+			continue
+		}
+		skipSpace = false
+		buf = append(buf, text[i])
+		i++
+	}
+	if !removed {
+		return string(buf)
+	}
+	// Sisa baris kosong beruntun dirapatkan jadi satu baris kosong.
+	return string(geminiCollapseBlankLines(buf))
+}
+
+// geminiTagLineEnd menangani tag yang menempati barisnya sendiri (hanya spasi
+// sebelum tag dan sesudahnya sampai akhir baris). Bila benar, inden baris itu
+// dan newline penutupnya dibuang dari buf, dan indeks lanjut dikembalikan.
+func geminiTagLineEnd(text string, start, end int, buf *[]byte) (int, bool) {
+	lineStart := strings.LastIndexByte(text[:start], '\n') + 1
+	for _, c := range text[lineStart:start] {
+		if c != ' ' && c != '\t' && c != '\r' {
+			return 0, false
 		}
 	}
-	return nil
+	k := end
+	for k < len(text) && (text[k] == ' ' || text[k] == '\t' || text[k] == '\r') {
+		k++
+	}
+	if k < len(text) && text[k] != '\n' {
+		return 0, false
+	}
+	// Buang inden baris tag (sudah terlanjur ditulis ke buf).
+	trimmed := *buf
+	for len(trimmed) > 0 && (trimmed[len(trimmed)-1] == ' ' || trimmed[len(trimmed)-1] == '\t') {
+		trimmed = trimmed[:len(trimmed)-1]
+	}
+	*buf = trimmed
+	if k < len(text) {
+		return k + 1, true
+	}
+	// Tag di baris terakhir: buang newline sebelum barisnya supaya tidak
+	// tersisa baris kosong di ujung.
+	trimmed = *buf
+	if len(trimmed) > 0 && trimmed[len(trimmed)-1] == '\n' {
+		trimmed = trimmed[:len(trimmed)-1]
+		if len(trimmed) > 0 && trimmed[len(trimmed)-1] == '\r' {
+			trimmed = trimmed[:len(trimmed)-1]
+		}
+	}
+	*buf = trimmed
+	return k, true
+}
+
+// geminiCollapseBlankLines merapatkan newline beruntun (3 ke atas) menjadi satu
+// baris kosong, tanpa menyentuh newline tunggal/ganda yang memang disengaja.
+func geminiCollapseBlankLines(buf []byte) []byte {
+	out := make([]byte, 0, len(buf))
+	run := 0
+	for _, c := range buf {
+		if c == '\n' {
+			run++
+			if run > 2 {
+				continue
+			}
+		} else {
+			run = 0
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// geminiAgentTagEnd mengembalikan indeks setelah '>' penutup bila teks pada
+// posisi start adalah tag media internal Gemini.
+func geminiAgentTagEnd(text string, start int) (int, bool) {
+	j := start + 1
+	if j < len(text) && text[j] == '/' {
+		return 0, false
+	}
+	nameStart := j
+	for j < len(text) && isAgentTagNameChar(text[j]) {
+		j++
+	}
+	if j == nameStart {
+		return 0, false
+	}
+	name := strings.ToLower(text[nameStart:j])
+	var quote byte
+	for ; j < len(text); j++ {
+		c := text[j]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '<':
+			return 0, false
+		case c == '>':
+			if name == "image" || name == "img" {
+				return j + 1, true
+			}
+			return j + 1, strings.Contains(strings.ToLower(text[start:j+1]), "_agent_tag_")
+		}
+	}
+	return 0, false
+}
+
+func isAgentTagNameChar(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_'
+}
+
+// geminiIsSpaceByte true untuk spasi/tab/newline — dipakai memutuskan apakah
+// spasi setelah tag yang dibuang perlu ikut dibuang (menghindari spasi ganda).
+func geminiIsSpaceByte(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
 var (
@@ -1133,6 +1781,8 @@ func geminiErrorText(err error) string {
 		return "Batas penggunaan Gemini tercapai untuk tamu/IP ini. Coba lagi beberapa saat."
 	case errors.Is(err, geminiapi.ErrStaleConv):
 		return "Gemini menolak percakapan ini. Jalankan .gemini new lalu ulangi."
+	case errors.Is(err, geminiapi.ErrTicketStale):
+		return "Sesi tamu Gemini sudah berganti, jadi percakapan lama tidak bisa dilanjutkan. Coba lagi."
 	case errors.Is(err, geminiapi.ErrEmpty), errors.Is(err, geminiapi.ErrProtocol):
 		return "Balasan Gemini tidak terbaca (bisa jadi protokol webnya berubah). Coba lagi."
 	case errors.Is(err, context.DeadlineExceeded):

@@ -496,6 +496,38 @@ func (g *GroupDB) SetGeminiSystemPrompt(ctx context.Context, text string) error 
 	return err
 }
 
+// GetGeminiState membaca state percakapan Gemini (JSON) untuk satu kunci sesi.
+// Dipakai `.gemini` untuk menyimpan riwayat giliran (bukan kredensial). String
+// kosong = belum ada.
+func (g *GroupDB) GetGeminiState(ctx context.Context, key string) (string, error) {
+	var v string
+	err := g.db.QueryRowContext(ctx, `SELECT value FROM bot_settings WHERE key = ?`, key).Scan(&v)
+	if err != nil {
+		if isNoRowsError(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return v, nil
+}
+
+// SetGeminiState menyimpan state percakapan Gemini. Nilai kosong menghapus
+// baris (kembali ke keadaan belum ada state).
+func (g *GroupDB) SetGeminiState(ctx context.Context, key, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return g.DeleteGeminiState(ctx, key)
+	}
+	_, err := g.db.ExecContext(ctx, `INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)`, key, value)
+	return err
+}
+
+// DeleteGeminiState membuang state percakapan Gemini untuk satu kunci.
+func (g *GroupDB) DeleteGeminiState(ctx context.Context, key string) error {
+	_, err := g.db.ExecContext(ctx, `DELETE FROM bot_settings WHERE key = ?`, key)
+	return err
+}
+
 // errInvalidMode dipisah supaya pesan error konsisten dipakai ulang.
 func errInvalidMode(mode string) error {
 	return &modeError{mode: mode}
