@@ -70,10 +70,9 @@ func HandleAIMessage(ctx context.Context, mctx *store.MessageContext, text strin
 	}
 	if err != nil {
 		// Fase 4: pesan ramah ke user, detail teknis sudah dikirim ke owner
-		// oleh notifyOwner di dalam processAITurn. Balasan ramah ini
-		// di-cooldown per chat (lihat sendFriendlyAIError): saat provider
-		// down + chat ramai, tiap giliran gagal tidak boleh membanjiri chat
-		// dengan bubble error berulang.
+		// oleh notifyOwnerOfAIError di dalam processAITurn. Balasan ramah ini
+		// juga SENGAJA tanpa cooldown (lihat sendFriendlyAIError): setiap
+		// giliran gagal dibalas, tidak ada kegagalan yang ditahan diam-diam.
 		return sendFriendlyAIError(ctx, mctx, err)
 	}
 
@@ -183,8 +182,20 @@ func sendVoiceReply(ctx context.Context, mctx *store.MessageContext, text string
 // SENGAJA TETAP memakai mctx.Sender.String() murni, bukan sessionKey —
 // lihat catatan di pemanggilan ai.TriggerFactExtraction di bawah.
 func processAITurn(ctx context.Context, mctx *store.MessageContext, sessionKey, text string) (string, error) {
+	turnStart := time.Now()
+	// Provider & model dicatat di AWAL giliran: kalau owner mengganti model
+	// saat giliran ini masih berjalan, laporan error tetap menunjuk model yang
+	// benar-benar dipakai dan gagal — bukan model baru yang belum diuji.
+	providerName := ai.GetActiveProviderName(ctx)
+	modelName := ai.GetActiveModelName(ctx)
+
 	provider, err := ai.GetActiveProvider(ctx)
 	if err != nil {
+		// Error konfigurasi (API key kosong, model kosong, endpoint tak
+		// terdaftar) tidak pernah sampai ke retry loop — dulu karena itu owner
+		// TIDAK dapat notifikasi apa pun. Sekarang dilaporkan juga, dengan
+		// penanda "0 percobaan (gagal sebelum request dikirim)".
+		notifyOwnerOfAIError(mctx, providerName, modelName, time.Since(turnStart), err)
 		return "", err
 	}
 
@@ -252,6 +263,12 @@ func processAITurn(ctx context.Context, mctx *store.MessageContext, sessionKey, 
 		nowLocal.Format("Monday, 2 January 2006") +
 		" — format tanggal tool YYYY-MM-DD: " + nowLocal.Format("2006-01-02") + ". " +
 		"Hitung tanggal relatif (kemarin, minggu/bulan ini) dari tanggal ini."
+	// Blok saldo keuangan owner: model tidak perlu menebak/menjumlah manual.
+	// Fail-soft (bukan owner / DB error = tidak disuntik), dan angka ditulis
+	// mentah supaya pemisah ribuan Indonesia tidak salah dibaca model.
+	if saldoBlock := financeSaldoPromptBlock(ctx, mctx); saldoBlock != "" {
+		systemPrompt = systemPrompt + "\n\n" + saldoBlock
+	}
 	// Pengganti max_tokens (field itu diabaikan gateway ciora — sudah diuji):
 	// minta jawaban ringkas supaya waktu tunggu dan token tidak membengkak.
 	systemPrompt = systemPrompt + "\n\nGaya jawaban: ringkas dan langsung ke inti. " +
@@ -278,15 +295,11 @@ func processAITurn(ctx context.Context, mctx *store.MessageContext, sessionKey, 
 		}
 	}
 
-	notifyOwner := func(err error) {
-		notifyOwnerOfAIError(mctx, err)
-	}
-
 	logAITurnStart(ctx, mctx, sessionKey, history, text)
-	turnStart := time.Now()
-	resultText, err := ai.RunAgentLoopWithRetry(actx, provider, history, systemPrompt, notifyOwner)
+	resultText, err := ai.RunAgentLoopWithRetry(actx, provider, history, systemPrompt)
 	logAITurnDone(sessionKey, resultText, err, time.Since(turnStart))
 	if err != nil {
+		notifyOwnerOfAIError(mctx, providerName, modelName, time.Since(turnStart), err)
 		return "", err
 	}
 
@@ -378,63 +391,34 @@ func extractTriggerImage(ctx context.Context, mctx *store.MessageContext) (imgBy
 	return data, mime, ""
 }
 
-// ownerNotifyCooldown: notifikasi error AI ke owner dibatasi max 1 per
-// jendela ini — saat provider down + grup ramai, ratusan giliran gagal
-// tidak boleh membanjiri DM owner. Error yang ditahan dihitung (suppressed)
-// dan dilaporkan pada notifikasi berikutnya. Mutex karena dipanggil dari
-// banyak goroutine trigger konkuren.
-var (
-	ownerNotifyMu         sync.Mutex
-	ownerNotifyLast       time.Time
-	ownerNotifySuppressed int
-)
+// ownerSendMu hanya menyerialkan PENGIRIMAN laporan ke owner, bukan menahan
+// atau menghitung laporan. Keputusan owner (Nov 2026): throttle 5 menit global
+// dihapus — setiap giliran gagal harus dilaporkan, karena saat owner berganti
+// model untuk mencari yang sehat, laporan yang ditahan membuatnya tidak tahu
+// model mana yang error. Mutex di sini murni supaya dua goroutine tidak
+// mengirim laporan bersamaan ke client WhatsApp.
+var ownerSendMu sync.Mutex
 
-const ownerNotifyCooldown = 5 * time.Minute
+// notifyOwnerOfAIError mengirim laporan error teknis ke nomor owner UTAMA
+// (entri pertama OWNER_NUMBERS), terpisah dari pesan ramah yang dilihat user
+// biasa. Tanpa throttle: satu giliran gagal = satu laporan.
+// Kegagalan kirim notifikasi ini sendiri sengaja diabaikan (fail-soft) —
+// tidak boleh sampai bikin proses utama gagal gara-gara notifikasi gagal.
+func notifyOwnerOfAIError(mctx *store.MessageContext, provider, model string, elapsed time.Duration, err error) {
+	ownerJID := types.NewJID(config.PrimaryOwnerNumber(), types.DefaultUserServer)
+	report := ai.FormatOwnerErrorReport(mctx.Sender.String(), mctx.Chat.String(), provider, model, elapsed, err)
 
-// userErrorCooldown: balasan ramah error AI ke chat dibatasi max 1 per
-// jendela ini PER CHAT — saat provider down + chat ramai, tiap giliran gagal
-// tidak boleh membanjiri chat dengan bubble "Maaf, lagi ada gangguan"
-// berulang. Error yang ditahan dihitung (suppressed) dan dilaporkan pada
-// balasan berikutnya. Mutex karena dipanggil dari banyak goroutine trigger
-// konkuren. Return nil saat ditahan supaya fallback di handler (yang juga
-// mengirim pesan error bila HandleAIMessage gagal) tidak ikut mengirim ganda.
-var (
-	userErrMu         sync.Mutex
-	userErrLast       = make(map[string]time.Time)
-	userErrSuppressed = make(map[string]int)
-)
+	ownerSendMu.Lock()
+	defer ownerSendMu.Unlock()
 
-const userErrorCooldown = 5 * time.Minute
-
-// sendFriendlyAIError mengirim bubble ramah error AI dengan cooldown per chat.
-// Saat masih dalam jendela cooldown: tidak kirim apa-apa ke chat (diam),
-// cukup catat di console + hitung suppressed, return nil.
-// Penyebab antrean provider (ai.ProviderBusyMarker) dibalas dengan pesan
-// "lagi antre" yang jujur, bukan "gangguan".
-func sendFriendlyAIError(ctx context.Context, mctx *store.MessageContext, err error) error {
-	chat := mctx.Chat.String()
-
-	userErrMu.Lock()
-	if last, ok := userErrLast[chat]; ok && time.Since(last) < userErrorCooldown {
-		userErrSuppressed[chat]++
-		n := userErrSuppressed[chat]
-		userErrMu.Unlock()
-		logfmt.Skip("Balasan error AI ke %s ditahan (cooldown, +%d ditahan).\n", chat, n)
-		return nil
+	_, sendErr := mctx.Client.SendMessage(context.Background(), ownerJID, &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String(report),
+		},
+	})
+	if sendErr != nil {
+		logfmt.Error("Gagal kirim notifikasi error AI ke owner: %v\n", sendErr)
 	}
-	userErrLast[chat] = time.Now()
-	suppressed := userErrSuppressed[chat]
-	userErrSuppressed[chat] = 0
-	userErrMu.Unlock()
-
-	msg := "Maaf, lagi ada gangguan nih. Coba lagi sebentar ya~"
-	if err != nil && strings.Contains(err.Error(), ai.ProviderBusyMarker) {
-		msg = "Flora lagi antre menjawab chat lain nih, coba lagi sebentar ya~"
-	}
-	if suppressed > 0 {
-		msg += fmt.Sprintf("\n(+%d error serupa ditahan dalam 5 menit terakhir.)", suppressed)
-	}
-	return store.ReplyText(ctx, mctx, msg)
 }
 
 // logAITurnStart mencatat pembuka giliran AI UTUH (format blok MESSAGE).
@@ -466,36 +450,16 @@ func logAITurnDone(sessionKey, resultText string, err error, elapsed time.Durati
 	ai.LogTurnDone("selesai "+elapsed.String(), resultText)
 }
 
-// notifyOwnerOfAIError mengirim laporan error teknis ke nomor owner UTAMA
-// (entri pertama OWNER_NUMBERS), terpisah dari pesan ramah yang dilihat user biasa.
-// Kegagalan kirim notifikasi ini sendiri sengaja diabaikan (fail-soft) —
-// tidak boleh sampai bikin proses utama gagal gara-gara notifikasi gagal.
-func notifyOwnerOfAIError(mctx *store.MessageContext, err error) {
-	ownerNotifyMu.Lock()
-	if time.Since(ownerNotifyLast) < ownerNotifyCooldown {
-		ownerNotifySuppressed++
-		n := ownerNotifySuppressed
-		ownerNotifyMu.Unlock()
-		logfmt.Skip("Notifikasi error AI ke owner ditahan (cooldown, +%d ditahan).\n", n)
-		return
+// sendFriendlyAIError mengirim bubble ramah error AI ke chat. SENGAJA tanpa
+// cooldown (keputusan owner Nov 2026, sejalan dengan laporan ke owner): setiap
+// giliran gagal dibalas, supaya tidak ada kegagalan yang "hilang" dan membuat
+// user/owner mengira request-nya tidak pernah diproses.
+// Penyebab antrean provider (ai.ProviderBusyMarker) dibalas dengan pesan
+// "lagi antre" yang jujur, bukan "gangguan".
+func sendFriendlyAIError(ctx context.Context, mctx *store.MessageContext, err error) error {
+	msg := "Maaf, lagi ada gangguan nih. Coba lagi sebentar ya~"
+	if err != nil && strings.Contains(err.Error(), ai.ProviderBusyMarker) {
+		msg = "Flora lagi antre menjawab chat lain nih, coba lagi sebentar ya~"
 	}
-	ownerNotifyLast = time.Now()
-	suppressed := ownerNotifySuppressed
-	ownerNotifySuppressed = 0
-	ownerNotifyMu.Unlock()
-
-	ownerJID := types.NewJID(config.PrimaryOwnerNumber(), types.DefaultUserServer)
-	report := ai.FormatOwnerErrorReport(mctx.Sender.String(), mctx.Chat.String(), err)
-	if suppressed > 0 {
-		report += fmt.Sprintf("\n(+%d error serupa ditahan dalam 5 menit terakhir.)", suppressed)
-	}
-
-	_, sendErr := mctx.Client.SendMessage(context.Background(), ownerJID, &waE2E.Message{
-		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
-			Text: proto.String(report),
-		},
-	})
-	if sendErr != nil {
-		logfmt.Error("Gagal kirim notifikasi error AI ke owner: %v\n", sendErr)
-	}
+	return store.ReplyText(ctx, mctx, msg)
 }

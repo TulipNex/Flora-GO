@@ -30,6 +30,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"wabot-go/internal/timex"
 
@@ -324,6 +325,58 @@ func (f *FinanceDB) RekapKeuangan(ctx context.Context, filter FinanceFilter) (Fi
 		return out, err
 	}
 	out.Saldo = out.TotalMasuk - out.TotalKeluar
+	return out, nil
+}
+
+// FinanceSaldo adalah saldo BERJALAN seorang owner: saldo awal periode
+// berjalan ditambah mutasi bulan berjalan (masuk − keluar), per sumber dana.
+// Tidak ada tabel/cache saldo — angka ini selalu dihitung dari `keuangan` +
+// `finance_periode`, jadi tidak mungkin basi karena mutasi yang terlewat.
+type FinanceSaldo struct {
+	Owner        string
+	Periode      string // 'YYYY-MM'
+	AwalKas      int64  // saldo awal bulan (dibawa dari bulan lalu)
+	AwalRekening int64
+	Kas          int64 // saldo akhir kas = AwalKas + masuk kas − keluar kas
+	Rekening     int64
+	Total        int64 // Kas + Rekening
+	Masuk        int64 // total masuk bulan berjalan (kas + rekening)
+	Keluar       int64 // total keluar bulan berjalan
+	Count        int64 // jumlah transaksi bulan berjalan
+}
+
+// SaldoBerjalan menghitung saldo bulan berjalan memakai zona aktif timex.
+// Satu pintu hitung untuk command owner (.saldo), tool AI (cek_saldo), dan
+// blok system prompt — pemanggil TIDAK boleh menghitung ulang sendiri.
+func (f *FinanceDB) SaldoBerjalan(ctx context.Context, owner string) (FinanceSaldo, error) {
+	now := timex.Now()
+	out := FinanceSaldo{Owner: owner, Periode: now.Format("2006-01")}
+
+	p, found, err := f.GetFinancePeriode(ctx, owner, out.Periode)
+	if err != nil {
+		return out, err
+	}
+	if found {
+		out.AwalKas, out.AwalRekening = p.SaldoAwalKas, p.SaldoAwalRekening
+	}
+
+	// Batasi ke bulan berjalan supaya baris sisa bulan lain (kalau ada) tidak
+	// ikut terhitung ke saldo yang saldo awalnya hanya milik bulan ini.
+	first := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	last := first.AddDate(0, 1, -1)
+	r, err := f.RekapKeuangan(ctx, FinanceFilter{
+		Owner:  owner,
+		Dari:   first.Format("2006-01-02"),
+		Sampai: last.Format("2006-01-02"),
+	})
+	if err != nil {
+		return out, err
+	}
+
+	out.Count, out.Masuk, out.Keluar = r.Count, r.TotalMasuk, r.TotalKeluar
+	out.Kas = out.AwalKas + r.PerSumber["kas"].Saldo
+	out.Rekening = out.AwalRekening + r.PerSumber["rekening"].Saldo
+	out.Total = out.Kas + out.Rekening
 	return out, nil
 }
 

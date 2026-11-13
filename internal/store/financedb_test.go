@@ -4,6 +4,8 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+
+	"wabot-go/internal/timex"
 )
 
 // TestFinanceInputAtAndRange memverifikasi kolom input_at terisi saat insert
@@ -464,5 +466,77 @@ func TestFinanceInsertOutOfOrderPhysicalSorting(t *testing.T) {
 	}
 	if *t08.SaldoKas != -75000 {
 		t.Errorf("saldo T_08 = %d, mau -75000", *t08.SaldoKas)
+	}
+}
+
+// TestFinanceSaldoBerjalan memastikan SaldoBerjalan = saldo awal periode +
+// mutasi bulan berjalan (kas & rekening dipisah), hanya menghitung bulan
+// berjalan, dan tidak mencampur transaksi owner lain.
+func TestFinanceSaldoBerjalan(t *testing.T) {
+	dir := t.TempDir()
+	if err := InitFinanceDB(filepath.Join(dir, "finance.db")); err != nil {
+		t.Fatalf("InitFinanceDB: %v", err)
+	}
+	defer Finance().db.Close()
+	ctx := context.Background()
+	in := func(n int64) *int64 { return &n }
+
+	now := timex.Now()
+	periode := now.Format("2006-01")
+	tgl := now.Format("2006-01") + "-10"
+	prev := now.AddDate(0, -1, 0).Format("2006-01") + "-10"
+
+	if err := Finance().SetFinancePeriodeAwal(ctx, "628", periode, 500000, 1000000); err != nil {
+		t.Fatalf("SetFinancePeriodeAwal: %v", err)
+	}
+	rows := []struct {
+		id      string
+		masuk   *int64
+		keluar  *int64
+		sumber  string
+		tanggal string
+	}{
+		{"S1", in(200000), nil, "kas", tgl},
+		{"S2", nil, in(50000), "kas", tgl},
+		{"S3", in(300000), nil, "rekening", tgl},
+		{"S4", in(999999), nil, "kas", prev}, // bulan lalu: tidak boleh ikut
+	}
+	for _, r := range rows {
+		if _, err := Finance().InsertKeuangan(ctx, r.id, "628", "uji", r.masuk, r.keluar, r.sumber, r.tanggal, ""); err != nil {
+			t.Fatalf("InsertKeuangan %s: %v", r.id, err)
+		}
+	}
+	// Owner lain tidak boleh tercampur.
+	if _, err := Finance().InsertKeuangan(ctx, "OTHER", "629", "uji", in(777000), nil, "kas", tgl, ""); err != nil {
+		t.Fatalf("InsertKeuangan owner lain: %v", err)
+	}
+
+	s, err := Finance().SaldoBerjalan(ctx, "628")
+	if err != nil {
+		t.Fatalf("SaldoBerjalan: %v", err)
+	}
+	if s.Periode != periode {
+		t.Errorf("periode = %q, mau %q", s.Periode, periode)
+	}
+	if s.AwalKas != 500000 || s.AwalRekening != 1000000 {
+		t.Errorf("saldo awal = %d/%d, mau 500000/1000000", s.AwalKas, s.AwalRekening)
+	}
+	if s.Kas != 650000 {
+		t.Errorf("saldo kas = %d, mau 650000", s.Kas)
+	}
+	if s.Rekening != 1300000 {
+		t.Errorf("saldo rekening = %d, mau 1300000", s.Rekening)
+	}
+	if s.Total != 1950000 {
+		t.Errorf("saldo total = %d, mau 1950000", s.Total)
+	}
+	if s.Count != 3 || s.Masuk != 500000 || s.Keluar != 50000 {
+		t.Errorf("mutasi = count %d masuk %d keluar %d, mau 3/500000/50000", s.Count, s.Masuk, s.Keluar)
+	}
+
+	// Owner tanpa baris periode: saldo awal 0, bukan error.
+	kosong, err := Finance().SaldoBerjalan(ctx, "630")
+	if err != nil || kosong.Total != 0 || kosong.Count != 0 {
+		t.Fatalf("owner tanpa data = %+v err=%v, mau nol", kosong, err)
 	}
 }

@@ -327,6 +327,15 @@ func firstText(msg *waE2E.Message) string {
 	return ""
 }
 
+// MessageText mengekspor firstText untuk pembaca teks di luar package store —
+// dipakai playground (.send) membaca script dari pesan yang di-reply.
+func MessageText(msg *waE2E.Message) string {
+	if msg == nil {
+		return ""
+	}
+	return firstText(msg)
+}
+
 // captionOr mengembalikan fallback ("-") kalau caption kosong, atau caption
 // apa adanya kalau ada (isi log tidak dilipat/dipotong agar bisa disalin).
 func captionOr(fallback, caption string) string {

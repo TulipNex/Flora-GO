@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -85,16 +86,45 @@ func isTransientError(err error) bool {
 	return false
 }
 
+// AttemptFailure adalah satu percobaan provider yang gagal di dalam satu
+// giliran. Disimpan lengkap supaya laporan ke owner memuat SEMUA kegagalan —
+// dulu hanya error percobaan terakhir yang dikirim, sehingga owner tidak tahu
+// percobaan sebelumnya 500/timeout (dan mengira model yang baru dipilih sehat).
+type AttemptFailure struct {
+	Attempt   int
+	Transient bool
+	Elapsed   time.Duration
+	Err       error
+}
+
+// TurnError adalah kegagalan satu giliran AI beserta jejak semua percobaan.
+// Error()/Unwrap() meneruskan error akhir supaya pemanggil yang hanya peduli
+// pesan atau errors.Is tetap bekerja seperti sebelumnya.
+type TurnError struct {
+	Attempts []AttemptFailure
+	Err      error
+}
+
+func (e *TurnError) Error() string {
+	if e == nil || e.Err == nil {
+		return "gagal tanpa keterangan"
+	}
+	return e.Err.Error()
+}
+
+func (e *TurnError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 // RunAgentLoopWithRetry membungkus RunAgentLoop dengan retry otomatis untuk
-// error transient, dan notifikasi ke owner kalau tetap gagal setelah semua
-// percobaan habis (atau error-nya permanen sejak awal, tidak layak diulang).
-//
-// notifyOwner dipisah sebagai parameter fungsi (bukan dipanggil langsung di
-// sini) supaya package internal/ai tidak perlu tahu cara mengirim pesan
-// WhatsApp (itu tanggung jawab plugins/ai.go yang punya akses whatsmeow
-// client) — konsisten dengan prinsip package ini tetap bebas dependency
-// whatsmeow.
-func RunAgentLoopWithRetry(actx *AgentContext, provider ProviderAdapter, history []Content, systemPrompt string, notifyOwner func(err error)) (string, error) {
+// error transient. Kegagalan TIDAK dikirim dari sini: pemanggil (plugins/ai.go)
+// yang melaporkan ke owner lewat FormatOwnerErrorReport, supaya satu giliran
+// hanya menghasilkan SATU laporan (termasuk error konfigurasi yang terjadi
+// sebelum retry loop jalan).
+func RunAgentLoopWithRetry(actx *AgentContext, provider ProviderAdapter, history []Content, systemPrompt string) (string, error) {
 	var lastErr error
 
 	// Satu cache per giliran user, dibagikan ke semua attempt: tool yang
@@ -110,8 +140,10 @@ func RunAgentLoopWithRetry(actx *AgentContext, provider ProviderAdapter, history
 	runCtx := *actx
 	runCtx.Context = ctx
 	timeoutRetries := 0
+	attempts := make([]AttemptFailure, 0, MaxRetries)
 
 	for attempt := 0; attempt < MaxRetries; attempt++ {
+		attemptStart := time.Now()
 		text, err := RunAgentLoop(&runCtx, provider, history, systemPrompt, cache)
 		if err == nil {
 			if attempt > 0 {
@@ -124,9 +156,16 @@ func RunAgentLoopWithRetry(actx *AgentContext, provider ProviderAdapter, history
 		}
 
 		lastErr = err
+		transient := isTransientError(err)
+		attempts = append(attempts, AttemptFailure{
+			Attempt:   attempt + 1,
+			Transient: transient,
+			Elapsed:   time.Since(attemptStart),
+			Err:       err,
+		})
 		LogSide("retry", []AIField{
 			{"attempt", fmt.Sprintf("%d", attempt+1)},
-			{"transient", fmt.Sprintf("%v", isTransientError(err))},
+			{"transient", fmt.Sprintf("%v", transient)},
 		}, err.Error())
 
 		// Anggaran giliran habis: berhenti, jangan mulai percobaan yang
@@ -135,7 +174,7 @@ func RunAgentLoopWithRetry(actx *AgentContext, provider ProviderAdapter, history
 			break
 		}
 
-		if !isTransientError(err) {
+		if !transient {
 			break // error permanen, tidak ada gunanya diulang
 		}
 
@@ -177,22 +216,100 @@ func RunAgentLoopWithRetry(actx *AgentContext, provider ProviderAdapter, history
 		}
 	}
 
-	if notifyOwner != nil {
-		notifyOwner(lastErr)
+	return "", &TurnError{
+		Attempts: attempts,
+		Err:      fmt.Errorf("gagal setelah beberapa percobaan: %w", lastErr),
 	}
-	return "", fmt.Errorf("gagal setelah beberapa percobaan: %w", lastErr)
 }
+
+// Batas panjang laporan owner: error adapter bisa memuat cuplikan body 500
+// karakter, dan satu giliran bisa punya 3 percobaan — tanpa batas, satu
+// laporan bisa jadi novel yang sulit dibaca di WhatsApp.
+const (
+	maxOwnerAttemptChars = 300
+	maxOwnerReportChars  = 4000
+)
 
 // FormatOwnerErrorReport menyusun teks laporan error yang dikirim ke owner —
 // dipisah jadi fungsi sendiri supaya format pesan konsisten dan gampang
 // diubah tanpa menyentuh logic retry.
-func FormatOwnerErrorReport(senderJID, chatJID string, err error) string {
-	return fmt.Sprintf(
-		"[AI ERROR]\nWaktu: %s (%s)\nDari: %s\nChat: %s\nError: %s",
+//
+// Sejak Nov 2026 laporan WAJIB memuat provider + model (owner sering berganti
+// model untuk mencari yang sehat; tanpa dua baris itu, error tidak bisa
+// dipetakan ke model yang sedang diuji) dan SELURUH percobaan, bukan hanya
+// error terakhir. Error konfigurasi (API key kosong, model kosong) tidak punya
+// percobaan sama sekali — itu dilaporkan sebagai "0 percobaan (gagal sebelum
+// request dikirim)".
+func FormatOwnerErrorReport(senderJID, chatJID, provider, model string, elapsed time.Duration, err error) string {
+	attempts := []AttemptFailure(nil)
+	final := err
+	var turnErr *TurnError
+	if errors.As(err, &turnErr) {
+		attempts = turnErr.Attempts
+		final = turnErr.Err
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "[AI ERROR]\nWaktu: %s (%s)\nProvider: %s\nModel: %s\nDari: %s\nChat: %s\nDurasi giliran: %s\n",
 		timex.Now().Format("2006-01-02 15:04:05"),
 		timex.Name(),
+		orDash(provider),
+		orDash(model),
 		senderJID,
 		chatJID,
-		err.Error(),
+		elapsed.Round(time.Millisecond),
 	)
+	if len(attempts) == 0 {
+		sb.WriteString("Percobaan: 0 (gagal sebelum request dikirim)\n")
+	} else {
+		fmt.Fprintf(&sb, "Percobaan: %d\n", len(attempts))
+		for _, a := range attempts {
+			kind := "permanen"
+			if a.Transient {
+				kind = "transient"
+			}
+			fmt.Fprintf(&sb, "%d. %s %s: %s\n", a.Attempt, kind, a.Elapsed.Round(time.Millisecond), truncateOwnerErr(a.Err))
+		}
+	}
+	fmt.Fprintf(&sb, "Hasil akhir: %s", truncateOwnerErr(final))
+	return truncateOwnerReport(strings.TrimRight(sb.String(), "\n"))
+}
+
+// orDash mengganti nilai kosong dengan "-" supaya baris laporan tidak terlihat
+// seperti data yang hilang.
+func orDash(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// truncateOwnerErr merapikan satu error jadi satu baris pendek. Baris baru
+// diganti spasi supaya struktur laporan (nomor percobaan) tidak rusak oleh
+// cuplikan body respons.
+func truncateOwnerErr(err error) string {
+	if err == nil {
+		return "-"
+	}
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return "-"
+	}
+	msg = strings.ReplaceAll(msg, "\r", " ")
+	msg = strings.ReplaceAll(msg, "\n", " ")
+	msg = strings.Join(strings.Fields(msg), " ")
+	if r := []rune(msg); len(r) > maxOwnerAttemptChars {
+		return string(r[:maxOwnerAttemptChars]) + "…"
+	}
+	return msg
+}
+
+// truncateOwnerReport membatasi panjang total laporan (rune-aware supaya tidak
+// memotong karakter multi-byte di tengah).
+func truncateOwnerReport(s string) string {
+	if r := []rune(s); len(r) > maxOwnerReportChars {
+		return string(r[:maxOwnerReportChars]) + "…"
+	}
+	return s
 }

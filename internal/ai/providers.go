@@ -301,29 +301,131 @@ func AddModel(ctx context.Context, model string) error {
 	return store.AI().AddModel(ctx, provider, model)
 }
 
-// DelModel menghapus model dari provider yang SEDANG aktif. Model terakhir
-// dan model yang sedang aktif tidak boleh dihapus.
-func DelModel(ctx context.Context, model string) error {
+// SkippedModelRef menjelaskan satu acuan model (nomor urut atau nama) yang
+// TIDAK jadi dihapus beserta alasannya. Reason sudah berupa potongan kalimat
+// siap tampil (pola sama seperti pesan error lain di paket ini) supaya plugin
+// tinggal merangkainya jadi satu bubble ringkasan.
+type SkippedModelRef struct {
+	Ref    string
+	Reason string
+}
+
+// DelModelsResult adalah ringkasan hasil hapus model (satu atau batch) untuk
+// provider yang sedang aktif.
+type DelModelsResult struct {
+	Provider string
+	Deleted  []string
+	Skipped  []SkippedModelRef
+}
+
+// DelModels menghapus satu atau banyak model dari provider yang SEDANG aktif.
+// Setiap acuan boleh nomor urut 1-based (urutan yang sama dengan FormatModelList)
+// atau nama model, dan boleh dicampur: "1,3,ciora-vision-free".
+//
+// Nomor urut diresolusi terhadap SNAPSHOT daftar sebelum penghapusan, jadi
+// "del 1,2,4" menghapus model nomor 1, 2, dan 4 pada daftar yang baru saja
+// ditampilkan — bukan daftar yang sudah bergeser setelah nomor 1 hilang.
+//
+// Kebijakan lama tetap berlaku, tapi pelanggarannya TIDAK membatalkan seluruh
+// batch: acuan bermasalah masuk Skipped, sisanya tetap dihapus (batch parsial
+// dipilih owner supaya menghapus banyak model tidak perlu satu-satu). Model
+// aktif tidak pernah dihapus, dan provider tidak boleh ditinggalkan tanpa
+// model sama sekali — request dengan model kosong pasti ditolak gateway.
+func DelModels(ctx context.Context, refs []string) (DelModelsResult, error) {
 	provider := GetActiveProviderName(ctx)
-	model = strings.TrimSpace(model)
 	models := ListModels(ctx, provider)
-	found := false
-	for _, m := range models {
-		if m == model {
-			found = true
-			break
+	res := DelModelsResult{Provider: provider}
+	if len(models) == 0 {
+		return res, nil
+	}
+
+	activeModel := GetActiveModelName(ctx)
+	seen := make(map[int]bool, len(models))
+	var toDelete []string
+
+	for _, raw := range refs {
+		ref := strings.TrimSpace(raw)
+		if ref == "" {
+			continue
+		}
+		idx, name, reason := resolveModelRefIndex(models, ref)
+		if reason != "" {
+			res.Skipped = append(res.Skipped, SkippedModelRef{Ref: ref, Reason: reason})
+			continue
+		}
+		if seen[idx] {
+			continue // duplikat: hasilnya sama, tak perlu jadi kebisingan
+		}
+		seen[idx] = true
+		if len(models) == 1 {
+			res.Skipped = append(res.Skipped, SkippedModelRef{Ref: ref, Reason: "satu-satunya model provider"})
+			continue
+		}
+		if name == activeModel {
+			res.Skipped = append(res.Skipped, SkippedModelRef{Ref: ref, Reason: "sedang aktif — ganti dulu baru hapus"})
+			continue
+		}
+		toDelete = append(toDelete, name)
+	}
+
+	// Jaring pengaman: jangan pernah menyisakan provider tanpa model. Kasus
+	// normal sudah tertahan guard model aktif di atas, jadi blok ini hanya
+	// jalan pada keadaan aneh (daftar model berubah di tengah jalan).
+	if len(toDelete) >= len(models) {
+		for _, name := range toDelete {
+			res.Skipped = append(res.Skipped, SkippedModelRef{Ref: name, Reason: "tidak bisa hapus semua model — sisakan minimal satu"})
+		}
+		toDelete = nil
+	}
+	if len(toDelete) == 0 {
+		return res, nil
+	}
+	if _, err := store.AI().DelModels(ctx, provider, toDelete); err != nil {
+		return res, err
+	}
+	res.Deleted = toDelete
+	return res, nil
+}
+
+// resolveModelRefIndex memetakan satu acuan user ke indeks model pada snapshot
+// daftar. Nomor urut dicek lebih dulu (fitur utama perintah), lalu nama exact,
+// lalu nama tanpa peduli kapitalisasi — owner sering mengetik nama model
+// dengan huruf besar. reason != "" berarti acuan tidak bisa dipakai.
+func resolveModelRefIndex(models []string, ref string) (idx int, name, reason string) {
+	if n, err := strconv.Atoi(ref); err == nil {
+		if n < 1 || n > len(models) {
+			return 0, "", fmt.Sprintf("di luar rentang 1-%d", len(models))
+		}
+		return n - 1, models[n-1], ""
+	}
+	for i, m := range models {
+		if m == ref {
+			return i, m, ""
 		}
 	}
-	if !found {
-		return fmt.Errorf("model %q tidak ada untuk provider %s", model, provider)
+	for i, m := range models {
+		if strings.EqualFold(m, ref) {
+			return i, m, ""
+		}
 	}
-	if len(models) <= 1 {
-		return fmt.Errorf("tidak bisa hapus: %s satu-satunya model %s", model, provider)
+	return 0, "", "tidak ada di daftar model"
+}
+
+// DelModel menghapus satu model dari provider yang SEDANG aktif. Dipertahankan
+// sebagai pembungkus DelModels supaya guard (model aktif, model terakhir) tidak
+// punya dua salinan.
+func DelModel(ctx context.Context, model string) error {
+	res, err := DelModels(ctx, []string{model})
+	if err != nil {
+		return err
 	}
-	if model == GetActiveModelName(ctx) {
-		return fmt.Errorf("model %s sedang aktif — ganti dulu baru hapus", model)
+	if len(res.Deleted) > 0 {
+		return nil
 	}
-	return store.AI().DelModel(ctx, provider, model)
+	if len(res.Skipped) > 0 {
+		return fmt.Errorf("model %q tidak dihapus dari %s: %s", model, res.Provider, res.Skipped[0].Reason)
+	}
+	return fmt.Errorf("model %q tidak ada untuk provider %s", model, res.Provider)
 }
 
 // IsVoiceReplyOn mengembalikan status mode suara Flora (command
@@ -385,6 +487,7 @@ func FormatModelList(ctx context.Context) string {
 		sb.WriteString(fmt.Sprintf("%d. %s%s\n", i+1, m, marker))
 	}
 	sb.WriteString("\nGanti pakai: .agent model <nama/nomor>")
+	sb.WriteString("\nHapus (bisa banyak): .agent model del <nama/nomor>[,<nama/nomor>…]")
 	return sb.String()
 }
 

@@ -280,6 +280,11 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 		return
 	}
 
+	// Tap tombol playground (id berawalan "play:").
+	if plugins.CheckPlayTap(client, evt, text) {
+		return
+	}
+
 	// Tap tombol pdfmerge (Mulai/Daftar/Gabung/Batal/Nama). Tanpa syarat
 	// teks (tap tak berteks); fungsi ini yang memutuskan false bila tak
 	// relevan (bukan tap pdfmerge).

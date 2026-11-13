@@ -39,6 +39,24 @@ func Block(title string, rows ...string) string {
 	return sb.String()
 }
 
+// Bullet membuat baris daftar: - teks
+func Bullet(text string) string {
+	return "- " + text
+}
+
+// Hint membuat baris keterangan di bawah daftar: > teks
+func Hint(text string) string {
+	return "> " + text
+}
+
+// Section merangkai blok tambahan di dalam pesan yang sudah punya Block
+// utama: baris kosong + judul bold + baris isi. Tanpa baris kosong pembuka,
+// judul kedua menempel ke baris data terakhir dan blok terbaca sebagai satu
+// paragraf.
+func Section(title string, rows ...string) string {
+	return "\n\n" + Block(title, rows...)
+}
+
 // ErrMsg membuat pesan error standar: *Judul*\nStatus: <pesan>
 // Pesan harus menyebut TAHAP yang gagal + kalimat ramah; detail teknis
 // (err) hanya disertakan bila membantu user bertindak.

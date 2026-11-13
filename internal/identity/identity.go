@@ -15,6 +15,9 @@ package identity
 
 import (
 	"context"
+	"strings"
+
+	"wabot-go/internal/config"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
 	"github.com/polymorfa/hypermeow/types"
@@ -208,4 +211,64 @@ func IsBot(client *whatsmeow.Client, jid types.JID) bool {
 		return true
 	}
 	return false
+}
+
+// MatchOwnerNumber mencocokkan string JID (atau user-part saja) ke daftar
+// nomor owner (config.OwnerNumbers) dan mengembalikan nomor owner yang cocok
+// apa adanya dari config. Normalisasi sama dengan pencocokan nomor lain di
+// bot: ambil digit user-part, awalan 0 dianggap 62 (format lokal Indonesia).
+// String kosong = bukan owner.
+//
+// Dipakai bersama command owner (plugins) dan tool AI (native) supaya kunci
+// DB keuangan tidak pernah berbeda antara dua jalur itu.
+func MatchOwnerNumber(raw string) string {
+	user := raw
+	if i := strings.Index(user, "@"); i >= 0 {
+		user = user[:i]
+	}
+	if i := strings.Index(user, ":"); i >= 0 {
+		user = user[:i]
+	}
+	var digits strings.Builder
+	for _, r := range user {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	d := digits.String()
+	if d == "" {
+		return ""
+	}
+	norm := d
+	if strings.HasPrefix(norm, "0") {
+		norm = "62" + norm[1:]
+	}
+	for _, owner := range config.OwnerNumbers {
+		o := strings.TrimSpace(owner)
+		if o != "" && (d == o || norm == o) {
+			return o
+		}
+	}
+	return ""
+}
+
+// OwnerNumber mengembalikan nomor owner (digit, format config.OwnerNumbers)
+// untuk sebuah identitas pengirim, atau ok=false bila bukan owner / nomor HP
+// tidak diketahui (fail-closed). Urutan: JID, JID alt bawaan event, lalu
+// resolve LID→PN lewat peta whatsmeow.
+func OwnerNumber(ctx context.Context, client *whatsmeow.Client, jid, alt types.JID) (string, bool) {
+	if num := MatchOwnerNumber(jid.String()); num != "" {
+		return num, true
+	}
+	if !alt.IsEmpty() {
+		if num := MatchOwnerNumber(alt.String()); num != "" {
+			return num, true
+		}
+	}
+	if pn, ok := ResolvePN(ctx, client, jid, alt); ok {
+		if num := MatchOwnerNumber(pn.String()); num != "" {
+			return num, true
+		}
+	}
+	return "", false
 }

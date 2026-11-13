@@ -71,6 +71,14 @@ func (c *CarouselCardBuilder) AddURLButton(label, url string) *CarouselCardBuild
 	return c
 }
 
+// AddButton menambahkan satu tombol native_flow bebas ke kartu. Dipakai
+// playground untuk tipe selain quick_reply/url (copy, call, location,
+// signup, single_select).
+func (c *CarouselCardBuilder) AddButton(b messaging.NFButton) *CarouselCardBuilder {
+	c.buttons = append(c.buttons, messaging.NativeFlowButtons(b)...)
+	return c
+}
+
 // BuildCard merakit kartu menjadi *waE2E.InteractiveMessage.
 func (c *CarouselCardBuilder) BuildCard() *waE2E.InteractiveMessage {
 	im := &waE2E.InteractiveMessage{

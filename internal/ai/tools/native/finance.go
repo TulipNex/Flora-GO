@@ -14,7 +14,7 @@ import (
 	"strings"
 
 	"wabot-go/internal/ai"
-	"wabot-go/internal/config"
+	"wabot-go/internal/identity"
 	"wabot-go/internal/store"
 	"wabot-go/internal/timex"
 )
@@ -140,7 +140,8 @@ func init() {
 	ai.RegisterTool(ai.ToolDefinition{
 		Name: "rekap_keuangan",
 		Description: "Agregasi TOTAL/SALDO keuangan OWNER dihitung database (TANPA limit baris). " +
-			"Wajib dipakai untuk pertanyaan total/saldo/rekap ('saldo kas berapa?', 'pengeluaran bulan ini berapa?') — " +
+			"Untuk pertanyaan saldo saat ini tanpa rentang tanggal, pakai cek_saldo (lebih ringkas); " +
+			"pakai tool ini untuk rekap bersumber dana atau rentang tanggal tertentu ('pengeluaran bulan ini berapa?'). " +
 			"JANGAN menjumlahkan manual dari baca_keuangan. Hanya untuk OWNER. " +
 			"Tanggal YYYY-MM-DD; kosongkan dari+sampai untuk saldo BULAN BERJALAN (sudah termasuk saldo awal bulan ini); " +
 			"isi dari/sampai untuk mutasi rentang itu saja (tanpa saldo awal). Filter kategori/sumber opsional.",
@@ -207,6 +208,33 @@ func init() {
 				}
 			}
 			return sb.String(), nil
+		},
+	})
+
+	ai.RegisterTool(ai.ToolDefinition{
+		Name: "cek_saldo",
+		Description: "Saldo keuangan OWNER saat ini — TANPA parameter, tidak ada cara salah pakai. " +
+			"Pakai tool ini setiap kali ditanya saldo/total uang bulan ini ('saldo kas berapa?', 'total uangku berapa?'). " +
+			"Angka dihitung database: saldo awal bulan + mutasi bulan berjalan (kas, rekening, total). " +
+			"JANGAN menjumlahkan manual dari baca_keuangan. Untuk rentang tanggal lain pakai rekap_keuangan. " +
+			"Hanya untuk OWNER (ditolak untuk non-owner).",
+		Parameters: ai.ParameterSchema{
+			Type:       "OBJECT",
+			Properties: map[string]ai.PropertySchema{},
+		},
+		Execute: func(actx *ai.AgentContext, args map[string]interface{}) (string, error) {
+			owner, err := requireOwnerNative(actx)
+			if err != nil {
+				return "", err
+			}
+			s, err := store.Finance().SaldoBerjalan(actx.Context, owner)
+			if err != nil {
+				return "", fmt.Errorf("gagal baca saldo keuangan: %v", err)
+			}
+			return fmt.Sprintf("Saldo bulan berjalan (%s): kas %d, rekening %d, total %d. "+
+				"Saldo awal bulan: kas %d, rekening %d. %d transaksi bulan ini (masuk %d, keluar %d).",
+				s.Periode, s.Kas, s.Rekening, s.Total,
+				s.AwalKas, s.AwalRekening, s.Count, s.Masuk, s.Keluar), nil
 		},
 	})
 
@@ -474,37 +502,11 @@ func agentMctx(actx *ai.AgentContext) *store.MessageContext {
 }
 
 // matchOwnerDigits mencocokkan string JID ke salah satu nomor owner,
-// mengembalikan nomor owner-nya (bukan inputnya). Normalisasi: ambil digit
-// user-part; awalan 0 dianggap 62 (format lokal Indonesia).
+// mengembalikan nomor owner-nya (bukan inputnya). Implementasi tunggal ada di
+// internal/identity supaya command owner (plugins) memakai kunci nomor yang
+// SAMA PERSIS dengan tool keuangan ini.
 func matchOwnerDigits(jidStr string) string {
-	user := jidStr
-	if i := strings.Index(user, "@"); i >= 0 {
-		user = user[:i]
-	}
-	if i := strings.Index(user, ":"); i >= 0 {
-		user = user[:i]
-	}
-	var digits strings.Builder
-	for _, r := range user {
-		if r >= '0' && r <= '9' {
-			digits.WriteRune(r)
-		}
-	}
-	d := digits.String()
-	if d == "" {
-		return ""
-	}
-	norm := d
-	if strings.HasPrefix(norm, "0") {
-		norm = "62" + norm[1:]
-	}
-	for _, owner := range config.OwnerNumbers {
-		o := strings.TrimSpace(owner)
-		if o != "" && (d == o || norm == o) {
-			return o
-		}
-	}
-	return ""
+	return identity.MatchOwnerNumber(jidStr)
 }
 
 // defaultRange30 mengisi dari/sampai yang kosong dengan jendela 30 hari

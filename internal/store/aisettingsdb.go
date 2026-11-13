@@ -301,3 +301,40 @@ func (a *AIDB) DelModel(ctx context.Context, provider, model string) error {
 	}
 	return nil
 }
+
+// DelModels menghapus beberapa model satu provider dalam SATU transaksi dan
+// mengembalikan jumlah baris yang benar-benar terhapus. Nama yang sudah tidak
+// ada diabaikan (bukan error): pemanggil (layer ai) yang memutuskan model mana
+// yang layak dihapus, jadi batch tidak boleh batal hanya karena satu nama
+// sudah hilang lebih dulu.
+func (a *AIDB) DelModels(ctx context.Context, provider string, models []string) (int, error) {
+	if len(models) == 0 {
+		return 0, nil
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `DELETE FROM ai_models WHERE provider = ? AND model = ?`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+
+	deleted := 0
+	for _, m := range models {
+		res, err := stmt.ExecContext(ctx, provider, m)
+		if err != nil {
+			return 0, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			deleted += int(n)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}

@@ -72,7 +72,8 @@ func handleAgentCommand(ctx context.Context, mctx *store.MessageContext) error {
 func agentUsage() string {
 	return "Flora Agent:\n" +
 		".agent model [nomor/nama]\n" +
-		".agent model add <nama> | del <nama>\n" +
+		".agent model add <nama>\n" +
+		".agent model del <nomor/nama>[,<nomor/nama>…]\n" +
 		".agent provider [nomor/nama]\n" +
 		".agent provider add <nama> <endpoint> | del <nama>\n" +
 		".agent status\n" +
@@ -222,7 +223,9 @@ func handleProviderSubcommand(ctx context.Context, mctx *store.MessageContext) e
 
 // handleModelSubcommand menangani ".agent model" (tampilkan daftar model utk
 // provider aktif), ".agent model <nama>" dan ".agent model <nomor>" (ganti
-// model aktif, nomor sesuai urutan di daftar). KHUSUS owner.
+// model aktif, nomor sesuai urutan di daftar), serta ".agent model add|del"
+// (kelola daftar model provider aktif — "del" menerima beberapa acuan
+// sekaligus: "del 1,3,5"). KHUSUS owner.
 func handleModelSubcommand(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireOwner(mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
@@ -234,19 +237,27 @@ func handleModelSubcommand(ctx context.Context, mctx *store.MessageContext) erro
 	}
 
 	// Subcommand registry (provider yang SEDANG aktif): "add <nama>" /
-	// "del <nama>".
+	// "del <acuan>[,<acuan>...]". Nomor urut mengikuti daftar ".agent model".
 	fields := strings.Fields(arg)
-	if len(fields) == 2 && strings.EqualFold(fields[0], "add") {
+	if strings.EqualFold(fields[0], "add") {
+		if len(fields) != 2 {
+			return store.ReplyText(ctx, mctx, modelAddUsage)
+		}
 		if err := ai.AddModel(ctx, fields[1]); err != nil {
 			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal tambah model: %v", err))
 		}
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Oke, model *%s* ditambahkan.", fields[1]))
 	}
-	if len(fields) == 2 && strings.EqualFold(fields[0], "del") {
-		if err := ai.DelModel(ctx, fields[1]); err != nil {
+	if strings.EqualFold(fields[0], "del") {
+		refs := splitModelRefs(strings.Join(fields[1:], " "))
+		if len(refs) == 0 {
+			return store.ReplyText(ctx, mctx, modelDelUsage)
+		}
+		res, err := ai.DelModels(ctx, refs)
+		if err != nil {
 			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal hapus model: %v", err))
 		}
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Oke, model *%s* dihapus.", fields[1]))
+		return store.ReplyText(ctx, mctx, modelDeleteSummary(res))
 	}
 
 	name := ai.ResolveModelRef(ctx, ai.GetActiveProviderName(ctx), arg)
@@ -255,6 +266,61 @@ func handleModelSubcommand(ctx context.Context, mctx *store.MessageContext) erro
 	}
 
 	return store.ReplyText(ctx, mctx, fmt.Sprintf("Oke, model AI sekarang: *%s*", name))
+}
+
+// modelAddUsage/modelDelUsage dipakai saat argumen "add"/"del" kurang, supaya
+// perintah tidak jatuh ke jalur ganti-model dan membalas error yang
+// menyesatkan ("model \"del\" tidak dikenal").
+const (
+	modelAddUsage = "Format: .agent model add <nama>\nContoh: .agent model add claude-haiku-5.5-free"
+	modelDelUsage = "Format: .agent model del <nomor/nama>[,<nomor/nama>…]\nContoh: .agent model del 1\n         .agent model del 1,3,5\nNomor mengikuti urutan di .agent model."
+)
+
+// splitModelRefs memecah acuan model yang diketik owner: koma DAN spasi
+// sama-sama pemisah, jadi "1,2,4", "1, 2, 4", dan "1 2 4" identik.
+func splitModelRefs(s string) []string {
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// modelDeleteSummary merangkai hasil hapus model jadi SATU bubble: apa yang
+// terhapus, apa yang dilewati beserta alasannya, dan ajakan melihat daftar
+// terbaru. Sengaja tidak mengirim satu pesan per model — batch 7 nomor akan
+// membanjiri chat.
+func modelDeleteSummary(res ai.DelModelsResult) string {
+	var sb strings.Builder
+	switch len(res.Deleted) {
+	case 0:
+		if len(res.Skipped) == 0 {
+			return fmt.Sprintf("Belum ada model terdaftar untuk provider %s. Tambah: .agent model add <nama>", res.Provider)
+		}
+		sb.WriteString("Tidak ada model yang dihapus.")
+	case 1:
+		fmt.Fprintf(&sb, "Oke, model *%s* dihapus dari %s.", res.Deleted[0], res.Provider)
+	default:
+		fmt.Fprintf(&sb, "Oke, %d model dihapus dari %s:", len(res.Deleted), res.Provider)
+		for _, m := range res.Deleted {
+			sb.WriteString("\n• " + m)
+		}
+	}
+	if len(res.Skipped) > 0 {
+		sb.WriteString("\n\nDilewati:")
+		for _, s := range res.Skipped {
+			fmt.Fprintf(&sb, "\n• %s (%s)", s.Ref, s.Reason)
+		}
+	}
+	if len(res.Deleted) > 0 {
+		sb.WriteString("\n\nLihat daftar terbaru: .agent model")
+	}
+	return sb.String()
 }
 
 // handleVoiceSubcommand menangani ".agent voice on/off" (mode suara Flora:
@@ -330,7 +396,7 @@ func handleStatusSubcommand(ctx context.Context, mctx *store.MessageContext) err
 // jadi tool baru tetap muncul (di kelompok "Lainnya", urutan abjad) walau
 // belum ditambahkan ke sini.
 var agentToolOrder = []string{
-	"catat_keuangan", "baca_keuangan", "rekap_keuangan", "edit_keuangan", "hapus_keuangan", "export_keuangan",
+	"catat_keuangan", "baca_keuangan", "cek_saldo", "rekap_keuangan", "edit_keuangan", "hapus_keuangan", "export_keuangan",
 	"reminder",
 	"kick_member", "promote_member", "demote_member", "set_group_name", "tag_all", "group_link", "group_close", "group_open",
 	"make_call", "make_sticker", "buat_excel",
@@ -340,6 +406,7 @@ var agentToolOrder = []string{
 // agentToolCategory memetakan nama tool ke judul kelompok di daftar.
 var agentToolCategory = map[string]string{
 	"catat_keuangan": "Keuangan", "baca_keuangan": "Keuangan",
+	"cek_saldo":      "Keuangan",
 	"rekap_keuangan": "Keuangan", "edit_keuangan": "Keuangan",
 	"hapus_keuangan": "Keuangan", "export_keuangan": "Keuangan",
 	"reminder":    "Pengingat",
@@ -367,6 +434,7 @@ var agentToolTrusted = map[string]bool{
 var agentToolExample = map[string]string{
 	"catat_keuangan":  "Flora, catat bensin 50rb dari rekening",
 	"baca_keuangan":   "Flora, tampilkan 10 pengeluaran terakhirku",
+	"cek_saldo":       "Flora, saldo kas berapa?",
 	"rekap_keuangan":  "Flora, saldo kas berapa?",
 	"edit_keuangan":   "Flora, ubah parkir kemarin jadi 15rb",
 	"hapus_keuangan":  "Flora, hapus catatan kopi tadi pagi (Flora konfirmasi dulu)",

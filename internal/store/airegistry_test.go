@@ -111,3 +111,47 @@ func TestAIRegistryMigration(t *testing.T) {
 		t.Fatalf("db hilang: %v", err)
 	}
 }
+
+// TestAIDBDelModelsBatch memverifikasi hapus banyak model dalam satu transaksi:
+// baris yang tidak ada diabaikan, dan jumlah yang dilaporkan hanya yang benar
+// benar terhapus.
+func TestAIDBDelModelsBatch(t *testing.T) {
+	dir := t.TempDir()
+	if err := InitAIDB(filepath.Join(dir, "ai.db")); err != nil {
+		t.Fatalf("InitAIDB: %v", err)
+	}
+	defer AI().Close()
+	if err := InitAISettingsDB(); err != nil {
+		t.Fatalf("InitAISettingsDB: %v", err)
+	}
+	ctx := context.Background()
+
+	if err := AI().AddProvider(ctx, "tesprov", "https://contoh.id/v1/chat/completions"); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+	for _, m := range []string{"model-a", "model-b", "model-c"} {
+		if err := AI().AddModel(ctx, "tesprov", m); err != nil {
+			t.Fatalf("AddModel %s: %v", m, err)
+		}
+	}
+
+	n, err := AI().DelModels(ctx, "tesprov", []string{"model-a", "model-c", "model-hilang"})
+	if err != nil {
+		t.Fatalf("DelModels: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("jumlah terhapus salah: %d, ingin 2", n)
+	}
+	ms, err := AI().ListModels(ctx, "tesprov")
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(ms) != 1 || ms[0] != "model-b" {
+		t.Fatalf("sisa model salah: %v", ms)
+	}
+
+	// Batch kosong = tidak menyentuh apa pun.
+	if n, err := AI().DelModels(ctx, "tesprov", nil); err != nil || n != 0 {
+		t.Fatalf("batch kosong harus no-op: n=%d err=%v", n, err)
+	}
+}

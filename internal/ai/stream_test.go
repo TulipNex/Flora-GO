@@ -304,7 +304,7 @@ func TestRetryGatewayTimeoutNotRepeated(t *testing.T) {
 	withFastRetry(t, 10*time.Second)
 	err524 := errors.New("tes/m: status HTTP 524 setelah 2m5s (body 15 B): error code: 524")
 	p := &scriptedProvider{errs: []error{err524, err524, err524}}
-	if _, err := RunAgentLoopWithRetry(newTestAgentContext(), p, nil, "sys", nil); err == nil {
+	if _, err := RunAgentLoopWithRetry(newTestAgentContext(), p, nil, "sys"); err == nil {
 		t.Fatal("harus error")
 	}
 	if p.calls != 1 {

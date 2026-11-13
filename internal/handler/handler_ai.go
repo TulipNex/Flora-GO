@@ -29,6 +29,11 @@ func handleAITrigger(client *whatsmeow.Client, evt *events.Message, text string)
 	if !store.IsMainClient(client) {
 		return
 	}
+	// Script playground (#playground) bukan pesan untuk Flora: isinya bebas,
+	// termasuk kata "flora" di title/footer. Hanya milik owner.
+	if plugins.IsPlaygroundScript(evt) {
+		return
+	}
 	// sessionKey dibangun lewat ai.BuildSessionKey yang sama dipakai
 	// plugins/ai.go (HandleAIMessage/processAITurn) — WAJIB identik supaya
 	// HasActiveSession di bawah mengecek kunci yang benar-benar dipakai

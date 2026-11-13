@@ -137,8 +137,11 @@ func (b *A2UIBuilder) AddURLButton(label, url string) *A2UIBuilder {
 	return b
 }
 
-// Build merakit seluruh komponen menjadi *waE2E.Message siap kirim.
-func (b *A2UIBuilder) Build() *waE2E.Message {
+// SurfaceData mengembalikan JSON createSurface A2UI (tanpa BloksWidget) agar
+// perakit yang menyusun InteractiveMessage sendiri — mis. playground yang
+// menggabungkan widget dengan tombol/carousel — bisa menempelkannya ke field
+// BloksWidget.
+func (b *A2UIBuilder) SurfaceData() string {
 	allComponents := []map[string]any{
 		{
 			"id":        "root",
@@ -158,7 +161,11 @@ func (b *A2UIBuilder) Build() *waE2E.Message {
 	}
 
 	dataBytes, _ := json.Marshal(a2uiData)
+	return string(dataBytes)
+}
 
+// Build merakit seluruh komponen menjadi *waE2E.Message siap kirim.
+func (b *A2UIBuilder) Build() *waE2E.Message {
 	return &waE2E.Message{
 		InteractiveMessage: &waE2E.InteractiveMessage{
 			Header: &waE2E.InteractiveMessage_Header{
@@ -179,7 +186,7 @@ func (b *A2UIBuilder) Build() *waE2E.Message {
 			},
 			BloksWidget: &waE2E.InteractiveMessage_BloksWidget{
 				Uuid: proto.String(whatsmeow.GenerateMessageID()),
-				Data: proto.String(string(dataBytes)),
+				Data: proto.String(b.SurfaceData()),
 				Type: proto.String("im_a2ui"),
 			},
 			ContextInfo: &waE2E.ContextInfo{

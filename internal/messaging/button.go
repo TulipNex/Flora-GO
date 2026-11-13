@@ -278,9 +278,10 @@ func AddressMessage(display string) NFButton {
 
 // ---- Perakitan + pengiriman ----
 
-// NativeFlow merakit satu bubble InteractiveMessage + NativeFlowMessage dari
-// daftar tombol (node `biz` biar hypermeow yang menempel).
-func NativeFlow(t NFText, buttons ...NFButton) *waE2E.Message {
+// NativeFlowButtons mengubah daftar NFButton menjadi tombol proto. Dipakai
+// perakit yang menyusun InteractiveMessage-nya sendiri (kartu carousel,
+// playground) supaya peta name→params JSON tetap satu sumber (marshalParams).
+func NativeFlowButtons(buttons ...NFButton) []*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton {
 	pb := make([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, 0, len(buttons))
 	for _, b := range buttons {
 		pb = append(pb, &waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
@@ -288,6 +289,13 @@ func NativeFlow(t NFText, buttons ...NFButton) *waE2E.Message {
 			ButtonParamsJSON: proto.String(marshalParams(b.Params)),
 		})
 	}
+	return pb
+}
+
+// NativeFlow merakit satu bubble InteractiveMessage + NativeFlowMessage dari
+// daftar tombol (node `biz` biar hypermeow yang menempel).
+func NativeFlow(t NFText, buttons ...NFButton) *waE2E.Message {
+	pb := NativeFlowButtons(buttons...)
 
 	im := &waE2E.InteractiveMessage{
 		Body: &waE2E.InteractiveMessage_Body{Text: proto.String(t.Body)},
