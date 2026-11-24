@@ -64,6 +64,10 @@ type espnStandingsResp struct {
 // CATATAN: varian host site.api.espn.com/apis/site/v2/... me-return {}
 // kosong — wajib host + path ini (terverifikasi Okt 2026).
 func FetchLeagueTable(ctx context.Context, code string) (*LeagueTable, error) {
+	if table, err := FloraFetchStandings(ctx, code); err == nil && table != nil && len(table.Rows) > 0 {
+		return table, nil
+	}
+
 	const engine = "espn"
 	code = strings.TrimSpace(code)
 	if code == "" {

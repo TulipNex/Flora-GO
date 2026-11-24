@@ -19,6 +19,9 @@ import (
 // sudah dihapus seluruhnya — endpoint-nya menuntut API key).
 func FetchSpotify(ctx context.Context, pageURL string) (*ScrapeResult, error) {
 	return scrapeCache.GetOrLoad(ctx, pageURL, func(ctx context.Context) (*ScrapeResult, error) {
+		if res, err := FloraFetchSpotify(ctx, pageURL); err == nil {
+			return res, nil
+		}
 		id := extractSpotifyID(pageURL)
 	if id == "" {
 		return nil, fmt.Errorf("spotify: URL track tidak valid")

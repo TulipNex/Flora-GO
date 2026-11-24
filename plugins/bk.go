@@ -57,7 +57,13 @@ func handleBK(ctx context.Context, mctx *store.MessageContext) error {
 		return store.ReplyText(ctx, mctx, msg)
 	}
 	if len(mctx.Args) == 0 {
-		return store.ReplyText(ctx, mctx, "Format: .bk <link> [d]\nTambah d untuk kirim sebagai dokumen.")
+		return store.ReplyText(ctx, mctx, Help(HelpSpec{
+			Title:   "Unduh media besar",
+			Cmd:     "Bk",
+			Formats: []string{".bk <link> [d]"},
+			Contoh:  ".bk https://...",
+			Params:  []string{"[d] : kirim sebagai dokumen"},
+		}))
 	}
 	rawURL := mctx.Args[0]
 	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
@@ -80,13 +86,10 @@ func fetchSendXpvid(ctx context.Context, mctx *store.MessageContext, rawURL stri
 	case dlSem <- struct{}{}:
 		defer func() { <-dlSem }()
 	default:
-		return store.ReplyText(ctx, mctx, "Antrean download penuh (maks 2 bersamaan), coba lagi sebentar.")
+		return store.ReplyText(ctx, mctx, "Antrean download penuh, maksimal 2 bersamaan. Coba lagi sebentar.")
 	}
 
-	// Pesan status "Mengambil info video..." SENGAJA dibiarkan dan tidak
-	// ada pesan penutup (pola downloader) — media/informasi yang terkirim
-	// adalah penanda selesainya.
-	if _, err := sendDlStatus(ctx, mctx, "Mengambil info video..."); err != nil {
+	if _, err := sendDlStatus(ctx, mctx, "Mengunduh, tunggu sebentar..."); err != nil {
 		return err
 	}
 

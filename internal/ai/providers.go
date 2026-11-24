@@ -457,15 +457,15 @@ func SetVoiceReply(ctx context.Context, on bool) error {
 func FormatProviderList(ctx context.Context) string {
 	active := GetActiveProviderName(ctx)
 	var sb strings.Builder
-	sb.WriteString("Provider tersedia:\n")
+	sb.WriteString("*Provider AI*\n\n")
 	for i, p := range ListProviders(ctx) {
 		marker := ""
 		if p.Name == active {
 			marker = " (aktif)"
 		}
-		sb.WriteString(fmt.Sprintf("%d. %s%s\n   %s\n", i+1, p.Name, marker, p.Endpoint))
+		sb.WriteString(fmt.Sprintf("%d. *%s*%s\n", i+1, p.Name, marker))
 	}
-	sb.WriteString("\nGanti pakai: .agent provider <nama/nomor>")
+	sb.WriteString("\n`Ubah`\nFormat : .agent provider <nama/nomor>")
 	return sb.String()
 }
 
@@ -478,16 +478,16 @@ func FormatModelList(ctx context.Context) string {
 	activeModel := GetActiveModelName(ctx)
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Model tersedia untuk provider %s:\n", provider))
+	sb.WriteString("*Model AI*\n\n")
+	sb.WriteString("```Provider : " + provider + "\nAktif : " + activeModel + "```\n\n")
 	for i, m := range ListModels(ctx, provider) {
 		marker := ""
 		if m == activeModel {
 			marker = " (aktif)"
 		}
-		sb.WriteString(fmt.Sprintf("%d. %s%s\n", i+1, m, marker))
+		sb.WriteString(fmt.Sprintf("%d. *%s*%s\n", i+1, m, marker))
 	}
-	sb.WriteString("\nGanti pakai: .agent model <nama/nomor>")
-	sb.WriteString("\nHapus (bisa banyak): .agent model del <nama/nomor>[,<nama/nomor>…]")
+	sb.WriteString("\n`Ubah`\nFormat : .agent model <nama/nomor>")
 	return sb.String()
 }
 

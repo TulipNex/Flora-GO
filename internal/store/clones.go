@@ -126,7 +126,7 @@ func GroupsFor(c *whatsmeow.Client) *GroupDB {
 	if err != nil {
 		panic(fmt.Sprintf("gagal membuka group DB clone %s: %v", token, err))
 	}
-	g = &GroupDB{db: db}
+	g = newGroupDB(db)
 	cloneGroupDBs[token] = g
 	return g
 }

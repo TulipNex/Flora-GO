@@ -82,12 +82,27 @@ func ExtractQuotedParticipant(evt *events.Message) string {
 // gambar). Mengembalikan nil kalau bukan reply. Hasilnya BISA saja masih
 // terbungkus wrapper (Ephemeral/ViewOnce) — pemanggil yang butuh isi pesannya
 // sebaiknya lewatkan lagi ke UnwrapMessage.
+//
+// Jika pesan yang di-reply berupa media tetapi tidak membawa DirectPath (sering dipangkas oleh WhatsApp),
+// fungsi ini otomatis mengambil pesan media asli dari In-Memory Media Cache berdasarkan StanzaID.
 func ExtractQuotedMessage(evt *events.Message) *waE2E.Message {
 	ci := extractContextInfo(evt)
 	if ci == nil {
 		return nil
 	}
-	return ci.GetQuotedMessage()
+	quoted := ci.GetQuotedMessage()
+	stanzaID := ci.GetStanzaID()
+
+	// Jika quoted kosong atau membawa media tanpa DirectPath, coba ambil dari MediaCache
+	unwrapped := UnwrapMessage(quoted)
+	_, hasDirectPath := InspectMedia(unwrapped)
+
+	if (!hasDirectPath || unwrapped == nil) && stanzaID != "" {
+		if cached := GetCachedMediaMessage(stanzaID); cached != nil {
+			return cached
+		}
+	}
+	return quoted
 }
 
 // IsReplyToBot mengecek apakah pesan ini adalah reply ke pesan

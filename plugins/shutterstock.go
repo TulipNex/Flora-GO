@@ -21,7 +21,7 @@ func RegisterShutterstock(r *Registry) {
 		aliases: []string{"shutter", "ss"},
 		tool:    "shutterstock-downloader",
 		label:   "Shutterstock",
-		hint:    "<id aset/url>",
+		hint:    "<id/url>",
 		example: "2583067397",
 		key:     "ID",
 		resolve: func(raw string) (string, error) {

@@ -22,6 +22,9 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
+
+	"wabot-go/internal/apicache"
 )
 
 // steptodownHost adalah origin steptodown.com.
@@ -29,6 +32,10 @@ const steptodownHost = "https://steptodown.com/"
 
 // reSteptodownLink mencocokkan href gambar hasil pada HTML get.php.
 var reSteptodownLink = regexp.MustCompile(`href="(images/steptodown\.com\d+\.(?:jpg|jpeg|png|webp))"`)
+
+// stockCache menyimpan byte gambar stock photo (TTL 5 menit, max 32 entri)
+// dengan singleflight agar request bersamaan/berulang tidak memanggil API/scraper berulang kali.
+var stockCache = apicache.New[[]byte](5*time.Minute, 32)
 
 // SteptodownImage mengunduh byte gambar bersih dari sebuah tool steptodown
 // (mis. "shutterstock-downloader", "getty-images-downloader") untuk input
@@ -44,29 +51,38 @@ func SteptodownImage(ctx context.Context, tool, input string) ([]byte, error) {
 		return nil, fmt.Errorf("URL/ID kosong")
 	}
 
-	base := steptodownHost + tool + "/"
-	form := url.Values{}
-	form.Set("url", input)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"get.php", strings.NewReader(form.Encode()))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", scraperUA)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	if err != nil {
-		return nil, err
-	}
-	rel := parseSteptodownImageLink(body)
-	if rel == "" {
-		return nil, fmt.Errorf("gambar tidak ditemukan (URL/ID salah atau tidak tersedia)")
-	}
-	return DownloadBytes(ctx, base+rel)
+	cacheKey := tool + ":" + input
+	return stockCache.GetOrLoad(ctx, cacheKey, func(ctx context.Context) ([]byte, error) {
+		if dlURL, err := FloraFetchStock(ctx, input, tool); err == nil && dlURL != "" {
+			if bytes, berr := DownloadBytes(ctx, dlURL); berr == nil && len(bytes) > 0 {
+				return bytes, nil
+			}
+		}
+
+		base := steptodownHost + tool + "/"
+		form := url.Values{}
+		form.Set("url", input)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"get.php", strings.NewReader(form.Encode()))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", scraperUA)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		if err != nil {
+			return nil, err
+		}
+		rel := parseSteptodownImageLink(body)
+		if rel == "" {
+			return nil, fmt.Errorf("gambar tidak ditemukan (URL/ID salah atau tidak tersedia)")
+		}
+		return DownloadBytes(ctx, base+rel)
+	})
 }
 
 // parseSteptodownImageLink mengambil path relatif gambar dari HTML get.php.

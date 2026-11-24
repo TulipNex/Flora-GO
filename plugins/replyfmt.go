@@ -5,12 +5,13 @@ import (
 	"strings"
 )
 
-// replyfmt.go — fondasi format respon standar bot (Sesi 1 standardisasi).
+// replyfmt.go — fondasi format respon standar bot.
 //
-// Gaya baku: judul bold, baris data "• Kunci : Nilai", seksi dipisah baris
-// kosong, error selalu menyebut tahap + kalimat ramah (detail teknis hanya
-// bila membantu). Command baru WAJIB merangkai balasannya lewat helper di
-// sini; command lama dimigrasi bertahap per batch.
+// Gaya baku (FORMAT_RESPON_BOT.md): bantuan memakai judul deskriptif +
+// sub-label command + "Format :" + "Contoh :" + fence parameter (dirakit
+// Help), data ringkas di dalam fence (Code), hasil/error berupa teks biasa
+// tanpa judul (Fail/Sentence). Row/Opt/ErrMsg dipertahankan untuk command
+// yang belum dimigrasi, bukan bentuk tujuan.
 
 // Title membuat baris judul bold: *Judul*
 func Title(t string) string {
@@ -57,6 +58,101 @@ func Section(title string, rows ...string) string {
 	return "\n\n" + Block(title, rows...)
 }
 
+// Code membungkus baris jadi blok monospace sesuai aturan 5 di
+// FORMAT_RESPON_BOT.md: pembuka menempel di depan baris pertama dan
+// penutup menempel di belakang baris terakhir.
+func Code(lines ...string) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	return "```" + strings.Join(lines, "\n") + "```"
+}
+
+// HelpSpec adalah isi satu balasan bantuan (FORMAT_RESPON_BOT.md template A/B).
+// Semua field opsional kecuali Title: yang kosong tidak ikut dirangkai, supaya
+// command yang tidak punya parameter tidak meninggalkan fence kosong.
+type HelpSpec struct {
+	Title   string   // judul deskriptif, mis. "Keluarkan anggota grup"
+	Status  string   // opsional: fence "Status : aktif" tepat di bawah judul
+	Cmd     string   // sub-label nama command, mis. "Kick"
+	Formats []string // bentuk pemakaian; 1 bentuk ditulis sebaris, >1 jadi daftar
+	Contoh  string   // satu contoh nyata di baris berikutnya
+	Params  []string // isi fence parameter (sudah sejajar), mis. "@user : tag target"
+	Note    string   // catatan ">" di akhir
+}
+
+// Help merangkai balasan bantuan baku:
+//
+//	*Judul*
+//
+//	`Cmd`
+//	Format : ...
+//	Contoh :
+//	...
+//
+//	```parameter```
+//
+//	> catatan
+func Help(s HelpSpec) string {
+	parts := make([]string, 0, 5)
+	if s.Title != "" {
+		parts = append(parts, Title(s.Title))
+	}
+	if s.Status != "" {
+		parts = append(parts, Code("Status : "+s.Status))
+	}
+
+	var body strings.Builder
+	if s.Cmd != "" {
+		body.WriteString("`" + s.Cmd + "`")
+	}
+	switch len(s.Formats) {
+	case 0:
+	case 1:
+		body.WriteString("\nFormat : " + s.Formats[0])
+	default:
+		body.WriteString("\nFormat :")
+		for _, f := range s.Formats {
+			body.WriteString("\n- " + f)
+		}
+	}
+	if s.Contoh != "" {
+		body.WriteString("\nContoh : " + s.Contoh)
+	}
+	if body.Len() > 0 {
+		parts = append(parts, body.String())
+	}
+
+	if len(s.Params) > 0 {
+		parts = append(parts, Code(s.Params...))
+	}
+	if s.Note != "" {
+		parts = append(parts, Hint(s.Note))
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// Fail merangkai error teks biasa: "<awalan>: <sebab>." Titik di akhir sebab
+// dipangkas dulu supaya kalimat tidak berakhir dengan titik ganda.
+func Fail(prefix string, err error) string {
+	return prefix + ": " + strings.TrimRight(err.Error(), ". ") + "."
+}
+
+// Sentence merapikan pesan error jadi satu kalimat: huruf kapital di awal dan
+// titik di akhir (tanpa titik ganda). Dipakai untuk error validasi yang
+// datang dari helper dan belum berbentuk kalimat.
+func Sentence(msg string) string {
+	msg = strings.TrimRight(strings.TrimSpace(msg), ". ")
+	if msg == "" {
+		return msg
+	}
+	r := []rune(msg)
+	if r[0] >= 'a' && r[0] <= 'z' {
+		r[0] = r[0] - ('a' - 'A')
+	}
+	return string(r) + "."
+}
+
 // ErrMsg membuat pesan error standar: *Judul*\nStatus: <pesan>
 // Pesan harus menyebut TAHAP yang gagal + kalimat ramah; detail teknis
 // (err) hanya disertakan bila membantu user bertindak.
@@ -71,9 +167,10 @@ func QueueFullMsg() string {
 	return "Antrean penuh (maks 2 bersamaan), coba lagi sebentar."
 }
 
-// Guard standar command grup (judul = nama command, Title-Case). Dipakai
-// handler yang cek manual (tagall/hidetag); requireGroupAdminGate dan
-// requireModGate SENGAJA tidak diubah (string-nya dipakai ulang tool AI).
+// Guard standar command grup versi lama (judul = nama command + "Status:").
+// Bukan bentuk tujuan: command baru mengirim teks biasa (lihat Fail) dan
+// memakai Help untuk bantuan. Sisa pemakai tinggal welcome.go; sisanya
+// menunggu migrasi bertahap.
 func ErrNotGroup(cmd string) string {
 	return ErrMsg(cmd, "Command ini hanya bisa dipakai di dalam grup.")
 }

@@ -32,20 +32,39 @@ func TestExpiryWhen(t *testing.T) {
 	}
 }
 
-// TestSeedreamHelpBlock memastikan petunjuk .seedream memakai format dua
-// tingkat (kunci + "> contoh") dan hanya menyebut satu command.
+// TestSeedreamHelpBlock memastikan petunjuk .seedream memakai format bantuan
+// sesuai panduan respons bot.
 func TestSeedreamHelpBlock(t *testing.T) {
 	got := seedreamHelpBlock()
-	want := "*Seedream*\n" +
-		"• Generate :\n> .seedream <prompt>\n" +
-		"• Edit :\n> .seedream <prompt> + reply gambar\n" +
-		"• Cookie :\n> .seedream cookie <cookie>"
+	want := "*Buat atau edit gambar*\n\n" +
+		"`Generate`\n" +
+		"Format : .seedream <prompt>\n" +
+		"Contoh : .seedream kucing oranye di sawah\n\n" +
+		"`Edit`\n" +
+		"Format : .seedream <prompt> + reply gambar\n" +
+		"Contoh :\n.seedream jadikan gaya anime\n\n" +
+		"`Cookie`\n" +
+		"Format : .seedream cookie <cookie>\n\n" +
+		"`Tutorial`\n" +
+		"Format : .seedream tutorial\n\n" +
+		"> Tanpa argumen, `.seedream cookie` menampilkan status sesi."
 	if got != want {
 		t.Errorf("blok petunjuk = %q, mau %q", got, want)
 	}
 }
 
-// TestSeedreamSubcommand memastikan hanya "cookie" yang dianggap subcommand,
+// TestSeedreamTutorialBlock memastikan teks tutorial cookie sesuai format.
+func TestSeedreamTutorialBlock(t *testing.T) {
+	got := seedreamTutorialBlock()
+	if !strings.Contains(got, "*Tutorial Cookie Seedream*") {
+		t.Errorf("tutorial tidak memuat judul yang benar: %q", got)
+	}
+	if !strings.Contains(got, "arena-auth-prod-v1") {
+		t.Errorf("tutorial tidak menyebut arena-auth-prod-v1: %q", got)
+	}
+}
+
+// TestSeedreamSubcommand memastikan hanya "cookie" dan "tutorial" yang dianggap subcommand,
 // case-insensitive, dan sisa baris cookie dipakai utuh.
 func TestSeedreamSubcommand(t *testing.T) {
 	cases := []struct {
@@ -56,6 +75,8 @@ func TestSeedreamSubcommand(t *testing.T) {
 		{"cookie a=1; b=2", "cookie", "a=1; b=2"},
 		{"COOKIE abc", "cookie", "abc"},
 		{"cookie", "cookie", ""},
+		{"tutorial", "tutorial", ""},
+		{"TUTORIAL", "tutorial", ""},
 		{"kucing oranye", "", "kucing oranye"},
 		{"cookies enak", "", "cookies enak"},
 		{"", "", ""},

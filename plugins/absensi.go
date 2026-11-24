@@ -88,10 +88,10 @@ type absensiTimerSet struct {
 
 func handleAbsen(ctx context.Context, mctx *store.MessageContext) error {
 	if !mctx.IsGroup() {
-		return absenReply(ctx, mctx, "Info: Absensi hanya berjalan di grup.")
+		return store.ReplyText(ctx, mctx, "Command ini hanya bisa dipakai di dalam grup.")
 	}
 	if store.Absensi() == nil {
-		return absenReply(ctx, mctx, "Gagal: fitur absensi mati (absensi.db tidak terbuka).")
+		return store.ReplyText(ctx, mctx, "Gagal: fitur absensi mati (absensi.db tidak terbuka).")
 	}
 	sub := ""
 	if len(mctx.Args) > 0 {
@@ -118,49 +118,39 @@ func handleAbsen(ctx context.Context, mctx *store.MessageContext) error {
 }
 
 func absenUsage() string {
-	return `*📋 ABSEN — Presensi Live Location*
+	return `*Absensi live location*
 
-*Admin*
-.absen setup
-> mengatur patokan, durasi, radius, jadwal
-.absen mulai <menit>
-> membuka sesi absen
-.absen berhenti
-> menutup sesi
-.absen perpanjang <menit>
-> memperpanjang sesi berjalan
-.absen rekap
-> mengunduh rekap .xlsx sesi terakhir
+Presensi kehadiran lewat live location di grup.
 
-*Semua*
-.absen hasil
-> menampilkan rekap sesi
-.absen status
-> menampilkan setelan + status berlaku`
+` + "`" + `Admin` + "`" + `
+Format :
+- .absen setup
+- .absen mulai <menit>
+- .absen berhenti
+- .absen perpanjang <menit>
+- .absen rekap
+
+
+` + "```" + `setup     : pengaturan absen
+mulai     : buka sesi absen
+berhenti  : tutup sesi
+perpanjang: tambah durasi
+rekap     : unduh rekap .xlsx` + "```" + `
+
+` + "`" + `Semua` + "`" + `
+Format :
+- .absen hasil
+- .absen status
+
+` + "```" + `hasil  : rekap sesi absen
+status : status absen` + "```"
 }
 
-// absenEcho menggema perintah yang diketik user ("[COMMAND]") untuk baris
-// pertama balasan .absen. RawArgs tak memuat nama command (dipotong
-// handler), jadi prefix ".absen " ditambah di sini.
-func absenEcho(mctx *store.MessageContext) string {
-	if raw := strings.TrimSpace(mctx.RawArgs); raw != "" {
-		if i := strings.IndexAny(raw, "\n\r"); i >= 0 {
-			raw = strings.TrimSpace(raw[:i])
-		}
-		if raw != "" {
-			return ".absen " + raw
-		}
-	}
-	return ".absen"
-}
-
-// absenReply mengirim balasan gaya .absen: gema perintah + MAKSIMAL satu
-// quote headline (Berhasil:/Gagal:/Info:) + baris detail normal. Tanpa
-// emoji, tanpa quote berlapis.
+// absenReply mengirim balasan error/info absensi sebagai teks biasa tanpa
+// gema perintah dan tanpa awalan quote ">" (sesuai FORMAT_RESPON_BOT.md).
 func absenReply(ctx context.Context, mctx *store.MessageContext, headline string, details ...string) error {
 	var sb strings.Builder
-	sb.WriteString(absenEcho(mctx))
-	sb.WriteString("\n> " + strings.TrimSpace(headline))
+	sb.WriteString(strings.TrimSpace(headline))
 	for _, d := range details {
 		if strings.TrimSpace(d) == "" {
 			continue
@@ -328,7 +318,7 @@ func handleAbsenBerhenti(ctx context.Context, mctx *store.MessageContext) error 
 	if sess == nil {
 		return absenReply(ctx, mctx, "Info: tidak ada sesi absen aktif.")
 	}
-	return absensiCloseAndRecap(chat, sess.ID)
+	return absensiStopAndRecap(chat, sess.ID)
 }
 
 func handleAbsenExtend(ctx context.Context, mctx *store.MessageContext) error {
@@ -677,10 +667,10 @@ func fireAbsensiReminder(chat string, sessionID, expectEnd int64) {
 	}
 	ctx := context.Background()
 	eh, ed := absenFormDay(sess.EndTS)
-	text := "Absen berakhir 5 menit lagi.\n" +
-		"Hari : " + eh + "\n" +
-		"Tanggal : " + ed + "\n" +
-		"Jam : " + absenFormClock(sess.EndTS) + "\n" +
+	text := "Absen berakhir 5 menit lagi.\n```" +
+		absenPadColon("Hari", eh, 7) + "\n" +
+		absenPadColon("Tanggal", ed, 7) + "\n" +
+		absenPadColon("Jam", absenFormClock(sess.EndTS), 7) + "```\n" +
 		"Segera share live location bila belum tercatat."
 	resp, err := absensiWAClient.SendMessage(ctx, chatJID, &waE2E.Message{
 		ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String(text)},
@@ -842,7 +832,62 @@ func absenRecapFormBlock(sess *store.AbsensiSession, hadir int) string {
 	}, "\n")
 }
 
-// absenAnnounce mengirim pengumuman teks ke chat (mulai/extend).
+// absensiStopAndRecap menutup sesi secara manual (.absen berhenti) dengan
+// judul "Sesi absen ditutup" dan jam akhir disesuaikan ke waktu penghentian.
+func absensiStopAndRecap(chat string, sessionID int64) error {
+	if absensiWAClient == nil || store.Absensi() == nil {
+		return fmt.Errorf("absensi mati")
+	}
+	sess, err := store.Absensi().GetSession(sessionID)
+	if err != nil {
+		return err
+	}
+	if sess == nil || sess.Status != "open" {
+		return fmt.Errorf("tidak ada sesi aktif")
+	}
+	records, err := store.Absensi().ListRecords(sessionID)
+	if err != nil {
+		return err
+	}
+	// Perbarui endTS ke waktu sekarang saat sesi dihentikan
+	now := time.Now().Unix()
+	if now > sess.StartTS {
+		sess.EndTS = now
+	}
+	text := buildAbsensiStopRecap(sess, records)
+	msgID, sendErr := sendAbsensiTextRetry(chat, text)
+	if cerr := store.Absensi().CloseSession(sessionID); cerr != nil {
+		return cerr
+	}
+	if sendErr != nil {
+		logfmt.Warn("absensi: rekap sesi #%d gagal terkirim setelah retry (%v), sesi tetap ditutup.\n", sessionID, sendErr)
+		sendAbsensiTextOnce(chat, "Sesi absen ditutup. Rekap gagal terkirim — lihat via .absen hasil.")
+		return nil
+	}
+	chatJID, err := types.ParseJID(chat)
+	if err != nil {
+		return err
+	}
+	mctx := &store.MessageContext{Client: absensiWAClient, Chat: chatJID}
+	store.LogOutgoing(mctx, "text", text)
+	store.TrackBotMessageID(msgID, text)
+	return nil
+}
+
+// buildAbsensiStopRecap menyusun format rekap saat sesi dihentikan secara manual:
+// judul "*Sesi absen ditutup*", blok form monospace, daftar hadir, dan link unduh.
+func buildAbsensiStopRecap(sess *store.AbsensiSession, records []store.AbsensiRecord) string {
+	var sb strings.Builder
+	sb.WriteString("*Sesi absen ditutup*\n")
+	sb.WriteString("\n```" + absenRecapFormBlock(sess, len(records)) + "```\n")
+	for i, r := range records {
+		fmt.Fprintf(&sb, "\n%d. %s — %s", i+1, r.Name, absenFormClockS(r.TS))
+	}
+	if len(records) > 0 {
+		sb.WriteString("\n\nUnduh: .absen rekap")
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
 func absenAnnounce(chat, text string) {
 	if absensiWAClient == nil {
 		return

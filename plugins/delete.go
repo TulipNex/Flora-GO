@@ -30,7 +30,14 @@ func RegisterDelete(r *Registry) {
 func handleDelete(ctx context.Context, mctx *store.MessageContext) error {
 	quotedSender := mctx.QuotedParticipant()
 	if quotedSender == "" {
-		return store.ReplyText(ctx, mctx, "Reply pesan yang mau dihapus, lalu ketik .delete")
+		if len(mctx.Args) == 0 {
+			return store.ReplyText(ctx, mctx, Help(HelpSpec{
+				Title:   "Hapus pesan",
+				Cmd:     "Delete",
+				Formats: []string{".delete <reply>"},
+			}))
+		}
+		return store.ReplyText(ctx, mctx, "Reply pesan bot yang mau dihapus, lalu ketik .delete.")
 	}
 	quotedJID, err := types.ParseJID(quotedSender)
 	if err != nil {

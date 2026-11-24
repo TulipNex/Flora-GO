@@ -36,20 +36,24 @@ func RegisterUserDB(r *Registry) {
 	})
 }
 
-const userdbUsage = "*UserDB — direktori identitas user* (khusus owner)\n" +
-	"ID grup lihat di .listgrup.\n" +
-	"User: @mention, reply, nomor HP, atau JID.\n" +
-	"\n" +
-	"*Sync*:\n" +
-	"- .userdb sync <id grup|user>\n" +
-	"- .userdb syncpp <id grup|user>   (sekaligus foto profil)\n" +
-	"  tanpa argumen di grup = grup itu sendiri\n" +
-	"\n" +
-	"*Lainnya*:\n" +
-	"- .userdb status\n" +
-	"- .userdb info <user>\n" +
-	"- .userdb stats\n" +
-	"- .userdb prune\n"
+func userdbUsage() string {
+	var sb strings.Builder
+	sb.WriteString(Title("Direktori user") + "\n\n")
+	sb.WriteString("`Sync`\nFormat :\n- .userdb sync <id|user>\n- .userdb syncpp <id|user>\nContoh : .userdb sync 001\n\n")
+	sb.WriteString(Code(
+		"sync   : simpan identitas",
+		"syncpp : simpan foto",
+	) + "\n\n")
+	sb.WriteString("`Lainnya`\nFormat :\n- .userdb status\n- .userdb info <user>\n- .userdb stats\n- .userdb prune\n\n")
+	sb.WriteString(Code(
+		"status : progres sinkronisasi",
+		"info   : profil detail",
+		"stats  : statistik data",
+		"prune  : pangkas cache",
+	) + "\n\n")
+	sb.WriteString(Hint("ID grup lihat di .listgrup. Target: @mention, reply, nomor HP, atau JID."))
+	return sb.String()
+}
 
 type userdirSyncState struct {
 	Label   string
@@ -72,7 +76,7 @@ func handleUserDB(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	raw := strings.TrimSpace(mctx.RawArgs)
 	if raw == "" {
-		return store.ReplyText(ctx, mctx, userdbUsage)
+		return store.ReplyText(ctx, mctx, userdbUsage())
 	}
 	fields := strings.Fields(raw)
 	sub := strings.ToLower(fields[0])
@@ -92,7 +96,7 @@ func handleUserDB(ctx context.Context, mctx *store.MessageContext) error {
 	case "prune":
 		return userdbPrune(ctx, mctx, rest)
 	default:
-		return store.ReplyText(ctx, mctx, userdbUsage)
+		return store.ReplyText(ctx, mctx, userdbUsage())
 	}
 }
 
@@ -108,7 +112,7 @@ func userdbSync(ctx context.Context, mctx *store.MessageContext, rest string, wi
 	// Tanpa argumen: di grup = grup itu sendiri.
 	if strings.TrimSpace(rest) == "" {
 		if !mctx.IsGroup() {
-			return store.ReplyText(ctx, mctx, "Sebutkan ID grup atau target user.\n\n"+userdbUsage)
+			return store.ReplyText(ctx, mctx, "Sebutkan ID grup atau target user.\n\n"+userdbUsage())
 		}
 		rest = mctx.Chat.String()
 	}
@@ -135,9 +139,9 @@ func userdbSync(ctx context.Context, mctx *store.MessageContext, rest string, wi
 				Delay:      350 * time.Millisecond,
 			})
 			if err != nil {
-				return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal sync %s: %v", label, err))
+				return store.ReplyText(ctx, mctx, Fail(fmt.Sprintf("Gagal sync %s", label), err))
 			}
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Sync %s selesai.\n%s", label, userdbSyncSummary(res)))
+			return store.ReplyText(ctx, mctx, fmt.Sprintf("*Sync %s Selesai*\n\n%s", label, userdbSyncSummary(res)))
 		}
 
 		// Async dengan foto.
@@ -166,7 +170,7 @@ func userdbSync(ctx context.Context, mctx *store.MessageContext, rest string, wi
 			ForcePhoto: true,
 		})
 		if err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal syncpp %s: %v", jid.String(), err))
+			return store.ReplyText(ctx, mctx, Fail(fmt.Sprintf("Gagal syncpp %s", jid.String()), err))
 		}
 		return store.ReplyText(ctx, mctx, userdbUserSummary(res))
 	}
@@ -176,16 +180,50 @@ func userdbSync(ctx context.Context, mctx *store.MessageContext, rest string, wi
 		WithPhoto: false,
 	})
 	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal sync %s: %v", jid.String(), err))
+		return store.ReplyText(ctx, mctx, Fail(fmt.Sprintf("Gagal sync %s", jid.String()), err))
 	}
 	return store.ReplyText(ctx, mctx, userdbUserSummary(res))
 }
 
+func userdbSubBlock(title string, items [][2]string) string {
+	maxKey := 0
+	for _, it := range items {
+		if l := len(it[0]); l > maxKey {
+			maxKey = l
+		}
+	}
+	var sb strings.Builder
+	sb.WriteString("- *" + title + "*\n```")
+	for i, it := range items {
+		pad := strings.Repeat(" ", maxKey-len(it[0]))
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("  - " + it[0] + pad + " : " + it[1])
+	}
+	sb.WriteString("```")
+	return sb.String()
+}
+
 func userdbSyncSummary(res userdir.SyncResult) string {
-	return fmt.Sprintf("Member: %d (baru %d, diperbarui %d, keluar %d)\nFoto: diambil %d, dilewati %d, gagal %d\nDurasi: %s",
-		res.Members, res.NewUsers, res.UpdatedUsers, res.Absent,
-		res.PhotosFetched, res.PhotosSkipped, res.PhotosFailed,
-		res.Duration.Round(time.Second))
+	dur := res.Duration.Round(time.Second).String()
+	var sb strings.Builder
+	sb.WriteString("`Hasil`\n")
+	sb.WriteString(userdbSubBlock("Member", [][2]string{
+		{"Total", strconv.Itoa(res.Members)},
+		{"Baru", strconv.Itoa(res.NewUsers)},
+		{"Update", strconv.Itoa(res.UpdatedUsers)},
+		{"Keluar", strconv.Itoa(res.Absent)},
+	}) + "\n")
+	sb.WriteString(userdbSubBlock("Foto", [][2]string{
+		{"Diambil", strconv.Itoa(res.PhotosFetched)},
+		{"Dilewati", strconv.Itoa(res.PhotosSkipped)},
+		{"Gagal", strconv.Itoa(res.PhotosFailed)},
+	}) + "\n")
+	sb.WriteString(userdbSubBlock("Waktu", [][2]string{
+		{"Durasi", dur},
+	}))
+	return sb.String()
 }
 
 func userdbUserSummary(res userdir.UserSyncResult) string {
@@ -193,7 +231,7 @@ func userdbUserSummary(res userdir.UserSyncResult) string {
 	if pp == "" {
 		pp = "-"
 	}
-	member := "bukan member grup"
+	member := "bukan member"
 	if res.IsMember {
 		member = "member"
 		if res.IsSuper {
@@ -202,9 +240,17 @@ func userdbUserSummary(res userdir.UserSyncResult) string {
 			member = "admin"
 		}
 	}
-	return fmt.Sprintf("User %s\nLID: %s\nPN: %s\nPushname: %s\nNama: %s\nUsername: %s\nFoto: %s\nKeanggotaan: %s",
-		res.JID, valueOrDash(res.LID), valueOrDash(res.PN), valueOrDash(res.PushName),
-		valueOrDash(res.FullName), valueOrDash(res.Username), pp, member)
+	rows := []string{
+		"- JID      : " + res.JID,
+		"- LID      : " + valueOrDash(res.LID),
+		"- PN       : " + valueOrDash(res.PN),
+		"- Pushname : " + valueOrDash(res.PushName),
+		"- Nama     : " + valueOrDash(res.FullName),
+		"- Username : " + valueOrDash(res.Username),
+		"- Foto     : " + pp,
+		"- Anggota  : " + member,
+	}
+	return Title("Profil User") + "\n\n" + Code(rows...)
 }
 
 // --- resolve group id ---
@@ -523,9 +569,9 @@ func userdbSyncAsyncGroup(client *whatsmeow.Client, origin, target types.JID, la
 
 	msg := ""
 	if err != nil {
-		msg = fmt.Sprintf("Sync foto %s gagal: %v", label, err)
+		msg = Fail(fmt.Sprintf("Sync foto %s gagal", label), err)
 	} else {
-		msg = fmt.Sprintf("Sync foto %s selesai.\n%s", label, userdbSyncSummary(res))
+		msg = fmt.Sprintf("*Sync Foto %s Selesai*\n\n%s", label, userdbSyncSummary(res))
 	}
 	out := &store.MessageContext{Client: client, Chat: origin}
 	_ = store.SendText(bg, out, msg)

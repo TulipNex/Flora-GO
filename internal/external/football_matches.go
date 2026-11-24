@@ -78,6 +78,10 @@ const ofNextDataCap = 4 << 20
 // slug = slug kompetisi (mis. "premier-league-9"), tab = "fixtures"
 // atau "results". Urutan section = urutan tampil di situs.
 func FetchOfSections(ctx context.Context, slug, tab string) ([]OfSection, error) {
+	if secs, err := FloraFetchMatches(ctx, slug, tab); err == nil && len(secs) > 0 && len(secs[0].Matches) > 0 {
+		return secs, nil
+	}
+
 	const engine = "onefootball"
 	if tab != "fixtures" && tab != "results" {
 		return nil, fmt.Errorf("%s: tab %q invalid", engine, tab)

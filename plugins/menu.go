@@ -55,7 +55,7 @@ func RegisterMenu(r *Registry) {
 					// jangan hilangkan dari menu, tampung ke Umum.
 					cat = CategoryUmum
 				}
-				if (cat == CategoryOwner || cat == CategoryDev) && !showOwner {
+				if cat == CategoryOwner && !showOwner {
 					continue
 				}
 				grouped[cat] = append(grouped[cat], name)

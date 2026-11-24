@@ -73,7 +73,12 @@ func Sync(ctx context.Context, client *whatsmeow.Client, users *store.UsersDB, g
 	}
 
 	now := time.Now().Unix()
-	presentIDs := make([]int64, 0, len(info.Participants))
+	type item struct {
+		pt    types.GroupParticipant
+		ident store.UserIdentity
+	}
+	items := make([]item, 0, len(info.Participants))
+	identities := make([]store.UserIdentity, 0, len(info.Participants))
 
 	for _, pt := range info.Participants {
 		ident := participantIdentity(pt)
@@ -84,38 +89,46 @@ func Sync(ctx context.Context, client *whatsmeow.Client, users *store.UsersDB, g
 		if ident.PushName == "" && pt.DisplayName != "" {
 			ident.PushName = pt.DisplayName
 		}
+		items = append(items, item{pt: pt, ident: ident})
+		identities = append(identities, ident)
+	}
 
-		// Cek apakah user sudah ada (untuk hitung baru/diperbarui).
-		existing := findExistingUser(users, ctx, ident)
-		id, err := users.UpsertUserIdentity(ctx, ident)
-		if err != nil {
-			logfmt.Warn("userdir: gagal upsert user %s: %v\n", pt.JID.String(), err)
-			continue
-		}
-		if existing == nil {
+	results, err := users.UpsertUserIdentitiesBatch(ctx, identities)
+	if err != nil {
+		logfmt.Warn("userdir: gagal batch upsert identities (%d user): %v\n", len(identities), err)
+		return res, fmt.Errorf("gagal simpan identitas anggota: %w", err)
+	}
+
+	presentIDs := make([]int64, 0, len(results))
+	membersBatch := make([]store.GroupMember, 0, len(results))
+
+	for i, r := range results {
+		it := items[i]
+		if r.IsNew {
 			res.NewUsers++
 		} else {
 			res.UpdatedUsers++
 		}
 
 		// Snapshot roster.
-		member := store.GroupMember{
+		membersBatch = append(membersBatch, store.GroupMember{
 			ChatJID:      opt.Chat.String(),
-			UserID:       id,
-			JID:          pt.JID.String(),
-			LID:          ident.LID,
-			PN:           ident.PN,
-			PushName:     ident.PushName,
-			IsAdmin:      pt.IsAdmin,
-			IsSuperAdmin: pt.IsSuperAdmin,
+			UserID:       r.ID,
+			JID:          it.pt.JID.String(),
+			LID:          it.ident.LID,
+			PN:           it.ident.PN,
+			PushName:     it.ident.PushName,
+			IsAdmin:      it.pt.IsAdmin,
+			IsSuperAdmin: it.pt.IsSuperAdmin,
 			Present:      true,
 			LastSeen:     now,
-		}
-		if err := gdb.UpsertGroupMember(ctx, member); err != nil {
-			logfmt.Warn("userdir: gagal upsert member %s: %v\n", pt.JID.String(), err)
-		}
-		presentIDs = append(presentIDs, id)
+		})
+		presentIDs = append(presentIDs, r.ID)
 		res.Members++
+	}
+
+	if err := gdb.UpsertGroupMembersBatch(ctx, membersBatch); err != nil {
+		logfmt.Warn("userdir: gagal batch upsert %d members: %v\n", len(membersBatch), err)
 	}
 
 	// Tandai yang keluar.

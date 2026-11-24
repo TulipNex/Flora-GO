@@ -28,9 +28,9 @@ func handleTrustSubcommand(ctx context.Context, mctx *store.MessageContext, trus
 	}
 	if trust {
 		if err := store.Groups().TrustUser(ctx, target); err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal memberi kepercayaan: %v", err))
+			return store.ReplyText(ctx, mctx, Fail("Gagal memberi kepercayaan", err))
 		}
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Oke, %s sekarang dipercaya mengakses Flora.", target.User))
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("@%s diberi akses ke agent.", target.User))
 	}
 	removed, err := store.Groups().UntrustUser(ctx, target)
 	if err != nil {
@@ -39,7 +39,7 @@ func handleTrustSubcommand(ctx context.Context, mctx *store.MessageContext, trus
 	if !removed {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("%s tidak ada di daftar trust.", target.User))
 	}
-	return store.ReplyText(ctx, mctx, fmt.Sprintf("Kepercayaan %s sudah dicabut.", target.User))
+	return store.ReplyText(ctx, mctx, fmt.Sprintf("Akses agent @%s dicabut.", target.User))
 }
 
 // handleTrustListSubcommand menangani ".agent trustlist" (KHUSUS owner):
@@ -56,7 +56,7 @@ func handleTrustListSubcommand(ctx context.Context, mctx *store.MessageContext) 
 		return store.ReplyText(ctx, mctx, "Daftar trust kosong — belum ada user yang dipercaya.")
 	}
 	var sb strings.Builder
-	sb.WriteString("Daftar trust Flora:\n")
+	sb.WriteString(Title("Daftar trusted") + "\n\n")
 	mentions := make([]types.JID, 0, len(list))
 	for i, e := range list {
 		// Tag biru butuh pairing "@<User>" di teks + MentionedJID (aturan

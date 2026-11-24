@@ -17,6 +17,9 @@ import (
 // (a#dlMP4 = video, a#dljpg = foto/thumbnail).
 func FetchPinterest(ctx context.Context, pageURL string) (*ScrapeResult, error) {
 	return scrapeCache.GetOrLoad(ctx, pageURL, func(ctx context.Context) (*ScrapeResult, error) {
+		if res, err := FloraFetchDownloader(ctx, "pinterest", pageURL); err == nil {
+			return res, nil
+		}
 		const engine = "klickpin"
 	const base = "https://klickpin.com"
 	if !pinURLRe.MatchString(pageURL) {

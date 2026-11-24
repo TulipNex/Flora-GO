@@ -61,13 +61,14 @@ func handleListGrup(ctx context.Context, mctx *store.MessageContext) error {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("Bot telah bergabung di grup:")
+	sb.WriteString("*Daftar Grup*\n")
 	for _, e := range ids {
 		name := e.Name
 		if name == "" {
 			name = "(tanpa nama)"
 		}
-		fmt.Fprintf(&sb, "\n[%03d] %s", e.Seq, name)
+		fmt.Fprintf(&sb, "\n- [%03d] %s", e.Seq, name)
 	}
+	sb.WriteString("\n\n> ID dipakai di `.spr`, `.sbpr`, dan `.userdb`.")
 	return store.ReplyText(ctx, mctx, sb.String())
 }

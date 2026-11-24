@@ -98,9 +98,11 @@ func handleSeedream(ctx context.Context, mctx *store.MessageContext) error {
 	}
 
 	args := strings.TrimSpace(mctx.RawArgs)
-	// Subcommand eksplisit satu-satunya: cookie. Sisa baris dipakai apa
-	// adanya sebagai nilai cookie (bisa sangat panjang, jangan dipecah).
-	if kind, rest := seedreamSubcommand(args); kind == "cookie" {
+	// Subcommand eksplisit: cookie & tutorial.
+	if kind, rest := seedreamSubcommand(args); kind != "" {
+		if kind == "tutorial" {
+			return store.ReplyText(ctx, mctx, seedreamTutorialBlock())
+		}
 		return handleArenaCookie(ctx, mctx, rest)
 	}
 
@@ -126,20 +128,43 @@ func handleSeedream(ctx context.Context, mctx *store.MessageContext) error {
 // seedreamHelpBlock adalah petunjuk singkat .seedream; tampil saat command
 // dipanggil tanpa argumen yang bisa dipakai.
 func seedreamHelpBlock() string {
-	return Block("Seedream",
-		Opt("Generate", ".seedream <prompt>"),
-		Opt("Edit", ".seedream <prompt> + reply gambar"),
-		Opt("Cookie", ".seedream cookie <cookie>"),
-	)
+	var b strings.Builder
+	b.WriteString("*Buat atau edit gambar*\n\n")
+	b.WriteString("`Generate`\n")
+	b.WriteString("Format : .seedream <prompt>\n")
+	b.WriteString("Contoh : .seedream kucing oranye di sawah\n\n")
+	b.WriteString("`Edit`\n")
+	b.WriteString("Format : .seedream <prompt> + reply gambar\n")
+	b.WriteString("Contoh :\n.seedream jadikan gaya anime\n\n")
+	b.WriteString("`Cookie`\n")
+	b.WriteString("Format : .seedream cookie <cookie>\n\n")
+	b.WriteString("`Tutorial`\n")
+	b.WriteString("Format : .seedream tutorial\n\n")
+	b.WriteString("> Tanpa argumen, `.seedream cookie` menampilkan status sesi.")
+	return b.String()
 }
 
-// seedreamSubcommand memisahkan subcommand eksplisit dari argumen. Hanya
-// "cookie" yang dianggap subcommand — generate/edit ditentukan dari ada
-// tidaknya foto, jadi prompt bebas diawali kata apa pun.
+// seedreamTutorialBlock mengembalikan teks panduan mengambil cookie arena.ai.
+func seedreamTutorialBlock() string {
+	return "*Tutorial Cookie Seedream*\n\n" +
+		"1. Buka https://arena.ai/ di browser dalam keadaan login.\n" +
+		"2. Tekan F12 untuk membuka DevTools, lalu masuk ke tab *Console*.\n" +
+		"3. Masukkan kode berikut lalu tekan Enter:\n" +
+		"   ```cookieStore.getAll().then(c=>console.log(c.map(x=>`${x.name}=${x.value}`).join('; ')))```\n" +
+		"4. Salin seluruh output teks cookie yang muncul.\n" +
+		"5. Kirim ke bot dengan format:\n" +
+		"   *.seedream cookie <nilai_cookie>*\n\n" +
+		"> Nilai cookie wajib memuat token *arena-auth-prod-v1*. Bot otomatis merotasi dan menyimpan-balik cookie setelah generate berhasil."
+}
+
+// seedreamSubcommand memisahkan subcommand eksplisit dari argumen ("cookie", "tutorial").
 func seedreamSubcommand(args string) (kind, rest string) {
 	first, rest := seedreamSplitFirst(args)
 	if strings.EqualFold(first, "cookie") {
 		return "cookie", strings.TrimSpace(rest)
+	}
+	if strings.EqualFold(first, "tutorial") {
+		return "tutorial", strings.TrimSpace(rest)
 	}
 	return "", args
 }
@@ -311,12 +336,13 @@ func seedreamSend(ctx context.Context, mctx *store.MessageContext, data []byte, 
 		im.Height = proto.Uint32(uint32(cfg.Height))
 	}
 
-	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{ImageMessage: im})
+	msg := &waE2E.Message{ImageMessage: im}
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, msg)
 	if err != nil {
 		return fmt.Errorf("gagal kirim gambar: %v", err)
 	}
 	store.LogOutgoing(mctx, "seedream", caption)
-	store.TrackBotMessageID(resp.ID, caption)
+	store.TrackBotMedia(string(resp.ID), msg, caption)
 	return nil
 }
 
@@ -419,19 +445,21 @@ func handleArenaCookie(ctx context.Context, mctx *store.MessageContext, raw stri
 	if err := arena.WriteCookie(raw); err != nil {
 		return store.ReplyText(ctx, mctx, ErrMsg("Cookie", err.Error()))
 	}
-	rows := []string{
-		Row("Status", "tersimpan"),
-		Row("Entri", strconv.Itoa(strings.Count(raw, "="))),
-	}
+
+	var sb strings.Builder
+	sb.WriteString("*Cookie Seedream*\n\n")
+	sb.WriteString("```Status   : tersimpan\n")
+	sb.WriteString(fmt.Sprintf("Entri    : %d entri\n", strings.Count(raw, "=")))
+
 	// Langsung tampilkan masa berlaku supaya owner tahu kapan harus
 	// memperbarui lagi (access token arena.ai ~1 jam).
 	if st, serr := arena.CookieStatusOf(); serr == nil && st.Parsed && !st.ExpiresAt.IsZero() {
-		rows = append(rows,
-			Row("Berakhir", expiryWhen(st.ExpiresAt)),
-			Row("Sisa", durasiRingkas(time.Until(st.ExpiresAt))))
+		sb.WriteString(fmt.Sprintf("Berakhir : %s\n", expiryWhen(st.ExpiresAt)))
+		sb.WriteString(fmt.Sprintf("Sisa     : %s\n", durasiRingkas(time.Until(st.ExpiresAt))))
 	}
-	rows = append(rows, Row("Model", arenaModelName()))
-	return store.ReplyText(ctx, mctx, Block("Cookie", rows...))
+	sb.WriteString(fmt.Sprintf("Model    : %s```\n\n", arenaModelName()))
+	sb.WriteString("Sesi arena.ai berhasil diperbarui.")
+	return store.ReplyText(ctx, mctx, sb.String())
 }
 
 // arenaCookieStatusBlock menampilkan status sesi tersimpan tanpa membocorkan
@@ -441,12 +469,7 @@ func handleArenaCookie(ctx context.Context, mctx *store.MessageContext, raw stri
 func arenaCookieStatusBlock() string {
 	st, err := arena.CookieStatusOf()
 	if err != nil {
-		return Block("Cookie",
-			Row("Status", "belum ada"),
-			Row("Cara setel", ".seedream cookie <cookie>"),
-			Row("Ambil dari", "DevTools > Network > request create-evaluation > header cookie"),
-			Row("Wajib memuat", "arena-auth-prod-v1"),
-		)
+		return "*Cookie Seedream*\n\n• Status : belum ada\n\nKirim *.seedream cookie <cookie>* untuk menyetel sesi arena.ai."
 	}
 
 	status := "aktif"
@@ -457,19 +480,20 @@ func arenaCookieStatusBlock() string {
 		status = "tersimpan (masa berlaku tak terbaca)"
 	}
 
-	rows := []string{Row("Status", status)}
+	var sb strings.Builder
+	sb.WriteString("*Cookie Seedream*\n\n")
+	sb.WriteString("```Status   : " + status + "\n")
 	if st.Parsed && !st.ExpiresAt.IsZero() {
-		rows = append(rows,
-			Row("Berakhir", expiryWhen(st.ExpiresAt)),
-			Row("Sisa", durasiRingkas(time.Until(st.ExpiresAt))))
+		sb.WriteString(fmt.Sprintf("Berakhir : %s\n", expiryWhen(st.ExpiresAt)))
+		sb.WriteString(fmt.Sprintf("Sisa     : %s\n", durasiRingkas(time.Until(st.ExpiresAt))))
 	}
-	rows = append(rows, Row("Model", arenaModelName()))
-	// Model edit hanya relevan kalau memang berbeda dari model generate;
-	// kalau sama, dua baris model cuma mengulang informasi yang sama.
+	sb.WriteString(fmt.Sprintf("Model    : %s", arenaModelName()))
 	if edit := arenaEditModelName(); edit != arenaModelName() {
-		rows = append(rows, Row("Model edit", edit))
+		sb.WriteString(fmt.Sprintf("\nModel edit: %s", edit))
 	}
-	return Block("Cookie", rows...)
+	sb.WriteString("```\n\n")
+	sb.WriteString("> Cookie diperbarui otomatis oleh bot setelah generate berhasil.")
+	return sb.String()
 }
 
 // expiryWhen menampilkan satu waktu dalam zona aktif bot (BOT_TIMEZONE),

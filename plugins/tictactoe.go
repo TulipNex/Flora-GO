@@ -66,14 +66,24 @@ func RegisterTicTacToe(r *Registry) {
 }
 
 func ttUsage() string {
-	return "Tictactoe:\n" +
-		".ttt @user — tantang member (grup, perlu diterima dulu)\n" +
-		".ttt terima / .ttt tolak — jawab tantangan (yang ditantang)\n" +
-		".ttt bot — lawan bot\n" +
-		".ttt 5 — taruh di kotak 5 (atau ketik angka polos saat giliranmu)\n" +
-		".ttt papan — tampilkan papan\n" +
-		".ttt nyerah — menyerah\n" +
-		".ttt stop — hentikan game"
+	return Help(HelpSpec{
+		Title: "Tictactoe",
+		Cmd:   "Ttt",
+		Formats: []string{
+			".ttt @user",
+			".ttt terima/tolak",
+			".ttt bot",
+			".ttt <1-9>",
+			".ttt papan",
+			".ttt nyerah",
+			".ttt stop",
+		},
+		Params: []string{
+			"@user : tantang member",
+			"bot   : lawan bot",
+			"1-9   : pilih langkah",
+		},
+	})
 }
 
 func handleTicTacToe(ctx context.Context, mctx *store.MessageContext) error {

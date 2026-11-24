@@ -42,13 +42,13 @@ type steptodownCmd struct {
 func RegisterStockDownloaders(r *Registry) {
 	registerSteptodown(r, steptodownCmd{
 		name: "getty", tool: "getty-images-downloader", label: "Getty Images",
-		hint: "<url halaman>", key: "URL",
-		example: "https://www.gettyimages.co.uk/detail/photo/.../2195485435",
+		hint: "<url>", key: "URL",
+		example: "https://www.gettyimages.com/detail/photo/...",
 	})
 	registerSteptodown(r, steptodownCmd{
 		name: "istock", tool: "istock-downloader", label: "iStock",
-		hint: "<url halaman>", key: "URL",
-		example: "https://www.istockphoto.com/photo/black-white-tiger-gm954560222-260620917",
+		hint: "<url>", key: "URL",
+		example: "https://www.istockphoto.com/photo/...",
 	})
 }
 
@@ -67,18 +67,16 @@ func registerSteptodown(r *Registry, c steptodownCmd) {
 // + upload (antrean dlSem yang sama dengan downloader) -> kirim sebagai gambar.
 func handleSteptodown(ctx context.Context, mctx *store.MessageContext, c steptodownCmd) error {
 	if len(mctx.Args) == 0 {
-		return store.ReplyText(ctx, mctx, Block(c.label,
-			Row("Cara", "."+c.name+" "+c.hint),
-			Row("Contoh", c.example),
-			"Gambar HD tanpa watermark."))
+		return store.ReplyText(ctx, mctx, Help(HelpSpec{
+			Title:   "Unduh gambar " + c.label,
+			Cmd:     c.name,
+			Formats: []string{"." + c.name + " " + c.hint},
+			Contoh:  "." + c.name + " " + c.example,
+		}))
 	}
 	input, err := resolveStockInput(c, mctx.Args[0])
 	if err != nil {
-		return store.ReplyText(ctx, mctx, ErrMsg(c.label, err.Error()))
-	}
-	key := c.key
-	if key == "" {
-		key = "Input"
+		return store.ReplyText(ctx, mctx, Sentence(err.Error()))
 	}
 
 	go func() {
@@ -96,17 +94,17 @@ func handleSteptodown(ctx context.Context, mctx *store.MessageContext, c steptod
 		}
 		data, derr := external.SteptodownImage(bg, c.tool, input)
 		if derr != nil {
-			_ = store.ReplyText(bg, mctx, ErrMsg(c.label, derr.Error()))
+			_ = store.ReplyText(bg, mctx, Sentence(derr.Error()))
 			return
 		}
-		rows := []string{Row(key, input)}
+		var lines []string
 		if cfg, _, cerr := image.DecodeConfig(bytes.NewReader(data)); cerr == nil && cfg.Width > 0 {
-			rows = append(rows, Row("Resolusi", fmt.Sprintf("%d x %d", cfg.Width, cfg.Height)))
+			lines = append(lines, fmt.Sprintf("- Resolusi : %d x %d", cfg.Width, cfg.Height))
 		}
-		rows = append(rows, "Preview tanpa watermark — bukan lisensi komersial.")
-		caption := Block(c.label, rows...)
+		lines = append(lines, fmt.Sprintf("- Ukuran : %.1f MB", float64(len(data))/(1<<20)))
+		caption := Title(c.label) + "\n\n" + Code(lines...)
 		if serr := sendDlBytesImage(bg, mctx, data, caption); serr != nil {
-			_ = store.ReplyText(bg, mctx, ErrMsg(c.label, fmt.Sprintf("Gagal mengirim: %v", serr)))
+			_ = store.ReplyText(bg, mctx, Fail("Gagal mengirim gambar", serr))
 		}
 	}()
 	return nil

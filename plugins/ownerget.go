@@ -62,7 +62,18 @@ func RegisterOwnerGet(r *Registry) {
 
 func handleGet(ctx context.Context, mctx *store.MessageContext) error {
 	if len(mctx.Args) == 0 {
-		return store.ReplyText(ctx, mctx, "Format: .get <url> [browser]\nBrowser: chrome, firefox, safari, edge. Contoh: .get https://api.example.com/data")
+		var sb strings.Builder
+		sb.WriteString(Title("Ambil isi URL") + "\n\n")
+		sb.WriteString("`Get`\n")
+		sb.WriteString("Format : .get <url> [browser]\n")
+		sb.WriteString("Contoh : .get https://api.example.com/data chrome\n\n")
+		sb.WriteString("Daftar browser:\n")
+		sb.WriteString("- chrome (default)\n")
+		sb.WriteString("- firefox\n")
+		sb.WriteString("- safari\n")
+		sb.WriteString("- edge\n\n")
+		sb.WriteString("> Browser dipakai untuk halaman ber-JS (opsional).")
+		return store.ReplyText(ctx, mctx, sb.String())
 	}
 
 	targetURL := mctx.Args[0]

@@ -168,8 +168,12 @@ func ipTrackCooldownSet(keys []string) {
 func handleIPTrack(ctx context.Context, mctx *store.MessageContext) error {
 	input := strings.TrimSpace(mctx.RawArgs)
 	if input == "" {
-		return store.ReplyText(ctx, mctx,
-			"Pemakaian: .iptrack <ip|url/domain>\nContoh: .iptrack 8.8.8.8 | .iptrack example.com")
+		return store.ReplyText(ctx, mctx, Help(HelpSpec{
+			Title:   "Lacak IP atau domain",
+			Cmd:     "Iptrack",
+			Formats: []string{".iptrack <ip|url>"},
+			Contoh:  ".iptrack 8.8.8.8",
+		}))
 	}
 
 	ip, host, err := resolveIPTrackTarget(input)
@@ -499,167 +503,197 @@ func sendIPTrackResult(ctx context.Context, mctx *store.MessageContext, ip, host
 
 func buildIPTrackText(ip, host string, info ipInfo) string {
 	var b strings.Builder
-	b.WriteString("🌐 *IP TRACKER*\n")
+	b.WriteString(Title("IP Tracker") + "\n\n")
 
 	// Target
-	b.WriteString("\n📌 *Target*\n")
+	b.WriteString("`Target`\n")
+	targetLines := make([]string, 0, 4)
 	if host != "" {
-		b.WriteString(fmt.Sprintf("• Host : %s\n", host))
+		targetLines = append(targetLines, "- Host          : "+host)
 	}
-	b.WriteString(fmt.Sprintf("• IP : %s\n", ip))
+	targetLines = append(targetLines, "- IP            : "+ip)
 	if info.ReverseDNS != "" {
-		b.WriteString(fmt.Sprintf("• Reverse DNS : %s\n", info.ReverseDNS))
+		targetLines = append(targetLines, "- Reverse DNS   : "+info.ReverseDNS)
 	}
 	if info.RIR != "" {
-		b.WriteString(fmt.Sprintf("• Registri (RIR) : %s\n", info.RIR))
+		targetLines = append(targetLines, "- Registri(RIR) : "+info.RIR)
 	}
+	b.WriteString(Code(targetLines...) + "\n\n")
 
 	// Geolokasi
-	b.WriteString("\n📍 *Geolokasi*\n")
+	b.WriteString("`Geolokasi`\n")
+	geoLines := make([]string, 0, 12)
 	if info.City != "" {
-		b.WriteString(fmt.Sprintf("• Kota : %s\n", info.City))
+		geoLines = append(geoLines, "- Kota         : "+info.City)
 	}
 	if info.State != "" {
-		b.WriteString(fmt.Sprintf("• Provinsi / Wilayah : %s\n", info.State))
+		geoLines = append(geoLines, "- Provinsi     : "+info.State)
 	}
 	if info.Country != "" {
-		b.WriteString(fmt.Sprintf("• Negara : %s\n", info.Country))
-	}
-	if info.CountryCode != "" {
-		b.WriteString(fmt.Sprintf("• Kode Negara : %s\n", info.CountryCode))
+		c := info.Country
+		if info.CountryCode != "" {
+			c += fmt.Sprintf(" (%s)", info.CountryCode)
+		}
+		geoLines = append(geoLines, "- Negara       : "+c)
 	}
 	if info.Continent != "" {
-		b.WriteString(fmt.Sprintf("• Benua : %s\n", info.Continent))
-	}
-	b.WriteString(fmt.Sprintf("• Anggota EU : %s\n", statusBadge(info.IsEU)))
-	if info.Zip != "" {
-		b.WriteString(fmt.Sprintf("• Kode Pos : %s\n", info.Zip))
-	}
-	if info.Latitude != 0 || info.Longitude != 0 {
-		b.WriteString(fmt.Sprintf("• Garis Lintang : %.5f\n", info.Latitude))
-		b.WriteString(fmt.Sprintf("• Garis Bujur : %.5f\n", info.Longitude))
-	}
-	if info.Accuracy != "" {
-		b.WriteString(fmt.Sprintf("• Akurasi : %s\n", info.Accuracy))
-	}
-	if info.Timezone != "" {
-		b.WriteString(fmt.Sprintf("• Zona Waktu : %s\n", info.Timezone))
-	}
-	if info.UTCOffset != "" {
-		b.WriteString(fmt.Sprintf("• UTC Offset : %s\n", info.UTCOffset))
-	}
-	if info.CurrencyCode != "" {
-		b.WriteString(fmt.Sprintf("• Mata Uang : %s\n", info.CurrencyCode))
+		geoLines = append(geoLines, "- Benua        : "+info.Continent)
 	}
 	if info.CallingCode != "" {
-		b.WriteString(fmt.Sprintf("• Kode Telepon : %s\n", info.CallingCode))
+		cc := info.CallingCode
+		if !strings.HasPrefix(cc, "+") {
+			cc = "+" + cc
+		}
+		geoLines = append(geoLines, "- Kode Telepon : "+cc)
 	}
+	if info.CurrencyCode != "" {
+		geoLines = append(geoLines, "- Mata Uang    : "+info.CurrencyCode)
+	}
+	if info.Timezone != "" {
+		geoLines = append(geoLines, "- Zona Waktu   : "+info.Timezone)
+	}
+	if info.UTCOffset != "" {
+		geoLines = append(geoLines, "- UTC Offset   : "+info.UTCOffset)
+	}
+	if info.Zip != "" {
+		geoLines = append(geoLines, "- Kode Pos     : "+info.Zip)
+	}
+	if info.Accuracy != "" {
+		geoLines = append(geoLines, "- Akurasi      : "+info.Accuracy)
+	}
+	if info.IsEU {
+		geoLines = append(geoLines, "- Anggota EU   : "+yesNoIP(info.IsEU))
+	}
+	if info.Latitude != 0 || info.Longitude != 0 {
+		geoLines = append(geoLines, fmt.Sprintf("- Koordinat    : %.5f, %.5f", info.Latitude, info.Longitude))
+	}
+	b.WriteString(Code(geoLines...) + "\n\n")
 
-	// Organisasi & ASN
-	hasOrg := info.CompanyName != "" || info.ASN != 0
-	if hasOrg {
-		b.WriteString("\n🏢 *Organisasi & ASN*\n")
+	// Perusahaan
+	if info.CompanyName != "" || info.CompanyDomain != "" || info.CompanyNetwork != "" {
+		b.WriteString("`Perusahaan`\n")
+		compLines := make([]string, 0, 6)
 		if info.CompanyName != "" {
-			b.WriteString(fmt.Sprintf("• Perusahaan : %s\n", info.CompanyName))
+			compLines = append(compLines, "- Nama         : "+info.CompanyName)
 		}
 		if info.CompanyType != "" {
-			b.WriteString(fmt.Sprintf("• Tipe Perusahaan : %s\n", info.CompanyType))
+			compLines = append(compLines, "- Tipe         : "+info.CompanyType)
 		}
 		if info.CompanyDomain != "" {
-			b.WriteString(fmt.Sprintf("• Domain Perusahaan : %s\n", info.CompanyDomain))
+			compLines = append(compLines, "- Domain       : "+info.CompanyDomain)
 		}
 		if info.CompanyNetwork != "" {
-			b.WriteString(fmt.Sprintf("• Jaringan Perusahaan : %s\n", info.CompanyNetwork))
+			compLines = append(compLines, "- Jaringan     : "+info.CompanyNetwork)
 		}
 		if info.CompanyNetname != "" {
-			b.WriteString(fmt.Sprintf("• Netname Perusahaan : %s\n", info.CompanyNetname))
+			compLines = append(compLines, "- Netname      : "+info.CompanyNetname)
 		}
 		if info.CompanyAbuserScore != "" {
-			b.WriteString(fmt.Sprintf("• Skor Abuser Perusahaan : %s\n", info.CompanyAbuserScore))
+			compLines = append(compLines, "- Skor Abuser  : "+info.CompanyAbuserScore)
 		}
+		b.WriteString(Code(compLines...) + "\n\n")
+	}
 
+	// ASN
+	if info.ASN != 0 || info.ASNOrg != "" || info.ASNRoute != "" {
+		b.WriteString("`ASN`\n")
+		asnLines := make([]string, 0, 11)
 		if info.ASN != 0 {
-			b.WriteString(fmt.Sprintf("• Nomor ASN : AS%d\n", info.ASN))
+			asnLines = append(asnLines, fmt.Sprintf("- Nomor        : AS%d", info.ASN))
 		}
 		if info.ASNOrg != "" {
-			b.WriteString(fmt.Sprintf("• Nama ASN : %s\n", info.ASNOrg))
+			asnLines = append(asnLines, "- Nama         : "+info.ASNOrg)
 		}
 		if info.ASNType != "" {
-			b.WriteString(fmt.Sprintf("• Tipe ASN : %s\n", info.ASNType))
+			asnLines = append(asnLines, "- Tipe         : "+info.ASNType)
 		}
 		if info.ASNRoute != "" {
-			b.WriteString(fmt.Sprintf("• Rute ASN : %s\n", info.ASNRoute))
+			asnLines = append(asnLines, "- Rute         : "+info.ASNRoute)
 		}
 		if info.ASNCountry != "" {
-			b.WriteString(fmt.Sprintf("• Negara ASN : %s\n", info.ASNCountry))
+			asnLines = append(asnLines, "- Negara       : "+info.ASNCountry)
 		}
 		if info.ASN != 0 {
-			b.WriteString(fmt.Sprintf("• Status ASN : %s\n", yesNoIP(info.ASNActive)))
+			asnLines = append(asnLines, "- Status       : "+activeStatus(info.ASNActive))
 		}
 		if info.ASNDomain != "" {
-			b.WriteString(fmt.Sprintf("• Domain ASN : %s\n", info.ASNDomain))
+			asnLines = append(asnLines, "- Domain       : "+info.ASNDomain)
 		}
 		if info.ASNAbuse != "" {
-			b.WriteString(fmt.Sprintf("• Email Abuse ASN : %s\n", info.ASNAbuse))
+			asnLines = append(asnLines, "- Email Abuse  : "+info.ASNAbuse)
 		}
 		if info.ASNAbuserScore != "" {
-			b.WriteString(fmt.Sprintf("• Skor Abuser ASN : %s\n", info.ASNAbuserScore))
-		}
-		if info.ASNCreated != "" {
-			b.WriteString(fmt.Sprintf("• ASN Dibuat : %s\n", info.ASNCreated))
+			asnLines = append(asnLines, "- Skor Abuser  : "+info.ASNAbuserScore)
 		}
 		if info.ASNUpdated != "" {
-			b.WriteString(fmt.Sprintf("• ASN Diperbarui : %s\n", info.ASNUpdated))
+			asnLines = append(asnLines, "- Diperbarui   : "+info.ASNUpdated)
+		} else if info.ASNCreated != "" {
+			asnLines = append(asnLines, "- Dibuat       : "+info.ASNCreated)
 		}
 		if info.ASNDescrip != "" {
-			b.WriteString(fmt.Sprintf("• Deskripsi ASN : %s\n", info.ASNDescrip))
+			asnLines = append(asnLines, "- Deskripsi    : "+info.ASNDescrip)
 		}
+		b.WriteString(Code(asnLines...) + "\n\n")
 	}
 
 	// Datacenter
 	if info.IsDatacenter && (info.DatacenterName != "" || info.DatacenterDomain != "" || info.DatacenterNetwork != "") {
-		b.WriteString("\n🖥️ *Datacenter*\n")
+		b.WriteString("`Datacenter`\n")
+		dcLines := make([]string, 0, 3)
 		if info.DatacenterName != "" {
-			b.WriteString(fmt.Sprintf("• Nama Datacenter : %s\n", info.DatacenterName))
+			dcLines = append(dcLines, "- Nama         : "+info.DatacenterName)
 		}
 		if info.DatacenterDomain != "" {
-			b.WriteString(fmt.Sprintf("• Domain Datacenter : %s\n", info.DatacenterDomain))
+			dcLines = append(dcLines, "- Domain       : "+info.DatacenterDomain)
 		}
 		if info.DatacenterNetwork != "" {
-			b.WriteString(fmt.Sprintf("• Jaringan Datacenter : %s\n", info.DatacenterNetwork))
+			dcLines = append(dcLines, "- Jaringan     : "+info.DatacenterNetwork)
 		}
+		b.WriteString(Code(dcLines...) + "\n\n")
 	}
 
 	// Keamanan
-	b.WriteString("\n🛡️ *Analisis Keamanan*\n")
-	b.WriteString(fmt.Sprintf("• VPN : %s\n", statusBadge(info.IsVPN)))
-	b.WriteString(fmt.Sprintf("• Proxy : %s\n", statusBadge(info.IsProxy)))
-	b.WriteString(fmt.Sprintf("• Tor Exit Node : %s\n", statusBadge(info.IsTor)))
-	b.WriteString(fmt.Sprintf("• Datacenter / Hosting : %s\n", statusBadge(info.IsDatacenter)))
-	b.WriteString(fmt.Sprintf("• Jaringan Seluler : %s\n", statusBadge(info.IsMobile)))
-	b.WriteString(fmt.Sprintf("• Crawler / Bot : %s\n", statusBadge(info.IsCrawler)))
-	b.WriteString(fmt.Sprintf("• Anycast : %s\n", statusBadge(info.IsAnycast)))
-	b.WriteString(fmt.Sprintf("• Satelit : %s\n", statusBadge(info.IsSatellite)))
-	b.WriteString(fmt.Sprintf("• Riwayat Abuser : %s\n", statusBadge(info.IsAbuser)))
+	b.WriteString("`Analisis Keamanan`\n")
+	secLines := []string{
+		"- VPN          : " + yesNoIP(info.IsVPN),
+		"- Proxy        : " + yesNoIP(info.IsProxy),
+		"- Tor          : " + yesNoIP(info.IsTor),
+		"- Datacenter   : " + yesNoIP(info.IsDatacenter),
+		"- Seluler      : " + yesNoIP(info.IsMobile),
+		"- Crawler/Bot  : " + yesNoIP(info.IsCrawler),
+		"- Anycast      : " + yesNoIP(info.IsAnycast),
+		"- Satelit      : " + yesNoIP(info.IsSatellite),
+		"- Abuser       : " + yesNoIP(info.IsAbuser),
+	}
+	b.WriteString(Code(secLines...))
 
 	// Kontak Abuse
 	if info.AbuseName != "" || info.AbuseEmail != "" || info.AbusePhone != "" || info.AbuseAddress != "" {
-		b.WriteString("\n⚠️ *Kontak Abuse*\n")
+		b.WriteString("\n\n`Kontak Abuse`\n")
+		abuseLines := make([]string, 0, 4)
 		if info.AbuseName != "" {
-			b.WriteString(fmt.Sprintf("• Nama : %s\n", info.AbuseName))
+			abuseLines = append(abuseLines, "- Nama         : "+info.AbuseName)
 		}
 		if info.AbuseEmail != "" {
-			b.WriteString(fmt.Sprintf("• Email : %s\n", info.AbuseEmail))
+			abuseLines = append(abuseLines, "- Email        : "+info.AbuseEmail)
 		}
 		if info.AbusePhone != "" {
-			b.WriteString(fmt.Sprintf("• Telepon : %s\n", info.AbusePhone))
+			abuseLines = append(abuseLines, "- Telepon      : "+info.AbusePhone)
 		}
 		if info.AbuseAddress != "" {
-			b.WriteString(fmt.Sprintf("• Alamat : %s\n", info.AbuseAddress))
+			abuseLines = append(abuseLines, "- Alamat       : "+info.AbuseAddress)
 		}
+		b.WriteString(Code(abuseLines...))
 	}
 
-	return strings.TrimRight(b.String(), "\n")
+	return b.String()
+}
+
+func activeStatus(b bool) string {
+	if b {
+		return "Aktif"
+	}
+	return "Nonaktif"
 }
 
 func statusBadge(b bool) string {

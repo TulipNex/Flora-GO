@@ -8,13 +8,16 @@ import (
 	"strings"
 )
 
-// FetchInstagram mengambil media Instagram via rantai: igexport → savereels.
+// FetchInstagram mengambil media Instagram via rantai: Flora Gateway -> igexport -> savereels.
 // fastdl SUDAH DIHAPUS (signing-nya ditolak server per akhir Sep 2026).
 // Port dari instagram.js + savereels.js + script igexport (igexport.com).
 // (snapinsta butuh bypass Cloudflare + eval JS — slotnya diganti universal
 // j2download di level engine.)
 func FetchInstagram(ctx context.Context, pageURL string) (*ScrapeResult, error) {
 	return scrapeCache.GetOrLoad(ctx, pageURL, func(ctx context.Context) (*ScrapeResult, error) {
+		if res, err := FloraFetchDownloader(ctx, "instagram", pageURL); err == nil {
+			return res, nil
+		}
 		if res, err := igexportFetch(ctx, pageURL); err == nil {
 		res.Source = "igexport"
 		return res, nil

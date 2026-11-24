@@ -74,6 +74,80 @@ func (g *GroupDB) UpsertGroupMember(ctx context.Context, m GroupMember) error {
 	return err
 }
 
+// UpsertGroupMembersBatch menyimpan/memperbarui daftar anggota grup sekaligus
+// dalam satu transaksi SQLite untuk efisiensi tinggi pada grup beranggotakan banyak.
+func (g *GroupDB) UpsertGroupMembersBatch(ctx context.Context, members []GroupMember) error {
+	if g == nil || g.db == nil {
+		return fmt.Errorf("group.db mati")
+	}
+	if len(members) == 0 {
+		return nil
+	}
+
+	tx, err := g.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO group_members
+			(chat_jid, user_id, jid, lid, pn, pushname, is_admin, is_superadmin,
+			 present, joined_at, left_at, first_seen, last_seen, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(chat_jid, user_id) DO UPDATE SET
+			jid = excluded.jid,
+			lid = excluded.lid,
+			pn = excluded.pn,
+			pushname = excluded.pushname,
+			is_admin = excluded.is_admin,
+			is_superadmin = excluded.is_superadmin,
+			present = excluded.present,
+			joined_at = CASE WHEN group_members.joined_at = 0 THEN excluded.joined_at ELSE group_members.joined_at END,
+			left_at = excluded.left_at,
+			last_seen = excluded.last_seen,
+			updated_at = excluded.updated_at
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now().Unix()
+	for _, m := range members {
+		if m.FirstSeen == 0 {
+			m.FirstSeen = now
+		}
+		if m.JoinedAt == 0 && m.Present {
+			m.JoinedAt = now
+		}
+		if m.LastSeen == 0 {
+			m.LastSeen = now
+		}
+		present := 0
+		if m.Present {
+			present = 1
+		}
+		admin := 0
+		if m.IsAdmin {
+			admin = 1
+		}
+		super := 0
+		if m.IsSuperAdmin {
+			super = 1
+		}
+
+		_, err := stmt.ExecContext(ctx,
+			m.ChatJID, m.UserID, m.JID, m.LID, m.PN, m.PushName, admin, super,
+			present, m.JoinedAt, m.LeftAt, m.FirstSeen, m.LastSeen, now)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
 // MarkGroupMembersAbsent menandai anggota yang tidak ada di daftar terbaru
 // sebagai keluar (present=0). presentIDs = daftar user_id yang MASIH ada.
 // Jika presentIDs kosong, tidak melakukan apa-apa (jangan hapus semua).

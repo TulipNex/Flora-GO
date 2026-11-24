@@ -19,9 +19,9 @@ import (
 	"github.com/polymorfa/hypermeow/proto/waE2E"
 )
 
-func init() {
-	registerPlugin(RegisterToExcel)
-}
+// func init() {
+// 	registerPlugin(RegisterToExcel)
+// }
 
 // toexcel.go — ubah file database SQLite (.db) jadi Excel (.xlsx), owner-only
 // dan hanya via DM (data DB sensitif: nomor HP, CRM, dsb).

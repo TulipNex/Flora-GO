@@ -330,13 +330,14 @@ func NativeFlow(t NFText, buttons ...NFButton) *waE2E.Message {
 // pesan bot. msgType/text dipakai untuk logging (lihat store.LogOutgoing) dan
 // text juga jadi label pelacak pesan bot.
 func SendNativeFlow(ctx context.Context, mctx *store.MessageContext, t NFText, msgType, text string, buttons ...NFButton) error {
-	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, NativeFlow(t, buttons...),
+	msg := NativeFlow(t, buttons...)
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, msg,
 		whatsmeow.SendRequestExtra{ID: whatsmeow.GenerateMessageID()})
 	if err != nil {
 		return fmt.Errorf("gagal kirim bubble tombol: %w", err)
 	}
 	store.LogOutgoing(mctx, msgType, text)
-	store.TrackBotMessageID(resp.ID, text)
+	store.TrackBotMedia(resp.ID, msg, text)
 	return nil
 }
 

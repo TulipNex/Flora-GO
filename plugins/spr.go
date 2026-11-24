@@ -465,7 +465,7 @@ func sprResetSenderKey(ctx context.Context, client *whatsmeow.Client, chat types
 // Handler
 // ---------------------------------------------------------------------------
 
-const sprUsage = "*SPR - Send Private Reply* (khusus owner)\n" +
+const sprUsage = "*SPR - Send Private Reply*\n" +
 	"Bisik ke target di dalam grup. Target baca isi asli,\n" +
 	"anggota lain tidak.\n" +
 	"\n" +
@@ -478,9 +478,9 @@ const sprUsage = "*SPR - Send Private Reply* (khusus owner)\n" +
 	"Output : satu bubble privat ke target\n" +
 	"\n" +
 	"```\n" +
-	"ID     : dari .listgrup\n" +
-	"Nomor  : 628xxx → +62 8xx xxx\n" +
-	"Pesan  : teks biasa\n" +
+	"ID    : dari .listgrup\n" +
+	"Nomor : 628xxx → +62 8xx xxx\n" +
+	"Pesan : teks biasa\n" +
 	"```\n" +
 	"\n" +
 	"`Decoy`\n" +

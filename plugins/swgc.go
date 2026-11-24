@@ -8,16 +8,13 @@ import (
 	"image"
 	"math/big"
 	"strings"
-	"sync"
 	"time"
 
-	"wabot-go/internal/logfmt"
 	"wabot-go/internal/messaging"
 	"wabot-go/internal/store"
 
 	whatsmeow "github.com/polymorfa/hypermeow"
 	"github.com/polymorfa/hypermeow/proto/waE2E"
-	"github.com/polymorfa/hypermeow/types/events"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -38,98 +35,20 @@ func RegisterSwgc(r *Registry) {
 		Category:    CategoryGrup,
 		Handler:     handleSwgc,
 	})
-	r.Register(Command{
-		Name:        "antistatus",
-		Description: "Auto-hapus SWGC orang (.antistatus on/off)",
-		Category:    CategoryGrup,
-		Handler:     handleAntistatus,
+}
+
+func swgcHelp() string {
+	return Help(HelpSpec{
+		Title:   "Kirim status grup",
+		Cmd:     "Status Grup",
+		Formats: []string{".swgc <teks/reply>"},
+		Contoh:  ".swgc pengumuman rapat jam 19",
+		Params: []string{
+			"masukan : arti",
+			"teks     : isi status",
+			"reply    : balas foto/video/VN",
+		},
 	})
-}
-
-func handleAntistatus(ctx context.Context, mctx *store.MessageContext) error {
-	if msg := requireModGate(ctx, mctx); msg != "" {
-		return store.ReplyText(ctx, mctx, msg)
-	}
-	arg := strings.ToLower(strings.TrimSpace(strings.Join(mctx.Args, " ")))
-	switch arg {
-	case "on", "aktif", "enable":
-		if err := store.GroupsFor(mctx.Client).SetAntistatus(ctx, mctx.Chat.String(), true); err != nil {
-			return store.ReplyText(ctx, mctx, ErrMsg("Antistatus", fmt.Sprintf("Gagal menyalakan: %v", err)))
-		}
-		return store.ReplyText(ctx, mctx, Block("Antistatus", Row("Status", "aktif"), "Status grup dari orang lain otomatis dihapus (bot harus admin; status buatan bot sendiri tidak ikut dihapus)."))
-	case "off", "mati", "disable":
-		if err := store.GroupsFor(mctx.Client).SetAntistatus(ctx, mctx.Chat.String(), false); err != nil {
-			return store.ReplyText(ctx, mctx, ErrMsg("Antistatus", fmt.Sprintf("Gagal mematikan: %v", err)))
-		}
-		return store.ReplyText(ctx, mctx, Block("Antistatus", Row("Status", "mati")))
-	default:
-		on, err := store.GroupsFor(mctx.Client).IsAntistatusOn(ctx, mctx.Chat.String())
-		if err != nil {
-			return store.ReplyText(ctx, mctx, ErrMsg("Antistatus", fmt.Sprintf("Gagal baca status: %v", err)))
-		}
-		status := "mati"
-		if on {
-			status = "aktif"
-		}
-		return store.ReplyText(ctx, mctx, Block("Antistatus", Row("Status", status), "Ubah: `.antistatus on` / `.antistatus off`."))
-	}
-}
-
-// antistatusFailCooldown membatasi balasan gagal-revoke: satu balasan per
-// chat per jendela (status bisa datang bertubi-tubi; log console selalu jalan).
-var (
-	antistatusFailMu   sync.Mutex
-	antistatusFailLast = map[string]time.Time{}
-)
-
-const antistatusFailCooldown = 10 * time.Minute
-
-// CheckAntistatus mencegat SWGC orang di grup yang toggle-nya aktif lalu
-// mencoba me-revoke-nya (butuh bot admin). true = ditangani (setop).
-// Catatan jujur: server BISA menolak revoke pesan tipe status (hanya
-// pembuatnya yang boleh hapus) — penolakan dicatat + dibalas SEKALI per
-// jendela cooldown supaya jelas berhasil vs ditolak.
-func CheckAntistatus(client *whatsmeow.Client, evt *events.Message) bool {
-	if !evt.Info.IsGroup || evt.Info.IsFromMe {
-		return false
-	}
-	msg := store.UnwrapMessage(evt.Message)
-	if msg == nil || msg.GetGroupStatusMessageV2() == nil {
-		return false
-	}
-	ctx := context.Background()
-	on, err := store.GroupsFor(client).IsAntistatusOn(ctx, evt.Info.Chat.String())
-	if err != nil {
-		logfmt.Warn("antistatus: baca toggle gagal (%v)\n", err)
-		return false
-	}
-	if !on {
-		return false
-	}
-	mctx := &store.MessageContext{Client: client, Chat: evt.Info.Chat, Sender: evt.Info.Sender, RawEvt: evt}
-	isBotAdmin, err := mctx.IsBotAdmin(ctx)
-	if err != nil {
-		logfmt.Warn("antistatus: cek admin bot gagal (%v)\n", err)
-		return false
-	}
-	if !isBotAdmin {
-		logfmt.Warn("antistatus: bot bukan admin di %s, lewati.\n", evt.Info.Chat.String())
-		return false
-	}
-	_, err = client.SendMessage(ctx, evt.Info.Chat, client.BuildRevoke(evt.Info.Chat, evt.Info.Sender, evt.Info.ID))
-	if err != nil {
-		logfmt.Warn("antistatus: revoke SWGC %s gagal (%v)\n", evt.Info.ID, err)
-		antistatusFailMu.Lock()
-		last := antistatusFailLast[evt.Info.Chat.String()]
-		antistatusFailLast[evt.Info.Chat.String()] = time.Now()
-		antistatusFailMu.Unlock()
-		if time.Since(last) > antistatusFailCooldown {
-			_ = store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal hapus status grup: %v", err))
-		}
-		return true
-	}
-	logfmt.Plain("antistatus: SWGC %s dari %s dihapus.\n", evt.Info.ID, evt.Info.Sender.String())
-	return true
 }
 
 // swgcBgPalette meniru palet resep Baileys untuk status teks (ARGB).
@@ -147,14 +66,14 @@ func swgcRandomSecret() ([]byte, error) {
 
 func handleSwgc(ctx context.Context, mctx *store.MessageContext) error {
 	if !mctx.IsGroup() {
-		return store.ReplyText(ctx, mctx, "Perintah ini hanya di grup.")
+		return store.ReplyText(ctx, mctx, "Command ini hanya bisa dipakai di dalam grup.")
 	}
 	text := strings.TrimSpace(mctx.RawArgs)
 	img, vid, aud := swgcExtractMedia(mctx)
 	if img == nil && vid == nil && aud == nil && text == "" {
-		return store.ReplyText(ctx, mctx, "Kirim teks atau reply media.\nContoh: .swgc pengumuman rapat jam 19\natau reply foto/video/VN dengan caption .swgc ...")
+		return store.ReplyText(ctx, mctx, swgcHelp())
 	}
-	status, err := sendDlStatus(ctx, mctx, "Mengirim status grup, tunggu sebentar...")
+	status, err := sendDlStatus(ctx, mctx, "Mengirim status grup…")
 	if err != nil {
 		return err
 	}
@@ -162,10 +81,10 @@ func handleSwgc(ctx context.Context, mctx *store.MessageContext) error {
 	go func() {
 		bg := context.Background()
 		if rerr := swgcSend(bg, mctx, text, img, vid, aud); rerr != nil {
-			_ = store.ReplyText(bg, mctx, fmt.Sprintf("Gagal kirim status grup: %v", rerr))
+			_ = store.ReplyText(bg, mctx, Fail("Gagal mengirim status grup", rerr))
 			return
 		}
-		_ = store.ReplyText(bg, mctx, "Status grup terkirim — cek tab Status grup ini.")
+		_ = store.ReplyText(bg, mctx, "Status grup terkirim, cek tab Status grup ini.")
 	}()
 	return nil
 }

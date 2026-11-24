@@ -31,7 +31,12 @@ func handleFlaticon(ctx context.Context, mctx *store.MessageContext) error {
 		return store.ReplyText(ctx, mctx, msg)
 	}
 	if len(mctx.Args) == 0 {
-		return store.ReplyText(ctx, mctx, "Format: .flaticon <ID/link ikon>\nContoh: .flaticon 4661257")
+		return store.ReplyText(ctx, mctx, Help(HelpSpec{
+			Title:   "Link CDN ikon Flaticon",
+			Cmd:     "Flaticon",
+			Formats: []string{".flaticon <ID/link ikon>"},
+			Contoh:  ".flaticon 4661257",
+		}))
 	}
 	id := external.FlaticonExtractID(mctx.Args[0])
 	if id == "" {
@@ -43,10 +48,10 @@ func handleFlaticon(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	sizes := []int{16, 24, 32, 64, 128, 256, 512}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "CDN icon %s:\n", id)
+	fmt.Fprintf(&sb, "*Flaticon %s*\n\n", id)
 	for i, u := range urls {
-		fmt.Fprintf(&sb, "%d: %s\n", sizes[i], u)
+		fmt.Fprintf(&sb, "- %d : %s\n", sizes[i], u)
 	}
-	sb.WriteString("Ikon Flaticon wajib atribusi author (non-premium).")
-	return store.ReplyText(ctx, mctx, strings.TrimRight(sb.String(), "\n"))
+	sb.WriteString("\n> Ikon Flaticon wajib atribusi author (non-premium).")
+	return store.ReplyText(ctx, mctx, sb.String())
 }

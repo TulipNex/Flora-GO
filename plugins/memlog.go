@@ -61,18 +61,36 @@ func RegisterMemLog(r *Registry) {
 }
 
 func memlogUsage() string {
-	return Block("Memlog",
-		Opt("now", ".memlog now — potret memori saat ini + proses anak"),
-		Opt("ringkas", ".memlog — 24 jam terakhir + verdict tren"),
-		Opt("day", ".memlog day — agregat per jam"),
-		Opt("raw", ".memlog raw 06 [12] — sampel per menit"),
-		Opt("top", ".memlog top [jam] — operasi paling boros alokasi"),
-		Opt("spike", ".memlog spike [n] — lonjakan terbesar"),
-		Opt("ops", ".memlog ops — operasi yang sedang berjalan"),
-		Opt("export", ".memlog export [24h|7d] — CSV samples+events (ZIP)"),
-		Opt("profil", ".memlog heap | goroutine — kirim profil pprof"),
-		Opt("prune", ".memlog prune [hari] — pangkas riwayat manual"),
-	)
+	return Help(HelpSpec{
+		Title: "Riwayat memori",
+		Cmd:   "Memlog",
+		Formats: []string{
+			".memlog now",
+			".memlog",
+			".memlog day",
+			".memlog raw <jam> [menit]",
+			".memlog top [jam]",
+			".memlog spike [n]",
+			".memlog ops",
+			".memlog heap",
+			".memlog goroutine",
+			".memlog export [24h|7d]",
+			".memlog prune [hari]",
+		},
+		Params: []string{
+			"now      : memori terkini",
+			"no arg   : ringkasan tren",
+			"day      : agregat per-jam",
+			"raw      : sampel per-menit",
+			"top      : boros alokasi",
+			"spike    : lonjakan terbesar",
+			"ops      : operasi aktif",
+			"heap     : profil heap",
+			"goroutine: profil goroutine",
+			"export   : ekspor CSV",
+			"prune    : pangkas riwayat",
+		},
+	})
 }
 
 func handleMemLog(ctx context.Context, mctx *store.MessageContext) error {
@@ -112,57 +130,112 @@ func handleMemLog(ctx context.Context, mctx *store.MessageContext) error {
 	}
 }
 
+func memlogStateText() string {
+	if !memlog.Enabled() {
+		return "nonaktif"
+	}
+	return "aktif"
+}
+
 // --- .memlog now ---
 
 func memlogNow(ctx context.Context, mctx *store.MessageContext) error {
 	s := memlog.SnapshotNow()
 	peakRSS, peakHeap, peakChild := memlog.Peaks()
-	queued, dropped, opsDropped := memlog.Stats()
+	queued, dropped, _ := memlog.Stats()
 
-	rows := []string{
-		Row("RSS", mbStr(s.RSS)),
-		Row("Heap Alloc", mbStr(s.HeapAlloc)),
-		Row("Heap Sys", mbStr(s.HeapSys)),
-		Row("Heap Idle", mbStr(s.HeapIdle)),
-		Row("Heap Released", mbStr(s.HeapReleased)),
-		Row("Heap Objects", fmt.Sprintf("%d", s.HeapObjects)),
-		Row("Goroutines", fmt.Sprintf("%d", s.Goroutines)),
-		Row("GC cycles", fmt.Sprintf("%d", s.GCCycles)),
-		Row("Puncak RSS", mbStr(peakRSS)),
-		Row("Puncak heap", mbStr(peakHeap)),
-	}
+	var sb strings.Builder
+	sb.WriteString(Title("Memlog Sekarang") + "\n\n")
+
+	// `Memori`
+	sb.WriteString("`Memori`\n")
+	sb.WriteString(memlogSubBlock("RSS", [][2]string{
+		{"Terkini", mbStr(s.RSS)},
+		{"Puncak", mbStr(peakRSS)},
+	}) + "\n")
+	sb.WriteString(memlogSubBlock("Heap", [][2]string{
+		{"Alloc", mbStr(s.HeapAlloc)},
+		{"Sys", mbStr(s.HeapSys)},
+		{"Idle", mbStr(s.HeapIdle)},
+		{"Released", mbStr(s.HeapReleased)},
+		{"Objects", strconv.FormatUint(s.HeapObjects, 10)},
+		{"Puncak", mbStr(peakHeap)},
+	}) + "\n\n")
+
+	// `Runtime`
+	sb.WriteString("`Runtime`\n")
+	sb.WriteString(memlogSubBlock("Go", [][2]string{
+		{"Goroutines", strconv.FormatUint(s.Goroutines, 10)},
+		{"GC cycles", strconv.FormatUint(s.GCCycles, 10)},
+	}) + "\n")
+
+	cgUsed, cgMax := "-", "-"
 	if s.CgroupKnown {
-		rows = append(rows, Row("Cgroup", fmt.Sprintf("%s / %s", mbStr(s.CgroupUsed), mbStr(s.CgroupMax))))
-	} else {
-		rows = append(rows, Row("Cgroup", "tidak terdeteksi"))
+		cgUsed, cgMax = mbStr(s.CgroupUsed), mbStr(s.CgroupMax)
 	}
-	if s.ChildRSS > 0 {
-		rows = append(rows, Row("Anak proses", fmt.Sprintf("%s (%s)", mbStr(s.ChildRSS), dashStr(s.ChildTop))))
-		if peakChild > 0 {
-			rows = append(rows, Row("Puncak anak", mbStr(peakChild)))
-		}
-	} else {
-		rows = append(rows, Row("Anak proses", "tidak ada"))
-	}
-	rows = append(rows, Row("Sampler", memlogStateText()))
-	rows = append(rows, Row("Job tulis", fmt.Sprintf("%d (dibuang %d · ops drop %d)", queued, dropped, opsDropped)))
+	sb.WriteString(memlogSubBlock("Lingkungan", [][2]string{
+		{"Cgroup Used", cgUsed},
+		{"Cgroup Max", cgMax},
+	}) + "\n")
 
+	childRSS, childApp, childPeak := "0 MB", "-", "0 MB"
+	if s.ChildRSS > 0 {
+		childRSS = mbStr(s.ChildRSS)
+		childApp = dashStr(s.ChildTop)
+	}
+	if peakChild > 0 {
+		childPeak = mbStr(peakChild)
+	}
+	sb.WriteString(memlogSubBlock("Anak Proses", [][2]string{
+		{"RSS", childRSS},
+		{"Aplikasi", childApp},
+		{"Puncak", childPeak},
+	}) + "\n\n")
+
+	// `Sistem`
+	samplerStatus := memlogStateText()
+	sampelAkhir := "-"
+	dbUkuran := "-"
 	if db := store.MemLog(); db != nil {
 		if size, err := db.SizeBytes(ctx); err == nil {
-			rows = append(rows, Row("DB memlog", humanBytes(size)))
+			dbUkuran = humanBytes(size)
 		}
 		if last, ok, err := db.LastSample(ctx); err == nil && ok {
-			rows = append(rows, Row("Sampel terakhir", time.Unix(last.TS, 0).In(timex.Zone()).Format("15:04:05")))
+			sampelAkhir = time.Unix(last.TS, 0).In(timex.Zone()).Format("15:04:05")
 		}
 	}
-	return store.ReplyText(ctx, mctx, Block("Memlog Sekarang", rows...))
+	sb.WriteString("`Sistem`\n")
+	sb.WriteString(memlogSubBlock("Sampler", [][2]string{
+		{"Status", samplerStatus},
+		{"Sampel akhir", sampelAkhir},
+	}) + "\n")
+	sb.WriteString(memlogSubBlock("Database", [][2]string{
+		{"Ukuran", dbUkuran},
+		{"Job tulis", strconv.FormatUint(queued, 10)},
+		{"Job dibuang", strconv.FormatUint(dropped, 10)},
+	}))
+
+	return store.ReplyText(ctx, mctx, sb.String())
 }
 
-func memlogStateText() string {
-	if !memlog.Enabled() {
-		return "nonaktif (MEMLOG_SAMPLE_SECONDS=0)"
+func memlogSubBlock(title string, items [][2]string) string {
+	maxKey := 0
+	for _, it := range items {
+		if l := len(it[0]); l > maxKey {
+			maxKey = l
+		}
 	}
-	return "aktif"
+	var sb strings.Builder
+	sb.WriteString("- *" + title + "*\n```")
+	for i, it := range items {
+		pad := strings.Repeat(" ", maxKey-len(it[0]))
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("  - " + it[0] + pad + " : " + it[1])
+	}
+	sb.WriteString("```")
+	return sb.String()
 }
 
 // --- .memlog (ringkasan 24 jam) ---
@@ -205,40 +278,78 @@ func memlogSummary(ctx context.Context, mctx *store.MessageContext, window time.
 		}
 	}
 
-	rows := []string{
-		Row("Sampel", fmt.Sprintf("%d (%.0f/jam)", len(samples), float64(len(samples))/window.Hours())),
-		Row("RSS", fmt.Sprintf("%s – %s (kini %s)", mbStr(rssMin), mbStr(rssMax), mbStr(samples[len(samples)-1].RSS))),
-		Row("Heap alloc", fmt.Sprintf("puncak %s · kini %s", mbStr(heapMax), mbStr(samples[len(samples)-1].HeapAlloc))),
-		Row("Objek", fmt.Sprintf("puncak %d · kini %d", objMax, samples[len(samples)-1].HeapObjects)),
-	}
+	lastSample := samples[len(samples)-1]
+
+	var sb strings.Builder
+	sb.WriteString(Title(fmt.Sprintf("Memlog %s", memlogWindowLabel(window))) + "\n\n")
+
+	// `Statistik`
+	sb.WriteString("`Statistik`\n")
+	sb.WriteString(memlogSubBlock("Sampel", [][2]string{
+		{"Total", strconv.Itoa(len(samples))},
+		{"Rata-rata", fmt.Sprintf("%.0f/jam", float64(len(samples))/window.Hours())},
+	}) + "\n")
+	sb.WriteString(memlogSubBlock("RSS", [][2]string{
+		{"Minimum", mbStr(rssMin)},
+		{"Maksimum", mbStr(rssMax)},
+		{"Terkini", mbStr(lastSample.RSS)},
+	}) + "\n")
+	sb.WriteString(memlogSubBlock("Heap", [][2]string{
+		{"Puncak", mbStr(heapMax)},
+		{"Terkini", mbStr(lastSample.HeapAlloc)},
+	}) + "\n")
+	sb.WriteString(memlogSubBlock("Objek", [][2]string{
+		{"Puncak", strconv.FormatUint(objMax, 10)},
+		{"Terkini", strconv.FormatUint(lastSample.HeapObjects, 10)},
+	}) + "\n")
+
+	childPeakStr := "0 MB"
 	if childMax > 0 {
-		rows = append(rows, Row("Anak proses", fmt.Sprintf("puncak %s", mbStr(childMax))))
+		childPeakStr = mbStr(childMax)
 	}
+	sb.WriteString(memlogSubBlock("Anak Proses", [][2]string{
+		{"Puncak", childPeakStr},
+	}) + "\n\n")
 
+	// `Analisis`
 	trend, terr := db.Trend(ctx, now)
+	trendStatus := "stabil"
+	trendDelta := "+0.0 MB/jam"
 	if terr == nil && trend.NowN > 0 {
-		rows = append(rows, Row("Tren", memlogTrendText(trend)))
+		heapDelta := int64(trend.NowHeap) - int64(trend.PrevHeap)
+		if _, growing := memlogGrowthReason(trend); growing {
+			trendStatus = "naik"
+		} else if heapDelta < -(15 << 20) {
+			trendStatus = "turun"
+		}
+		trendDelta = fmt.Sprintf("%s/jam", signedMB(heapDelta/24))
+	} else if terr != nil {
+		trendStatus = "error"
+		trendDelta = terr.Error()
 	}
 
-	if top, err := db.TopOps(ctx, from, to, 4); err == nil && len(top) > 0 {
-		rows = append(rows, "", "*Top alokasi:*")
-		for _, op := range top {
-			rows = append(rows, fmt.Sprintf("• %s · %d× · avg %s · total %s",
-				memlogOpName(op.Kind, op.Label), op.N,
-				humanBytes(op.AllocAvg), humanBytes(op.AllocTotal)))
-		}
-	}
+	spikeWaktu := "-"
+	spikeDelta := "-"
+	spikeOp := "-"
 	if spikes, err := db.Spikes(ctx, from, to, 1); err == nil && len(spikes) > 0 {
 		ev := spikes[0]
-		rows = append(rows, Row("Spike terbesar",
-			fmt.Sprintf("%s · heap %s · %s",
-				time.Unix(ev.TS, 0).In(timex.Zone()).Format("02 Jan 15:04"),
-				signedMB(ev.HeapD), dashStr(ev.Label))))
+		spikeWaktu = time.Unix(ev.TS, 0).In(timex.Zone()).Format("02 Jan 15:04")
+		spikeDelta = signedMB(ev.HeapD)
+		spikeOp = dashStr(ev.Label)
 	}
-	if terr != nil {
-		rows = append(rows, Row("Tren", fmt.Sprintf("gagal dihitung: %v", terr)))
-	}
-	return store.ReplyText(ctx, mctx, Block(fmt.Sprintf("Memlog %s", memlogWindowLabel(window)), rows...))
+
+	sb.WriteString("`Analisis`\n")
+	sb.WriteString(memlogSubBlock("Tren", [][2]string{
+		{"Status", trendStatus},
+		{"Kenaikan", trendDelta},
+	}) + "\n")
+	sb.WriteString(memlogSubBlock("Spike Terbesar", [][2]string{
+		{"Waktu", spikeWaktu},
+		{"Heap Delta", spikeDelta},
+		{"Operasi", spikeOp},
+	}))
+
+	return store.ReplyText(ctx, mctx, sb.String())
 }
 
 // --- .memlog day ---
@@ -257,16 +368,27 @@ func memlogDay(ctx context.Context, mctx *store.MessageContext, window time.Dura
 		return store.ReplyText(ctx, mctx, ErrMsg("Memlog", "belum ada sampel tersimpan."))
 	}
 
-	lines := []string{Title(fmt.Sprintf("Memlog per Jam (%s)", memlogWindowLabel(window))), "```"}
-	for _, h := range buckets {
-		lines = append(lines, fmt.Sprintf("%s  %s–%s  heap %s  obj %s  anak %s",
-			time.Unix(h.Hour, 0).In(timex.Zone()).Format("15:04"),
-			mbShort(h.RSSMin), mbShort(h.RSSMax),
-			mbShort(h.HeapMax), countShort(h.ObjMax), mbShort(h.ChildMax)))
+	var sb strings.Builder
+	sb.WriteString(Title(fmt.Sprintf("Memlog per Jam (%s)", memlogWindowLabel(window))) + "\n\n")
+	sb.WriteString("`Daftar Jam`\n")
+	for i, h := range buckets {
+		hourStr := time.Unix(h.Hour, 0).In(timex.Zone()).Format("15:04")
+		sb.WriteString(memlogSubBlock(hourStr, [][2]string{
+			{"RSS", fmt.Sprintf("%s – %s", mbStr(h.RSSMin), mbStr(h.RSSMax))},
+			{"Heap", mbStr(h.HeapMax)},
+			{"Objek", countShort(h.ObjMax)},
+			{"Anak proses", mbStr(h.ChildMax)},
+		}))
+		if i < len(buckets)-1 {
+			sb.WriteString("\n")
+		}
 	}
-	lines = append(lines, "```")
-	lines = append(lines, Row("Total jam", fmt.Sprintf("%d jam", len(buckets))))
-	return store.ReplyText(ctx, mctx, strings.Join(lines, "\n"))
+	sb.WriteString("\n\n`Total`\n")
+	sb.WriteString(memlogSubBlock("Durasi", [][2]string{
+		{"Total jam", fmt.Sprintf("%d jam", len(buckets))},
+	}))
+
+	return store.ReplyText(ctx, mctx, sb.String())
 }
 
 // --- .memlog raw ---
@@ -293,22 +415,30 @@ func memlogRaw(ctx context.Context, mctx *store.MessageContext, args []string) e
 		truncated = len(samples) - memlogMaxRawRows
 		samples = samples[len(samples)-memlogMaxRawRows:]
 	}
-	lines := []string{Title(fmt.Sprintf("Memlog Raw %s–%s",
-		from.In(timex.Zone()).Format("15:04"), to.In(timex.Zone()).Format("15:04"))), "```"}
-	for _, s := range samples {
-		ops := ""
-		if s.Ops != "" {
-			ops = "  " + s.Ops
+
+	var sb strings.Builder
+	sb.WriteString(Title(fmt.Sprintf("Memlog Raw %s–%s",
+		from.In(timex.Zone()).Format("15:04"), to.In(timex.Zone()).Format("15:04"))) + "\n\n")
+	sb.WriteString("`Sampel Menit`\n")
+	for i, s := range samples {
+		timeStr := time.Unix(s.TS, 0).In(timex.Zone()).Format("15:04:05")
+		items := [][2]string{
+			{"RSS", mbStr(s.RSS)},
+			{"Heap", mbStr(s.HeapAlloc)},
+			{"Objek", countShort(s.HeapObjects)},
 		}
-		lines = append(lines, fmt.Sprintf("%s  rss %s  heap %s  obj %s%s",
-			time.Unix(s.TS, 0).In(timex.Zone()).Format("15:04:05"),
-			mbShort(s.RSS), mbShort(s.HeapAlloc), countShort(s.HeapObjects), ops))
+		if s.Ops != "" {
+			items = append(items, [2]string{"Operasi", s.Ops})
+		}
+		sb.WriteString(memlogSubBlock(timeStr, items))
+		if i < len(samples)-1 {
+			sb.WriteString("\n")
+		}
 	}
-	lines = append(lines, "```")
 	if truncated > 0 {
-		lines = append(lines, Row("Catatan", fmt.Sprintf("%d baris lebih lama dipotong — pakai .memlog export untuk data penuh", truncated)))
+		sb.WriteString("\n\n" + Hint(fmt.Sprintf("%d baris lebih lama dipotong — pakai .memlog export untuk data penuh", truncated)))
 	}
-	return store.ReplyText(ctx, mctx, strings.Join(lines, "\n"))
+	return store.ReplyText(ctx, mctx, sb.String())
 }
 
 func memlogRawWindow(args []string) (time.Time, time.Time, error) {
@@ -360,15 +490,24 @@ func memlogTop(ctx context.Context, mctx *store.MessageContext, args []string) e
 			fmt.Sprintf("belum ada operasi tercatat dalam %d jam terakhir.", hours)))
 	}
 
-	lines := []string{Title(fmt.Sprintf("Top Operasi (%d jam)", hours))}
-	for _, op := range ops {
-		lines = append(lines, fmt.Sprintf("• %s — %d× · avg %s · total %s · rata-rata %s",
-			memlogOpName(op.Kind, op.Label), op.N,
-			humanBytes(op.AllocAvg), humanBytes(op.AllocTotal),
-			time.Duration(op.DurAvgMS)*time.Millisecond))
+	var sb strings.Builder
+	sb.WriteString(Title(fmt.Sprintf("Top Operasi (%d Jam)", hours)) + "\n\n")
+	sb.WriteString("`Operasi Terbanyak`\n")
+	for i, op := range ops {
+		opTitle := memlogOpName(op.Kind, op.Label)
+		dur := (time.Duration(op.DurAvgMS) * time.Millisecond).Round(100 * time.Millisecond).String()
+		sb.WriteString(memlogSubBlock(opTitle, [][2]string{
+			{"Eksekusi", fmt.Sprintf("%d×", op.N)},
+			{"Rata Alokasi", humanBytes(op.AllocAvg)},
+			{"Total Alokasi", humanBytes(op.AllocTotal)},
+			{"Rata Durasi", dur},
+		}))
+		if i < len(ops)-1 {
+			sb.WriteString("\n")
+		}
 	}
-	lines = append(lines, "", "> alloc = byte yang dialokasikan operasi (kebal GC).")
-	return store.ReplyText(ctx, mctx, strings.Join(lines, "\n"))
+	sb.WriteString("\n\n" + Hint("alloc = byte yang dialokasikan operasi (kebal GC)."))
+	return store.ReplyText(ctx, mctx, sb.String())
 }
 
 // --- .memlog spike ---
@@ -395,34 +534,55 @@ func memlogSpike(ctx context.Context, mctx *store.MessageContext, args []string)
 			"tidak ada lonjakan di atas ambang (heap +8 MB / RSS +60 MB / anak +50 MB) dalam 7 hari."))
 	}
 
-	lines := []string{Title("Lonjakan Terbesar (7 hari)")}
-	for _, ev := range events {
-		lines = append(lines, fmt.Sprintf("• %s — %s · %s",
-			time.Unix(ev.TS, 0).In(timex.Zone()).Format("02 Jan 15:04:05"),
-			dashStr(ev.Note), dashStr(ev.Label)))
+	var sb strings.Builder
+	sb.WriteString(Title("Lonjakan Terbesar (7 Hari)") + "\n\n")
+	sb.WriteString("`Daftar Lonjakan`\n")
+	for i, ev := range events {
+		timeStr := time.Unix(ev.TS, 0).In(timex.Zone()).Format("02 Jan 15:04:05")
+		sb.WriteString(memlogSubBlock(timeStr, [][2]string{
+			{"Lonjakan", dashStr(ev.Note)},
+			{"Operasi", dashStr(ev.Label)},
+		}))
+		if i < len(events)-1 {
+			sb.WriteString("\n")
+		}
 	}
-	return store.ReplyText(ctx, mctx, strings.Join(lines, "\n"))
+	return store.ReplyText(ctx, mctx, sb.String())
 }
 
 // --- .memlog ops ---
 
 func memlogOps(ctx context.Context, mctx *store.MessageContext) error {
 	ops := memlog.ActiveOps()
-	queued, dropped, opsDropped := memlog.Stats()
+	queued, dropped, _ := memlog.Stats()
 
-	rows := []string{Row("Sampler", memlogStateText())}
-	if len(ops) == 0 {
-		rows = append(rows, Row("Operasi aktif", "tidak ada"))
-	} else {
-		rows = append(rows, Row("Operasi aktif", fmt.Sprintf("%d", len(ops))))
-		for _, o := range ops {
-			rows = append(rows, fmt.Sprintf("• %s — berjalan %s", memlogOpName(o.Kind, o.Label),
-				(time.Duration(o.DurMS)*time.Millisecond).Round(time.Millisecond)))
+	var sb strings.Builder
+	sb.WriteString(Title("Operasi Memlog") + "\n\n")
+	sb.WriteString("`Status`\n")
+	sb.WriteString(memlogSubBlock("Sampler", [][2]string{
+		{"Kondisi", memlogStateText()},
+	}) + "\n")
+	sb.WriteString(memlogSubBlock("Operasi", [][2]string{
+		{"Sedang aktif", strconv.Itoa(len(ops))},
+	}) + "\n")
+	sb.WriteString(memlogSubBlock("Antrean", [][2]string{
+		{"Job tulis", strconv.FormatUint(queued, 10)},
+		{"Dibuang", strconv.FormatUint(dropped, 10)},
+	}))
+
+	if len(ops) > 0 {
+		sb.WriteString("\n\n`Operasi Berjalan`\n")
+		for i, o := range ops {
+			dur := (time.Duration(o.DurMS) * time.Millisecond).Round(100 * time.Millisecond).String()
+			sb.WriteString(memlogSubBlock(memlogOpName(o.Kind, o.Label), [][2]string{
+				{"Durasi", dur},
+			}))
+			if i < len(ops)-1 {
+				sb.WriteString("\n")
+			}
 		}
 	}
-	rows = append(rows, Row("Job tulis", fmt.Sprintf("%d (dibuang %d)", queued, dropped)))
-	rows = append(rows, Row("Operasi dibuang", fmt.Sprintf("%d", opsDropped)))
-	return store.ReplyText(ctx, mctx, Block("Operasi Memlog", rows...))
+	return store.ReplyText(ctx, mctx, sb.String())
 }
 
 // --- profil on-demand ---
@@ -457,9 +617,12 @@ func memlogSendProfile(ctx context.Context, mctx *store.MessageContext, heap boo
 	if !heap {
 		caption = "*Goroutine dump*"
 	}
-	caption += fmt.Sprintf("\n%s · %s", name, humanBytes(int64(len(data))))
+	caption += "\n\n`File`\n" + memlogSubBlock("Dokumen", [][2]string{
+		{"Nama", name},
+		{"Ukuran", humanBytes(int64(len(data)))},
+	})
 	if heap {
-		caption += "\n\nBaca di laptop:\n> go tool pprof -sample_index=inuse_space " + name
+		caption += "\n\n" + Hint("go tool pprof -sample_index=inuse_space "+name)
 	}
 	if err := sendDocBytes(ctx, mctx.Client, mctx.Chat, name, mime, data, caption); err != nil {
 		return store.ReplyText(ctx, mctx, ErrMsg("Memlog", fmt.Sprintf("gagal mengirim profil: %v", err)))
@@ -500,9 +663,24 @@ func memlogExport(ctx context.Context, mctx *store.MessageContext, args []string
 	}
 
 	name := fmt.Sprintf("memlog-%s-%s.zip", timex.Now().Format("20060102-1504"), memlogWindowSlug(window))
-	caption := fmt.Sprintf("*Export memlog %s*\n%d sampel · %d event · %s\nIsi: samples.csv, events.csv",
-		memlogWindowLabel(window), len(samples), len(events), humanBytes(int64(len(data))))
-	if err := sendDocBytes(ctx, mctx.Client, mctx.Chat, name, "application/zip", data, caption); err != nil {
+	var sb strings.Builder
+	sb.WriteString(Title(fmt.Sprintf("Export Memlog %s", memlogWindowLabel(window))) + "\n\n")
+	sb.WriteString("`Arsip`\n")
+	sb.WriteString(memlogSubBlock("File", [][2]string{
+		{"Nama", name},
+		{"Ukuran", humanBytes(int64(len(data)))},
+	}) + "\n")
+	sb.WriteString(memlogSubBlock("Ringkasan", [][2]string{
+		{"Sampel", fmt.Sprintf("%d sampel", len(samples))},
+		{"Event", fmt.Sprintf("%d event", len(events))},
+	}) + "\n\n")
+	sb.WriteString("`Isi Dokumen`\n")
+	sb.WriteString(memlogSubBlock("Berkas", [][2]string{
+		{"Data sampel", "samples.csv"},
+		{"Data event", "events.csv"},
+	}))
+
+	if err := sendDocBytes(ctx, mctx.Client, mctx.Chat, name, "application/zip", data, sb.String()); err != nil {
 		return store.ReplyText(ctx, mctx, ErrMsg("Memlog", fmt.Sprintf("gagal mengirim export: %v", err)))
 	}
 	return nil

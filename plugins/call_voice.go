@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,32 +42,9 @@ func InitCallClient(wa *whatsmeow.Client) {
 	callClient = meowcaller.NewClient(wa)
 
 	callClient.OnIncomingCall(func(call *meowcaller.Call) {
-		logfmt.Call("Panggilan masuk dari %s\n", call.Peer().String())
-
-		// Video: daftarkan call + pasang sisi terima (penghitung bila sudah
-		// video sejak awal, auto-accept upgrade mid-call peer). Lihat
-		// attachVideoReception di call_video.go.
-		entry := trackVideoCall(call, normPhoneDigits(call.Peer().String()))
-		attachVideoReception(entry)
-
-		// OnEnd dipasang SEBELUM Answer(): panggilan yang dibatalkan peer
-		// tepat setelah offer tidak boleh meninggalkan entri registry /
-		// file audio sementara tanpa cleanup.
-		call.OnEnd(func(reason string) {
-			logfmt.Call("Panggilan berakhir: %s\n", reason)
-			releaseVideoCall(call.ID())
-		})
-
-		if err := call.Answer(); err != nil {
-			logfmt.Error("Gagal menjawab panggilan: %v\n", err)
-			releaseVideoCall(call.ID())
-			return
-		}
-
-		if mp3, err := meowcaller.MP3File("greeting.mp3"); err != nil {
-			logfmt.Error("Gagal membuka/decode greeting.mp3: %v\n", err)
-		} else {
-			call.Play(mp3)
+		logfmt.Call("Panggilan masuk dari %s — ditolak otomatis (tidak ada auto-answer)\n", call.Peer().String())
+		if err := call.Reject(); err != nil {
+			logfmt.Error("Gagal menolak panggilan dari %s: %v\n", call.Peer().String(), err)
 		}
 	})
 }
@@ -348,9 +326,12 @@ type callProgress struct {
 	phone      string
 	acceptedAt time.Time
 	ended      bool
-	// audioKeyword adalah aset suara "#keyword" yang diputar menggantikan
-	// greeting.mp3 saat target mengangkat. Kosong = greeting.
+	// audioKeyword adalah aset suara "#keyword" yang diputar saat target mengangkat.
 	audioKeyword string
+	// audioSrc adalah sumber audio langsung (misal dari reply audio/VN/video).
+	audioSrc meowcaller.AudioSource
+	// audioPath adalah path file audio sementara yang harus dibersihkan saat call selesai.
+	audioPath string
 	// endKind adalah klasifikasi akhir panggilan (audit eskalasi-ditolak):
 	// diisi di onEnd supaya pemanggil yang menunggu (CallAndWait) bisa
 	// membedakan "ditolak" (user merespons → berhenti) dari "tak terjawab".
@@ -396,8 +377,8 @@ func (p *callProgress) onRinging() {
 	}
 }
 
-// onAccept dipanggil saat target MENGANGKAT: catat waktu, kabari, putar aset
-// suara (#keyword) bila ada, kalau tidak greeting.mp3.
+// onAccept dipanggil saat target MENGANGKAT: catat waktu, kabari, dan putar audio
+// (audioSrc langsung atau aset suara #keyword bila ada).
 func (p *callProgress) onAccept(call *meowcaller.Call) {
 	p.mu.Lock()
 	if p.ended {
@@ -407,22 +388,23 @@ func (p *callProgress) onAccept(call *meowcaller.Call) {
 	p.acceptedAt = time.Now()
 	phone := p.phone
 	keyword := p.audioKeyword
+	src := p.audioSrc
 	p.mu.Unlock()
 
 	logfmt.Call("Panggilan ke %s diterima\n", phone)
 	p.edit(context.Background(), "Terhubung dengan "+phone+"...")
+
+	if src != nil {
+		call.Play(src)
+		return
+	}
 	if keyword != "" {
-		if src, err := openVoiceAsset(keyword); err != nil {
-			logfmt.Warn("Gagal buka aset suara #%s: %v (fallback greeting)\n", keyword, err)
+		if assetSrc, err := openVoiceAsset(keyword); err != nil {
+			logfmt.Warn("Gagal buka aset suara #%s: %v\n", keyword, err)
 		} else {
-			call.Play(src)
+			call.Play(assetSrc)
 			return
 		}
-	}
-	if mp3, err := meowcaller.MP3File("greeting.mp3"); err != nil {
-		logfmt.Error("Gagal membuka/decode greeting.mp3: %v\n", err)
-	} else {
-		call.Play(mp3)
 	}
 }
 
@@ -439,7 +421,18 @@ func (p *callProgress) onEnd(reason string) {
 	acceptedAt := p.acceptedAt
 	phone := p.phone
 	kind := p.endKind
+	audioPath := p.audioPath
+	audioSrc := p.audioSrc
+	p.audioPath = ""
+	p.audioSrc = nil
 	p.mu.Unlock()
+
+	if audioSrc != nil {
+		_ = audioSrc.Close()
+	}
+	if audioPath != "" {
+		_ = os.Remove(audioPath)
+	}
 
 	logfmt.Call("Panggilan ke %s berakhir: %s\n", phone, reason)
 	var text string
@@ -494,25 +487,63 @@ func CallWithProgress(ctx context.Context, client *whatsmeow.Client, chat types.
 }
 
 // CallWithProgressAsset sama seperti CallWithProgress tapi dengan aset suara
-// opsional (#keyword) yang menggantikan greeting.mp3 saat target mengangkat.
+// opsional (#keyword) yang diputar saat target mengangkat.
 func CallWithProgressAsset(ctx context.Context, client *whatsmeow.Client, chat types.JID, target, keyword string) error {
+	return CallWithProgressCustom(ctx, client, chat, target, keyword, nil, "")
+}
+
+// CallWithProgressCustom melakukan panggilan WhatsApp keluar dengan progres satu bubble,
+// mendukung keyword aset suara ATAU AudioSource langsung (misal dari reply audio).
+func CallWithProgressCustom(ctx context.Context, client *whatsmeow.Client, chat types.JID, target, keyword string, audioSrc meowcaller.AudioSource, audioPath string) error {
 	if callClient == nil {
+		if audioSrc != nil {
+			_ = audioSrc.Close()
+		}
+		if audioPath != "" {
+			_ = os.Remove(audioPath)
+		}
 		return fmt.Errorf("fitur call belum aktif")
 	}
 	// Audit telepon-diri: menolak menelepon nomor bot sendiri (sia-sia).
 	if IsBotPhoneTarget(client, target) {
+		if audioSrc != nil {
+			_ = audioSrc.Close()
+		}
+		if audioPath != "" {
+			_ = os.Remove(audioPath)
+		}
 		return fmt.Errorf("nomor %s adalah nomor bot sendiri", target)
 	}
 	resp, err := client.SendMessage(ctx, chat, &waE2E.Message{
 		ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String("Memanggil " + target + "...")},
 	})
 	if err != nil {
+		if audioSrc != nil {
+			_ = audioSrc.Close()
+		}
+		if audioPath != "" {
+			_ = os.Remove(audioPath)
+		}
 		return fmt.Errorf("gagal kirim bubble progres: %w", err)
 	}
-	p := &callProgress{client: client, chat: chat, msgID: resp.ID, phone: target, audioKeyword: keyword}
+	p := &callProgress{
+		client:       client,
+		chat:         chat,
+		msgID:        resp.ID,
+		phone:        target,
+		audioKeyword: keyword,
+		audioSrc:     audioSrc,
+		audioPath:    audioPath,
+	}
 
 	call, err := callClient.Call(ctx, target)
 	if err != nil {
+		if audioSrc != nil {
+			_ = audioSrc.Close()
+		}
+		if audioPath != "" {
+			_ = os.Remove(audioPath)
+		}
 		p.edit(ctx, "Gagal memanggil "+target+": "+err.Error())
 		return nil // sudah dijelaskan di bubble, jangan error ganda
 	}
@@ -611,8 +642,40 @@ func CallAndWait(ctx context.Context, client *whatsmeow.Client, chat types.JID, 
 }
 
 // doCall adalah pembungkus CallWithProgress untuk command .voicecall.
+// Mendukung pemutaran audio dari keyword aset ATAU langsung dari media yang dilampirkan/direply.
 func doCall(ctx context.Context, mctx *store.MessageContext, target, keyword string) error {
-	return CallWithProgressAsset(ctx, mctx.Client, mctx.Chat, target, keyword)
+	var audioSrc meowcaller.AudioSource
+	var audioPath string
+
+	if keyword == "" {
+		media, mime, err := takeRepliedMediaBytes(ctx, mctx, true)
+		if err != nil {
+			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal unduh media: %v", err))
+		}
+		if len(media) > 0 {
+			_ = mime
+			if len(media) > videoMaxSourceBytes {
+				return store.ReplyText(ctx, mctx, fmt.Sprintf("Media %.0f MB melebihi batas 100 MB.", float64(len(media))/(1<<20)))
+			}
+			wavTmp, err := extractCallAudio(ctx, media)
+			if err != nil {
+				return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal ekstrak audio: %v", err))
+			}
+			if wavTmp != "" {
+				audioPath = wavTmp
+				src, err := newLoopAudioSource(audioPath)
+				if err != nil {
+					logfmt.Warn("Gagal buka audio call %s: %v\n", audioPath, err)
+					_ = os.Remove(audioPath)
+					audioPath = ""
+				} else {
+					audioSrc = src
+				}
+			}
+		}
+	}
+
+	return CallWithProgressCustom(ctx, mctx.Client, mctx.Chat, target, keyword, audioSrc, audioPath)
 }
 
 // handleCallList menangani ".voicecall jadwal": semua jadwal pending di semua

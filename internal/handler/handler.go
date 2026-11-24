@@ -71,6 +71,10 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 		return
 	}
 
+	// Rekam media masuk (video, gambar, audio, dokumen <= 20 MB) ke In-Memory Media Cache (TTL 10 menit)
+	// agar saat ada yang me-reply dengan command .tomp3, .tourl, .shazam, link DirectPath media asli tersedia.
+	store.CacheIncomingMedia(evt)
+
 	// Teks diekstrak duluan karena guard self-command butuh isinya.
 	text := extractText(evt)
 
@@ -164,15 +168,6 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 		}
 	}
 
-	// Antistatus otomatis — SWGC orang di grup yang toggle-nya aktif dicoba
-	// revoke. Tanpa syarat teks (status media acap tanpa caption); fungsi
-	// ini yang memutuskan false bila tak relevan.
-	if evt.Info.IsGroup && !strings.HasPrefix(text, CommandPrefix) {
-		if plugins.CheckAntistatus(client, evt) {
-			return
-		}
-	}
-
 	// Cek apakah pesan diawali prefix command
 	if text != "" && strings.HasPrefix(text, CommandPrefix) {
 		handleCommand(client, registry, evt, text)
@@ -210,6 +205,12 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 	// autodownload/AI. Berlaku di DM maupun grup, hanya untuk owner. Ditaruh
 	// sebelum autodownload karena prompt boleh memuat tautan.
 	if plugins.CheckGeminiSession(client, evt, text) {
+		return
+	}
+
+	// Sesi DeepChat: pesan "deep <teks>", "deep /<subcmd>", atau reply ke
+	// bubble bot diteruskan ke DeepChat (owner-only).
+	if plugins.CheckDeepChatSession(client, evt, text) {
 		return
 	}
 
@@ -257,26 +258,6 @@ func handleMessage(client *whatsmeow.Client, registry *plugins.Registry, evt *ev
 
 	// Tap tombol "Unduh" pada kartu hasil Shazam (id "shazam:dl:<trackID>").
 	if plugins.CheckShazamButtonTap(client, evt) {
-		return
-	}
-
-	// Tap tombol native uji (.btntest). Tanpa syarat teks (tap tak berteks).
-	if plugins.CheckButtonTestTap(client, evt, text) {
-		return
-	}
-
-	// Lokasi masuk saat sesi uji tombol aktif (verifikasi send_location).
-	if plugins.CheckButtonTestLocation(client, evt) {
-		return
-	}
-
-	// Kontak masuk saat sesi uji tombol aktif (verifikasi request nomor).
-	if plugins.CheckButtonTestContact(client, evt) {
-		return
-	}
-
-	// Tap tombol quick_reply kartu carousel (.carouseltest reply).
-	if plugins.CheckCarouselTestTap(client, evt, text) {
 		return
 	}
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"runtime"
-	"strings"
 	"time"
 
 	"wabot-go/internal/store"
@@ -31,12 +30,12 @@ func RegisterPing(r *Registry) {
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			latency := time.Since(mctx.RawEvt.Info.Timestamp).Milliseconds()
 			uptime := timex.FormatDuration(time.Since(pingStart).Round(time.Second))
-			goVer := strings.TrimPrefix(runtime.Version(), "go")
-			text := Block("Pong",
-				Row("Status", "Aktif"),
-				Row("Latensi", fmt.Sprintf("%dms", latency)),
-				Row("Uptime", uptime),
-				Row("Runtime", "Golang "+goVer),
+			// Kolom ":" disejajarkan manual: kunci terpanjang "Latensi"/"Runtime"
+			// menentukan jarak, jadi Uptime butuh satu spasi tambahan.
+			text := Title("Pong") + "\n\n" + Code(
+				"Latensi : "+fmt.Sprintf("%dms", latency),
+				"Uptime  : "+uptime,
+				"Runtime : Golang "+runtime.Version(),
 			)
 			return store.ReplyText(ctx, mctx, text)
 		},

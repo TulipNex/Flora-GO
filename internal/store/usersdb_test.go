@@ -100,3 +100,59 @@ func TestUsersDBSearch(t *testing.T) {
 		t.Fatalf("expected 1 search hit, got %d", len(res))
 	}
 }
+
+func TestUsersDBUpsertBatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "users_batch.db")
+	if err := InitUsersDB(path); err != nil {
+		t.Fatal(err)
+	}
+	defer Users().db.Close()
+	u := Users()
+	ctx := context.Background()
+
+	batch := []UserIdentity{
+		{LID: "4001", PN: "62841", PushName: "David"},
+		{LID: "4002", PN: "62842", PushName: "Eva"},
+		{LID: "4003", PN: "62843", PushName: "Frank"},
+	}
+	results, err := u.UpsertUserIdentitiesBatch(ctx, batch)
+	if err != nil {
+		t.Fatalf("batch upsert failed: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	for i, r := range results {
+		if !r.IsNew {
+			t.Errorf("item %d expected IsNew=true, got false", i)
+		}
+		if r.ID == 0 {
+			t.Errorf("item %d expected ID > 0", i)
+		}
+	}
+
+	// Batch update existing
+	batchUpdate := []UserIdentity{
+		{LID: "4001", PushName: "David Updated"},
+		{LID: "4004", PN: "62844", PushName: "Grace"},
+	}
+	res2, err := u.UpsertUserIdentitiesBatch(ctx, batchUpdate)
+	if err != nil {
+		t.Fatalf("batch update failed: %v", err)
+	}
+	if len(res2) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(res2))
+	}
+	if res2[0].IsNew {
+		t.Errorf("David should be updated, not new")
+	}
+	if !res2[1].IsNew {
+		t.Errorf("Grace should be new")
+	}
+
+	total, _ := u.CountUsers(ctx)
+	if total != 4 {
+		t.Fatalf("expected 4 total users, got %d", total)
+	}
+}

@@ -80,6 +80,10 @@ func ParseXpvidURL(rawURL string) (domain, path, id string, ok bool) {
 // downloadBytes) — server tidak boleh disuruh fetch URL internal.
 // Error berupa pesan Indonesia siap-balas ke user.
 func FetchXpvid(ctx context.Context, rawURL string) (*XpvidInfo, error) {
+	if info, err := FloraFetchBK(ctx, rawURL); err == nil && info.VideoURL != "" {
+		return info, nil
+	}
+
 	domain, path, id, ok := ParseXpvidURL(rawURL)
 	if !ok {
 		return nil, fmt.Errorf("link tidak valid. Contoh: .get https://xpvid.cc/e/xxx")

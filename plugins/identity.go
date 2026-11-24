@@ -55,7 +55,10 @@ func handleID(ctx context.Context, mctx *store.MessageContext) error {
 	if mctx.IsGroup() {
 		kind = "grup"
 	}
-	report += fmt.Sprintf("\nChat    : %s (%s)", dash(mctx.Chat.String()), kind)
+	report += "\n\n*Chat*\n\n" + Code(
+		"- JID : "+dash(mctx.Chat.String()),
+		"- Jenis : "+kind,
+	)
 	return store.ReplyText(ctx, mctx, report)
 }
 
@@ -63,16 +66,15 @@ func handleID(ctx context.Context, mctx *store.MessageContext) error {
 func idReport(ctx context.Context, client *whatsmeow.Client, label string, jid, alt types.JID) string {
 	pn, pnOK := identity.ResolvePN(ctx, client, jid, alt)
 	lid, lidOK := identity.ResolveLID(ctx, client, jid, alt)
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "*Identitas %s*\n", label)
-	fmt.Fprintf(&sb, "JID     : %s\n", dash(jid.String()))
-	fmt.Fprintf(&sb, "Alt     : %s\n", dash(alt.String()))
-	fmt.Fprintf(&sb, "Bare    : %s\n", dash(identity.UserPart(jid)))
-	fmt.Fprintf(&sb, "PN      : %s\n", idVal(pn, pnOK))
-	fmt.Fprintf(&sb, "LID     : %s\n", idVal(lid, lidOK))
-	fmt.Fprintf(&sb, "Kanonik : %s\n", dash(identity.CanonicalUser(ctx, client, jid, alt)))
-	fmt.Fprintf(&sb, "Bot?    : %s", yaTidak(identity.IsBot(client, jid)))
-	return sb.String()
+	return fmt.Sprintf("*Identitas %s*\n\n", label) + Code(
+		"- JID : "+dash(jid.String()),
+		"- Alt : "+dash(alt.String()),
+		"- Bare : "+dash(identity.UserPart(jid)),
+		"- PN : "+idVal(pn, pnOK),
+		"- LID : "+idVal(lid, lidOK),
+		"- Kanonik : "+dash(identity.CanonicalUser(ctx, client, jid, alt)),
+		"- Bot? : "+yaTidak(identity.IsBot(client, jid)),
+	)
 }
 
 // parseIDArg menerima "user@server" (parse JID) atau nomor HP polos.

@@ -108,6 +108,7 @@ func spotifyPlatform() *dlPlatform {
 
 func formatSpotifySearchList(query string, tracks []external.SpotifyTrack) string {
 	var sb strings.Builder
+	sb.WriteString(Title("Spotify Search") + "\n\n")
 	fmt.Fprintf(&sb, "Hasil pencarian untuk \"%s\" :\n\n", query)
 	for i, t := range tracks {
 		name := strings.TrimSpace(t.Name)
@@ -122,7 +123,7 @@ func formatSpotifySearchList(query string, tracks []external.SpotifyTrack) strin
 		if dur == "" {
 			dur = "-"
 		}
-		fmt.Fprintf(&sb, "*[%d] %s*\n> Artist : %s\n> Duration : %s\n", i+1, name, artists, dur)
+		fmt.Fprintf(&sb, "*[%d]* ```%s```\n> %s - %s\n", i+1, name, artists, dur)
 		if i < len(tracks)-1 {
 			sb.WriteString("\n")
 		}

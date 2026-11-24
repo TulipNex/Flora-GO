@@ -45,4 +45,18 @@ func TestGroupMembersDB(t *testing.T) {
 	if err != nil || gm2 == nil || gm2.Present {
 		t.Fatalf("absent flag not set: %+v %v", gm2, err)
 	}
+
+	// Test batch upsert
+	batch := []GroupMember{
+		{ChatJID: chat, UserID: 3, PN: "6283", PushName: "C", Present: true},
+		{ChatJID: chat, UserID: 4, PN: "6284", PushName: "D", Present: true},
+		{ChatJID: chat, UserID: 5, PN: "6285", PushName: "E", Present: true},
+	}
+	if err := g.UpsertGroupMembersBatch(ctx, batch); err != nil {
+		t.Fatalf("batch upsert failed: %v", err)
+	}
+	all, err := g.ListGroupMembers(ctx, chat, false, 10, 0)
+	if err != nil || len(all) != 5 {
+		t.Fatalf("expected 5 total members after batch, got %d (%v)", len(all), err)
+	}
 }

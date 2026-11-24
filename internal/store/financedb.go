@@ -67,7 +67,7 @@ func InitFinanceDB(path string) error {
 		input_at      TEXT NULL,
 		created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
 		client_req_id TEXT NULL UNIQUE
-	);
+	) WITHOUT ROWID;
 	CREATE INDEX IF NOT EXISTS idx_keuangan_owner_tanggal ON keuangan(owner, tanggal);
 	CREATE INDEX IF NOT EXISTS idx_keuangan_owner_sumber ON keuangan(owner, sumber);
 	CREATE TABLE IF NOT EXISTS finance_periode (
@@ -78,7 +78,7 @@ func InitFinanceDB(path string) error {
 		dilaporkan_at       INTEGER NULL,
 		arsip_file          TEXT NULL,
 		PRIMARY KEY (owner, periode)
-	);
+	) WITHOUT ROWID;
 	`
 	// input_at: waktu input lokal ('YYYY-MM-DD HH:MM:SS'), NULL untuk baris
 	// lama (sebelum fitur ini). Diisi saat INSERT, tak diubah saat edit.
@@ -842,7 +842,7 @@ func reorderKeuanganTable(db *sql.DB) error {
 		input_at      TEXT NULL,
 		created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
 		client_req_id TEXT NULL UNIQUE
-	);`
+	) WITHOUT ROWID;`
 	if _, err := tx.Exec(createSQL); err != nil {
 		return fmt.Errorf("create keuangan_new: %w", err)
 	}

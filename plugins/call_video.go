@@ -475,8 +475,7 @@ func (l *loopAudioSource) Close() error {
 }
 
 // onAcceptVideo adalah varian onAccept untuk video call: bubble progres
-// sama, tapi audio yang diputar adalah trek audio video sumber bila ada
-// (greeting.mp3 hanya fallback).
+// sama, dan audio yang diputar adalah trek audio video sumber bila ada.
 func (p *callProgress) onAcceptVideo(call *meowcaller.Call, audioSrc meowcaller.AudioSource) {
 	p.mu.Lock()
 	if p.ended {
@@ -491,12 +490,6 @@ func (p *callProgress) onAcceptVideo(call *meowcaller.Call, audioSrc meowcaller.
 	p.edit(context.Background(), "Terhubung dengan "+phone+"...")
 	if audioSrc != nil {
 		call.Play(audioSrc)
-		return
-	}
-	if mp3, err := meowcaller.MP3File("greeting.mp3"); err != nil {
-		logfmt.Error("Gagal membuka/decode greeting.mp3: %v\n", err)
-	} else {
-		call.Play(mp3)
 	}
 }
 
@@ -650,7 +643,7 @@ func handleVideoCall(ctx context.Context, mctx *store.MessageContext) error {
 		haveVideo = true
 		if wavPath != "" {
 			if audioSrc, err = newLoopAudioSource(wavPath); err != nil {
-				logfmt.Warn("Gagal buka audio aset #%s: %v (fallback greeting)\n", keyword, err)
+				logfmt.Warn("Gagal buka audio aset #%s: %v\n", keyword, err)
 				audioSrc = nil
 			}
 		}
@@ -670,14 +663,13 @@ func handleVideoCall(ctx context.Context, mctx *store.MessageContext) error {
 			if err != nil {
 				return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal siapkan video: %v", err))
 			}
-			// Trek audio video sumber dipakai sebagai pengganti greeting.
-			// Gagal ekstrak = fallback greeting (warn saja, jangan gagalkan call).
+			// Trek audio video sumber dipakai bila ada.
 			if audioPath, err = extractCallAudio(ctx, src); err != nil {
-				logfmt.Warn("Gagal ekstrak audio vcall ke %s: %v (fallback greeting)\n", target, err)
+				logfmt.Warn("Gagal ekstrak audio vcall ke %s: %v\n", target, err)
 				audioPath = ""
 			} else if audioPath != "" {
 				if audioSrc, err = newLoopAudioSource(audioPath); err != nil {
-					logfmt.Warn("Gagal buka audio vcall %s: %v (fallback greeting)\n", audioPath, err)
+					logfmt.Warn("Gagal buka audio vcall %s: %v\n", audioPath, err)
 					audioSrc = nil
 					_ = os.Remove(audioPath)
 					audioPath = ""

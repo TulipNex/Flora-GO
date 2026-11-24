@@ -27,6 +27,24 @@ func RegisterSelfCmd(r *Registry) {
 	})
 }
 
+func selfcmdUsage(on bool) string {
+	status := "nonaktif"
+	if on {
+		status = "aktif"
+	}
+	return Help(HelpSpec{
+		Title:   "Eksekusi command dari akun bot",
+		Status:  status,
+		Cmd:     "Set",
+		Formats: []string{".selfcmd <state>"},
+		Contoh:  ".selfcmd on",
+		Params: []string{
+			"on  : aktifkan eksekusi",
+			"off : abaikan pesan",
+		},
+	})
+}
+
 // handleSelfCmd menyalakan/mematikan/menampilkan status saklar self-command.
 // Gerbangnya bukan requireOwner biasa: pesan dari akun bot sendiri (IsFromMe)
 // lolos bila memenuhi isSelfSender — perlu, karena saat toggle masih OFF
@@ -40,22 +58,18 @@ func handleSelfCmd(ctx context.Context, mctx *store.MessageContext) error {
 	case "on", "off":
 		on := arg == "on"
 		if err := store.Groups().SetSelfCommand(ctx, on); err != nil {
-			return store.ReplyText(ctx, mctx, "Gagal menyimpan saklar: "+err.Error())
+			return store.ReplyText(ctx, mctx, Fail("Gagal menyimpan saklar", err))
 		}
 		if on {
-			return store.ReplyText(ctx, mctx, "Self-command ON: bot mengeksekusi command dari akun sendiri.")
+			return store.ReplyText(ctx, mctx, "Self-command aktif.")
 		}
-		return store.ReplyText(ctx, mctx, "Self-command OFF: pesan dari akun sendiri diabaikan.")
+		return store.ReplyText(ctx, mctx, "Self-command nonaktif.")
 	default:
 		on, err := store.Groups().IsSelfCommandEnabled(ctx)
 		if err != nil {
-			return store.ReplyText(ctx, mctx, "Gagal baca status: "+err.Error())
+			return store.ReplyText(ctx, mctx, Fail("Gagal baca status", err))
 		}
-		status := "OFF"
-		if on {
-			status = "ON"
-		}
-		return store.ReplyText(ctx, mctx, "Self-command: "+status+". Pakai `.selfcmd on|off`.")
+		return store.ReplyText(ctx, mctx, selfcmdUsage(on))
 	}
 }
 

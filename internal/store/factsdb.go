@@ -23,7 +23,7 @@ func InitFactsDB() error {
 		sender_jid  TEXT PRIMARY KEY,
 		facts_json  TEXT NOT NULL,
 		updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-	);
+	) WITHOUT ROWID;
 	`
 	if err := ensureSchema(aiDB.db, "ai.db", schema, nil); err != nil {
 		return err

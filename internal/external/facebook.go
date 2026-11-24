@@ -17,17 +17,12 @@ import (
 // bentuk ini tidak cocok dan URL-nya terlempar ke jalur foto.
 var fbVideoURLRe = regexp.MustCompile(`(?i)(/share/r/|/share/reel/|/share/v/|/reel/|/watch|/videos?/|/video\.php|fb\.watch/)`)
 
-// FetchFacebook mengambil video/foto Facebook via faa — SATU-SATUNYA mesin
-// (keputusan owner: omnify dihapus dari rantai, lihat catatan di bawah).
-// Kegagalan faa langsung jadi error; tidak ada fallback lain.
-//
-// omnify SUDAH DIHAPUS (bukan dimatikan): sejak Okt 2026 endpoint
-// api-aio.omnifylabs.sbs menjawab 401 "Akses ditolak: API Key atau Ticket
-// Challenge diperlukan" untuk semua request tanpa key, jadi selama ini ia
-// hanya menambah ~20 detik dan pesan error dobel. Jangan dihidupkan lagi
-// tanpa API key yang sah.
+// FetchFacebook mengambil video/foto Facebook via Flora Gateway (primer) -> faa (fallback).
 func FetchFacebook(ctx context.Context, pageURL string) (*ScrapeResult, error) {
 	return scrapeCache.GetOrLoad(ctx, pageURL, func(ctx context.Context) (*ScrapeResult, error) {
+		if res, err := FloraFetchDownloader(ctx, "facebook", pageURL); err == nil {
+			return res, nil
+		}
 		res, err := faaFetch(ctx, pageURL)
 		if err != nil {
 			return nil, fmt.Errorf("facebook gagal: faa: %v", err)

@@ -47,7 +47,12 @@ func RegisterShazam(r *Registry) {
 // jalur pencarian teks (.shazam search/track) sudah dihapus.
 func handleShazam(ctx context.Context, mctx *store.MessageContext) error {
 	if !shazamHasAudio(mctx) {
-		return store.ReplyText(ctx, mctx, "Reply VN/audio/video dengan .shazam untuk mengenali lagunya.")
+		return store.ReplyText(ctx, mctx, Help(HelpSpec{
+			Title:   "Kenali lagu",
+			Cmd:     "Shazam",
+			Formats: []string{".shazam <reply>"},
+			Note:    "Bot mengenali lagu dan mengirim kartu hasil.",
+		}))
 	}
 	return shazamRunAsync(ctx, mctx, "Mengenali lagu, tunggu sebentar...", func(bg context.Context) {
 		shazamDoRecognize(bg, mctx)

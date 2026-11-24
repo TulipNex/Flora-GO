@@ -100,6 +100,10 @@ func PihpsProvinceID(ctx context.Context, name string) (int, string, error) {
 // PihpsGridDaerah mengambil grid daerah untuk 1 provinsi + rentang tanggal.
 // start/end format YYYY-MM-DD (zona pemanggil); kolom hasil DD/MM/YYYY.
 func PihpsGridDaerah(ctx context.Context, provinceID int, startDate, endDate string) ([]PihpsRow, []string, error) {
+	if rows, dates, _, _, err := FloraFetchSembako(ctx, strconv.Itoa(provinceID), "", startDate, endDate); err == nil && len(rows) > 0 {
+		return rows, dates, nil
+	}
+
 	body, err := pihpsGet(ctx, "/GetGridDataDaerah", map[string]string{
 		"price_type_id": strconv.Itoa(pihpsPriceTypeID),
 		"tipe_laporan":  strconv.Itoa(pihpsTipeHarian),

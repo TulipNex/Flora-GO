@@ -211,15 +211,24 @@ func handleCompress(ctx context.Context, mctx *store.MessageContext) error {
 	})
 }
 
+func splitHelp() string {
+	return Help(HelpSpec{
+		Title:   "Pecah PDF",
+		Cmd:     "Split",
+		Formats: []string{".split <rentang> + reply PDF"},
+		Contoh:  ".split 1-3",
+	})
+}
+
 // handleSplit: .split 1-3 + reply/kirim PDF -> Trim halaman.
 func handleSplit(ctx context.Context, mctx *store.MessageContext) error {
 	if len(mctx.Args) < 1 || !pdfRangeRe.MatchString(mctx.Args[0]) {
-		return store.ReplyText(ctx, mctx, Block("Split PDF", Row("Cara", ".split <rentang> + reply PDF"), Row("Contoh", ".split 1-3")))
+		return store.ReplyText(ctx, mctx, splitHelp())
 	}
 	ranges := strings.TrimSpace(mctx.Args[0])
 	name, data, err := pdfLocalInput(ctx, mctx, "split")
 	if err != nil {
-		return store.ReplyText(ctx, mctx, ErrMsg("Split PDF", err.Error()))
+		return store.ReplyText(ctx, mctx, "Kirim atau reply file PDF untuk .split.")
 	}
 	return pdfLocalRun(ctx, mctx, "split", func(bg context.Context) ([]byte, string, string, error) {
 		var pages []string
@@ -233,7 +242,10 @@ func handleSplit(ctx context.Context, mctx *store.MessageContext) error {
 			return nil, "", "", fmt.Errorf("rentang %q ditolak: %w", ranges, err)
 		}
 		clean := strings.ReplaceAll(ranges, " ", "")
-		caption := Block("Split PDF", Row("Halaman", clean))
+		caption := Title("Split PDF") + "\n\n" + Code(
+			fmt.Sprintf("Halaman : %s", clean),
+			fmt.Sprintf("Ukuran  : %.1f MB", float64(out.Len())/(1<<20)),
+		)
 		return out.Bytes(), strings.TrimSuffix(name, ".pdf") + " p" + clean + ".pdf", caption, nil
 	})
 }

@@ -20,6 +20,20 @@ func init() {
 // metadata (packname & author) stiker tersebut dan mengirimkannya kembali sebagai
 // stiker baru. Author opsional: kalau tidak ditulis (tanpa "|"), metadata stiker
 // tidak memuat sticker-pack-publisher. Tanpa argumen → tampil bantuan.
+func swmHelp() string {
+	return Help(HelpSpec{
+		Title:   "Stiker dengan watermark",
+		Cmd:     "Stickerwatermark",
+		Formats: []string{".stickerwatermark <teks+reply>"},
+		Contoh:  ".stickerwatermark Flora|By Mitra",
+		Params: []string{
+			"teks : packname|author",
+			"reply: balas stiker",
+		},
+		Note: "Packname atau author bisa di kosongkan, teks langsung tanpa pemisah juga tetap valid.",
+	})
+}
+
 func RegisterStickerWatermark(r *Registry) {
 	r.Register(Command{
 		Name:        "stickerwatermark",
@@ -28,12 +42,7 @@ func RegisterStickerWatermark(r *Registry) {
 		Category:    CategoryMedia,
 		Handler: func(ctx context.Context, mctx *store.MessageContext) error {
 			if strings.TrimSpace(strings.Join(mctx.Args, " ")) == "" {
-				return store.ReplyText(ctx, mctx, "*Sticker Watermark*\n"+
-					"Reply gambar atau stiker, lalu:\n"+
-					"• .swm <packname>            → nama pack saja\n"+
-					"• .swm <packname>|<author>   → nama pack + author\n"+
-					"Contoh: .swm Mitra  ·  .swm Mitra|By Mitra\n"+
-					"Author hanya ditampilkan kalau ditulis setelah tanda |")
+				return store.ReplyText(ctx, mctx, swmHelp())
 			}
 
 			packname, author := parseStickerWatermarkArgs(mctx.Args)
@@ -55,7 +64,7 @@ func RegisterStickerWatermark(r *Registry) {
 				mediaBytes, err = mctx.Client.Download(ctx, img)
 			}
 			if err != nil {
-				return store.ReplyText(ctx, mctx, "Gagal download media: "+err.Error())
+				return store.ReplyText(ctx, mctx, "Gagal mengunduh media, coba lagi sebentar.")
 			}
 
 			var webpBytes []byte
@@ -68,13 +77,13 @@ func RegisterStickerWatermark(r *Registry) {
 				// yang sama dengan command .sticker.
 				webpBytes, err = convertToStickerWebp(ctx, mediaBytes, false)
 				if err != nil {
-					return store.ReplyText(ctx, mctx, "Gagal convert ke stiker: "+err.Error())
+					return store.ReplyText(ctx, mctx, "Gagal convert ke stiker, coba stiker lain.")
 				}
 			}
 
 			newWebp, err := store.WriteStickerExif(webpBytes, packname, author)
 			if err != nil {
-				return store.ReplyText(ctx, mctx, "Gagal set metadata stiker: "+err.Error())
+				return store.ReplyText(ctx, mctx, "Gagal siapkan stiker, coba lagi.")
 			}
 
 			// Upload+kirim lewat helper bersama (bukan blok duplikat lokal) —

@@ -104,15 +104,21 @@ func (r *CRMRow) Message() (*waE2E.Message, error) {
 	return &msg, nil
 }
 
-// saveRaw menyimpan satu pesan (byte proto yang SUDAH di-marshal) + memangkas
-// ke cap. Hanya dipanggil worker arsip (lihat startArchiveWorker).
-func (c *CRMDB) saveRaw(chat, id, sender string, ts int64, raw []byte) error {
+// insertRaw menyisipkan satu pesan (byte proto yang SUDAH di-marshal) tanpa memangkas.
+func (c *CRMDB) insertRaw(chat, id, sender string, ts int64, raw []byte) error {
 	if c == nil || c.db == nil || len(raw) == 0 || id == "" || chat == "" {
 		return nil
 	}
-	if _, err := c.db.ExecContext(context.Background(),
+	_, err := c.db.ExecContext(context.Background(),
 		`INSERT INTO crm_messages (id, chat, sender, ts, data) VALUES (?, ?, ?, ?, ?)`,
-		id, chat, sender, ts, raw); err != nil {
+		id, chat, sender, ts, raw)
+	return err
+}
+
+// saveRaw menyimpan satu pesan (byte proto yang SUDAH di-marshal) + memangkas
+// ke cap. Hanya dipanggil jalur sinkron / pengujian.
+func (c *CRMDB) saveRaw(chat, id, sender string, ts int64, raw []byte) error {
+	if err := c.insertRaw(chat, id, sender, ts, raw); err != nil {
 		return err
 	}
 	return c.Prune()
@@ -153,12 +159,19 @@ var (
 // startArchiveWorker menyalakan worker singleton arsip sekali saja. Satu
 // worker = penulisan terserialisasi (tak ada rebutan write-lock WAL antar
 // pesan) dan jumlah goroutine tetap, apa pun laju pesan.
+// Pruning di-throttle per 25 pesan atau saat antrian kosong untuk menghemat I/O.
 func startArchiveWorker(c *CRMDB) {
 	archiveOnce.Do(func() {
 		archiveCh = make(chan archiveJob, archiveQueueSize)
 		go func() {
+			pruneCounter := 0
 			for job := range archiveCh {
-				_ = c.saveRaw(job.chat, job.id, job.sender, job.ts, job.raw)
+				_ = c.insertRaw(job.chat, job.id, job.sender, job.ts, job.raw)
+				pruneCounter++
+				if pruneCounter >= 25 || len(archiveCh) == 0 {
+					_ = c.Prune()
+					pruneCounter = 0
+				}
 			}
 		}()
 	})

@@ -75,6 +75,14 @@ func RegisterTourl(r *Registry) {
 	})
 }
 
+func tourlHelp() string {
+	return Help(HelpSpec{
+		Title:   "Unggah media ke URL",
+		Cmd:     "Tourl",
+		Formats: []string{".tourl <reply>"},
+	})
+}
+
 // handleTourl memvalidasi input lalu memproses di goroutine terpisah (pola
 // sama dengan .smeme/.brat: pipeline jaringan bisa memakan belasan detik,
 // jadi event loop hypermeow tidak boleh diblokir).
@@ -95,7 +103,7 @@ func handleTourl(ctx context.Context, mctx *store.MessageContext) error {
 
 	media, mime, err := tourlExtractMedia(mctx)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, err.Error())
+		return store.ReplyText(ctx, mctx, tourlHelp())
 	}
 
 	go func() {
@@ -103,7 +111,7 @@ func handleTourl(ctx context.Context, mctx *store.MessageContext) error {
 		defer cancel()
 		if err := tourlProcess(bg, mctx, uploader, media, mime); err != nil {
 			logfmt.Warn("tourl: %v\n", err)
-			_ = store.ReplyText(bg, mctx, "Gagal upload: "+err.Error())
+			_ = store.ReplyText(bg, mctx, Fail("Gagal upload", err))
 		}
 	}()
 	return nil
@@ -129,7 +137,7 @@ func tourlProcess(ctx context.Context, mctx *store.MessageContext, uploader tour
 	if err != nil {
 		return err
 	}
-	return store.ReplyText(ctx, mctx, url)
+	return store.ReplyText(ctx, mctx, Title("ToURL")+"\n\nURL : "+url)
 }
 
 // tourlExtractMedia mengambil media unduhan (gambar/video/dokumen) baik dari

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,86 @@ const (
 	BotModePublic = "public"
 )
 
+// ensureCacheLoaded memuat data status bot_mode, banned_users, trusted_users,
+// dan banned_groups ke memori jika belum dimuat, agar pengecekan di hot-path
+// pesan masuk tidak membebani query disk SQLite.
+func (g *GroupDB) ensureCacheLoaded(ctx context.Context) error {
+	if g == nil || g.db == nil {
+		return fmt.Errorf("group.db mati")
+	}
+	g.cacheMu.RLock()
+	if g.cacheLoaded {
+		g.cacheMu.RUnlock()
+		return nil
+	}
+	g.cacheMu.RUnlock()
+
+	g.cacheMu.Lock()
+	defer g.cacheMu.Unlock()
+	if g.cacheLoaded {
+		return nil
+	}
+
+	// 1. Load bot mode
+	var mode string
+	err := g.db.QueryRowContext(ctx, `SELECT value FROM bot_settings WHERE key = 'mode'`).Scan(&mode)
+	if err != nil && !isNoRowsError(err) {
+		return err
+	}
+	if mode != BotModeSelf && mode != BotModePublic {
+		mode = BotModePublic
+	}
+	g.botMode = mode
+
+	// 2. Load banned users
+	banned := make(map[string]string)
+	bRows, err := g.db.QueryContext(ctx, `SELECT user_jid, user_part FROM banned_users`)
+	if err != nil {
+		return err
+	}
+	for bRows.Next() {
+		var jid, part string
+		if err := bRows.Scan(&jid, &part); err == nil {
+			banned[jid] = part
+		}
+	}
+	_ = bRows.Close()
+	g.bannedUsers = banned
+
+	// 3. Load trusted users
+	trusted := make(map[string]string)
+	tRows, err := g.db.QueryContext(ctx, `SELECT user_jid, user_part FROM trusted_users`)
+	if err != nil {
+		return err
+	}
+	for tRows.Next() {
+		var jid, part string
+		if err := tRows.Scan(&jid, &part); err == nil {
+			trusted[jid] = part
+		}
+	}
+	_ = tRows.Close()
+	g.trustedUsers = trusted
+
+	// 4. Load banned groups
+	bGroups := make(map[string]struct{})
+	bgRows, err := g.db.QueryContext(ctx, `SELECT chat_jid FROM banned_groups`)
+	if err != nil {
+		return err
+	}
+	for bgRows.Next() {
+		var cjid string
+		if err := bgRows.Scan(&cjid); err == nil {
+			bGroups[cjid] = struct{}{}
+		}
+	}
+	_ = bgRows.Close()
+	g.bannedGroups = bGroups
+
+	g.cacheLoaded = true
+	return nil
+}
+
 // BanUser menambahkan JID (sudah dinormalisasi ToNonAD oleh pemanggil) ke
 // daftar ban. user_part disimpan terpisah supaya pencocokan tetap jalan walau
 // pengirim yang sama kadang datang sebagai @s.whatsapp.net dan kadang
@@ -32,7 +113,15 @@ func (g *GroupDB) BanUser(ctx context.Context, bareJID types.JID) error {
 	_, err := g.db.ExecContext(ctx, `
 		INSERT OR REPLACE INTO banned_users (user_jid, user_part) VALUES (?, ?)
 	`, bareJID.String(), bareJID.User)
-	return err
+	if err != nil {
+		return err
+	}
+	g.cacheMu.Lock()
+	if g.bannedUsers != nil {
+		g.bannedUsers[bareJID.String()] = bareJID.User
+	}
+	g.cacheMu.Unlock()
+	return nil
 }
 
 // UnbanUser menghapus JID dari daftar ban. Mengembalikan true kalau memang
@@ -43,6 +132,13 @@ func (g *GroupDB) UnbanUser(ctx context.Context, bareJID types.JID) (bool, error
 		return false, err
 	}
 	n, _ := res.RowsAffected()
+	if n > 0 {
+		g.cacheMu.Lock()
+		if g.bannedUsers != nil {
+			delete(g.bannedUsers, bareJID.String())
+		}
+		g.cacheMu.Unlock()
+	}
 	return n > 0, nil
 }
 
@@ -62,8 +158,8 @@ func (g *GroupDB) IsUserTrusted(ctx context.Context, sender, senderAlt types.JID
 }
 
 // userListMatches mencocokkan identitas pengirim (sender + senderAlt, sudah
-// dinormalisasi lewat identity) terhadap tabel daftar user (banned_users /
-// trusted_users). table HANYA boleh konstanta internal (bukan input user).
+// dinormalisasi lewat identity) terhadap cache in-memory daftar user
+// (banned_users / trusted_users). table HANYA boleh konstanta internal.
 func (g *GroupDB) userListMatches(ctx context.Context, table string, sender, senderAlt types.JID) (bool, error) {
 	full := make(map[string]bool, 2)
 	for _, s := range identity.Strings(ctx, nil, sender, senderAlt) {
@@ -76,16 +172,24 @@ func (g *GroupDB) userListMatches(ctx context.Context, table string, sender, sen
 	if len(full) == 0 && len(part) == 0 {
 		return false, nil
 	}
-	rows, err := g.db.QueryContext(ctx, `SELECT user_jid, user_part FROM `+table)
-	if err != nil {
+	if err := g.ensureCacheLoaded(ctx); err != nil {
 		return false, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var jid, p string
-		if err := rows.Scan(&jid, &p); err != nil {
-			return false, err
-		}
+
+	g.cacheMu.RLock()
+	defer g.cacheMu.RUnlock()
+
+	var target map[string]string
+	switch table {
+	case "banned_users":
+		target = g.bannedUsers
+	case "trusted_users":
+		target = g.trustedUsers
+	default:
+		return false, fmt.Errorf("tabel user tidak dikenal: %s", table)
+	}
+
+	for jid, p := range target {
 		if jid != "" && full[jid] {
 			return true, nil
 		}
@@ -93,7 +197,7 @@ func (g *GroupDB) userListMatches(ctx context.Context, table string, sender, sen
 			return true, nil
 		}
 	}
-	return false, rows.Err()
+	return false, nil
 }
 
 // ListBannedUsers mengembalikan semua JID yang di-ban, di-sort alfabet.
@@ -117,7 +221,15 @@ func (g *GroupDB) ListBannedUsers(ctx context.Context) ([]string, error) {
 // BanGroup menambahkan chat JID grup ke daftar ban.
 func (g *GroupDB) BanGroup(ctx context.Context, chatJID string) error {
 	_, err := g.db.ExecContext(ctx, `INSERT OR REPLACE INTO banned_groups (chat_jid) VALUES (?)`, chatJID)
-	return err
+	if err != nil {
+		return err
+	}
+	g.cacheMu.Lock()
+	if g.bannedGroups != nil {
+		g.bannedGroups[chatJID] = struct{}{}
+	}
+	g.cacheMu.Unlock()
+	return nil
 }
 
 // UnbanGroup menghapus grup dari daftar ban, true kalau memang ada barisnya.
@@ -127,21 +239,25 @@ func (g *GroupDB) UnbanGroup(ctx context.Context, chatJID string) (bool, error) 
 		return false, err
 	}
 	n, _ := res.RowsAffected()
+	if n > 0 {
+		g.cacheMu.Lock()
+		if g.bannedGroups != nil {
+			delete(g.bannedGroups, chatJID)
+		}
+		g.cacheMu.Unlock()
+	}
 	return n > 0, nil
 }
 
 // IsGroupBanned mengecek apakah chat JID masuk daftar ban grup.
 func (g *GroupDB) IsGroupBanned(ctx context.Context, chatJID string) (bool, error) {
-	var jid string
-	err := g.db.QueryRowContext(ctx, `SELECT chat_jid FROM banned_groups WHERE chat_jid = ?`, chatJID).Scan(&jid)
-	if err != nil {
-		// Baris tidak ada = grup tidak di-ban, bukan error.
-		if isNoRowsError(err) {
-			return false, nil
-		}
+	if err := g.ensureCacheLoaded(ctx); err != nil {
 		return false, err
 	}
-	return true, nil
+	g.cacheMu.RLock()
+	defer g.cacheMu.RUnlock()
+	_, ok := g.bannedGroups[chatJID]
+	return ok, nil
 }
 
 // ListBannedGroups mengembalikan semua chat JID grup yang di-ban.
@@ -164,18 +280,15 @@ func (g *GroupDB) ListBannedGroups(ctx context.Context) ([]string, error) {
 
 // GetBotMode membaca mode bot, default "public" kalau belum pernah di-set.
 func (g *GroupDB) GetBotMode(ctx context.Context) (string, error) {
-	var mode string
-	err := g.db.QueryRowContext(ctx, `SELECT value FROM bot_settings WHERE key = 'mode'`).Scan(&mode)
-	if err != nil {
-		if isNoRowsError(err) {
-			return BotModePublic, nil
-		}
-		return "", err
+	if err := g.ensureCacheLoaded(ctx); err != nil {
+		return BotModePublic, err
 	}
-	if mode != BotModeSelf && mode != BotModePublic {
+	g.cacheMu.RLock()
+	defer g.cacheMu.RUnlock()
+	if g.botMode == "" {
 		return BotModePublic, nil
 	}
-	return mode, nil
+	return g.botMode, nil
 }
 
 // IsSelfMode true kalau bot sedang mode self (hanya owner yang dilayani).
@@ -194,7 +307,13 @@ func (g *GroupDB) SetBotMode(ctx context.Context, mode string) error {
 		return errInvalidMode(mode)
 	}
 	_, err := g.db.ExecContext(ctx, `INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('mode', ?)`, mode)
-	return err
+	if err != nil {
+		return err
+	}
+	g.cacheMu.Lock()
+	g.botMode = mode
+	g.cacheMu.Unlock()
+	return nil
 }
 
 // IsAILocked true kalau trigger natural Flora sedang di-lock global
@@ -428,7 +547,15 @@ func (g *GroupDB) TrustUser(ctx context.Context, bareJID types.JID) error {
 	_, err := g.db.ExecContext(ctx, `
 		INSERT OR REPLACE INTO trusted_users (user_jid, user_part) VALUES (?, ?)
 	`, bareJID.String(), bareJID.User)
-	return err
+	if err != nil {
+		return err
+	}
+	g.cacheMu.Lock()
+	if g.trustedUsers != nil {
+		g.trustedUsers[bareJID.String()] = bareJID.User
+	}
+	g.cacheMu.Unlock()
+	return nil
 }
 
 // UntrustUser menghapus JID dari daftar trust. Mengembalikan true kalau
@@ -439,6 +566,13 @@ func (g *GroupDB) UntrustUser(ctx context.Context, bareJID types.JID) (bool, err
 		return false, err
 	}
 	n, _ := res.RowsAffected()
+	if n > 0 {
+		g.cacheMu.Lock()
+		if g.trustedUsers != nil {
+			delete(g.trustedUsers, bareJID.String())
+		}
+		g.cacheMu.Unlock()
+	}
 	return n > 0, nil
 }
 

@@ -12,7 +12,7 @@ import (
 // script — yang boleh memuat kata "flora" — tidak memicu balasan AI.
 const playMarker = "#playground"
 
-// playTapPrefix adalah awalan id tombol quick_reply/single_select yang dirakit
+// playTapPrefix adalah awalan id CTA quick_reply/single_select yang dirakit
 // playground. Tap-nya dicegat CheckPlayTap (lihat playground.go).
 const playTapPrefix = "play:"
 
@@ -23,18 +23,26 @@ const (
 	playKindPhone       = "phone"
 )
 
-// Batas praktik WhatsApp (label tombol 20 rune, body interactive 1024, footer
-// 60). Ditegakkan sebagai ERROR, bukan peringatan: nilai kelebihan dipotong
-// klien tanpa pemberitahuan, jadi lebih baik script ditolak dengan jelas.
+// Batas body/title/footer mengikuti batas tampilan WhatsApp (body interactive
+// 1024, title/footer 60) dan ditegakkan sebagai ERROR, bukan peringatan: nilai
+// kelebihan dipotong klien tanpa pemberitahuan, jadi lebih baik script ditolak
+// dengan jelas.
+//
+// Label CTA dan teks row SENGAJA tidak mengikuti batas tampilan klien
+// (20/24/72 rune): playground dipakai menguji apa yang sebenarnya dilakukan
+// WhatsApp pada teks panjang (dipotong atau pesan ditolak), jadi keduanya baru
+// ditolak di 1000 rune. Konsekuensinya label panjang bisa tampil terpotong di
+// HP owner — itu hasil uji, bukan bug.
 const (
-	playMaxScriptRunes = 8000
+	playMaxScriptRunes = 20000
 	playMaxButtons     = 10
 	playMaxCards       = 10
 	playMaxRows        = 10
 	playMaxTitle       = 60
 	playMaxBody        = 1024
 	playMaxFooter      = 60
-	playMaxLabel       = 20
+	playMaxLabel       = 1000
+	playMaxRowText     = 1000
 )
 
 // playSpec adalah satu bubble yang disusun dari script #playground.
@@ -52,7 +60,7 @@ type playSpec struct {
 	sections []playElem
 }
 
-// playButton adalah satu tombol native_flow. arg dipakai sesuai typ (id untuk
+// playButton adalah satu CTA native_flow. arg dipakai sesuai typ (id untuk
 // reply, URL untuk url, kode untuk copy, nomor untuk call); rows khusus select.
 type playButton struct {
 	typ   string
@@ -68,7 +76,7 @@ type playRow struct {
 	id    string
 }
 
-// playCard adalah satu kartu carousel beserta tombolnya.
+// playCard adalah satu kartu carousel beserta CTA-nya.
 type playCard struct {
 	title   string
 	body    string
@@ -76,11 +84,13 @@ type playCard struct {
 }
 
 // playElem dipakai dua daftar yang bentuknya sama: a2ui (heading/text/card/
-// image) dan section airich (heading/md/image/link/html).
+// image) dan section airich (heading/md/image/link/html/code/table/suggest/tip/meta/imagine/source).
 type playElem struct {
-	typ string
-	a   string
-	b   string
+	typ  string
+	a    string
+	b    string
+	c    string
+	args []string
 }
 
 // playParse membaca script jadi playSpec. Semua kesalahan sintaks
@@ -171,14 +181,14 @@ func playParseAdd(sp *playSpec, line string, ln int) []string {
 	segs := playSplit(strings.TrimPrefix(line, "+"))
 	head := strings.Fields(segs[0])
 	if len(head) == 0 {
-		return []string{playErrf(ln, "elemen kosong (sah: + button, + row, + card, + a2ui, + section)")}
+		return []string{playErrf(ln, "elemen kosong (sah: + cta, + row, + card, + a2ui, + section)")}
 	}
 	args := segs[1:]
 
 	switch head[0] {
-	case "button":
+	case "cta", "button": // `button` tetap diterima sebagai alias skrip lama.
 		if len(head) < 2 {
-			return []string{playErrf(ln, "format: + button <tipe> | label | argumen")}
+			return []string{playErrf(ln, "format: + cta <tipe> | label | argumen")}
 		}
 		btn, errs := playParseButton(head[1], args, ln)
 		if errs != nil {
@@ -215,7 +225,7 @@ func playParseAdd(sp *playSpec, line string, ln int) []string {
 		return nil
 	case "section":
 		if len(head) < 2 {
-			return []string{playErrf(ln, "format: + section <heading|md|image|link|html> | isi")}
+			return []string{playErrf(ln, "format: + section <heading|md|image|link|html|code|table|suggest|tip|meta|imagine|source> | isi")}
 		}
 		el, errs := playParseElem(head[1], args, ln, false)
 		if errs != nil {
@@ -224,11 +234,12 @@ func playParseAdd(sp *playSpec, line string, ln int) []string {
 		sp.sections = append(sp.sections, el)
 		return nil
 	default:
-		return []string{playErrf(ln, "elemen `%s` tidak dikenal (sah: button, row, card, a2ui, section)", head[0])}
+		return []string{playErrf(ln, "elemen `%s` tidak dikenal (sah: cta, row, card, a2ui, section)", head[0])}
 	}
 }
 
-// playParseButton membaca tipe + argumen satu tombol.
+// playParseButton membaca tipe + argumen satu CTA (kata kunci `cta`, alias
+// `button` untuk skrip lama).
 func playParseButton(typ string, args []string, ln int) (playButton, []string) {
 	b := playButton{typ: strings.ToLower(typ)}
 	need := func(n int, usage string) []string {
@@ -240,7 +251,7 @@ func playParseButton(typ string, args []string, ln int) (playButton, []string) {
 
 	switch b.typ {
 	case "reply":
-		if e := need(1, "+ button reply | label | id"); e != nil {
+		if e := need(1, "+ cta reply | label | id"); e != nil {
 			return b, e
 		}
 		b.label = args[0]
@@ -248,42 +259,42 @@ func playParseButton(typ string, args []string, ln int) (playButton, []string) {
 			b.arg = args[1]
 		}
 	case "url":
-		if e := need(2, "+ button url | label | https://..."); e != nil {
+		if e := need(2, "+ cta url | label | https://..."); e != nil {
 			return b, e
 		}
 		b.label, b.arg = args[0], args[1]
 	case "copy":
-		if e := need(2, "+ button copy | label | kode"); e != nil {
+		if e := need(2, "+ cta copy | label | kode"); e != nil {
 			return b, e
 		}
 		b.label, b.arg = args[0], args[1]
 	case "call":
-		if e := need(2, "+ button call | label | 62812..."); e != nil {
+		if e := need(2, "+ cta call | label | 62812..."); e != nil {
 			return b, e
 		}
 		b.label, b.arg = args[0], args[1]
 	case "location":
-		if e := need(1, "+ button location | label"); e != nil {
+		if e := need(1, "+ cta location | label"); e != nil {
 			return b, e
 		}
 		b.label = args[0]
 	case "signup":
 	case "select":
-		if e := need(1, "+ button select | judul"); e != nil {
+		if e := need(1, "+ cta select | judul"); e != nil {
 			return b, e
 		}
 		b.label = args[0]
 	default:
-		return b, []string{playErrf(ln, "tipe tombol `%s` tidak dikenal (reply|url|copy|call|location|signup|select)", typ)}
+		return b, []string{playErrf(ln, "tipe CTA `%s` tidak dikenal (reply|url|copy|call|location|signup|select)", typ)}
 	}
 	return b, nil
 }
 
-// playAppendRow menempelkan baris single_select ke tombol select terakhir.
+// playAppendRow menempelkan baris single_select ke CTA select terakhir.
 func playAppendRow(sp *playSpec, args []string, ln int) []string {
 	list := playTargetButtons(sp)
 	if len(*list) == 0 || (*list)[len(*list)-1].typ != "select" {
-		return []string{playErrf(ln, "`+ row` harus ditulis setelah `+ button select | judul`")}
+		return []string{playErrf(ln, "`+ row` harus ditulis setelah `+ cta select | judul`")}
 	}
 	if len(args) == 0 || args[0] == "" {
 		return []string{playErrf(ln, "format: + row | judul | deskripsi | id")}
@@ -344,8 +355,49 @@ func playParseElem(typ string, args []string, ln int, isA2UI bool) (playElem, []
 			return el, e
 		}
 		el.a, el.b = args[0], args[1]
+	case "code":
+		if e := need(2, "+ section code | bahasa | kode"); e != nil {
+			return el, e
+		}
+		el.a, el.b = args[0], args[1]
+	case "table":
+		if e := need(1, "+ section table | Header1,Header2 | Row1Col1,Row1Col2 | ..."); e != nil {
+			return el, e
+		}
+		el.args = args
+	case "suggest":
+		if e := need(1, "+ section suggest | saran 1 | saran 2 | ..."); e != nil {
+			return el, e
+		}
+		el.args = args
+	case "tip":
+		if e := need(1, "+ section tip | teks tip"); e != nil {
+			return el, e
+		}
+		el.a = args[0]
+	case "meta":
+		if e := need(1, "+ section meta | teks metadata"); e != nil {
+			return el, e
+		}
+		el.a = args[0]
+	case "imagine":
+		if e := need(1, "+ section imagine | url [| status [READY/GENERATING] | update_text]"); e != nil {
+			return el, e
+		}
+		el.a = args[0]
+		if len(args) > 1 {
+			el.b = strings.ToUpper(strings.TrimSpace(args[1]))
+		}
+		if len(args) > 2 {
+			el.c = args[2]
+		}
+	case "source":
+		if e := need(3, "+ section source | judul | subjudul | https://... [| icon_url]"); e != nil {
+			return el, e
+		}
+		el.args = args
 	default:
-		return el, []string{playErrf(ln, "tipe section `%s` tidak dikenal (heading|md|image|link|html)", typ)}
+		return el, []string{playErrf(ln, "tipe section `%s` tidak dikenal (heading|md|image|link|html|code|table|suggest|tip|meta|imagine|source)", typ)}
 	}
 	return el, nil
 }
@@ -354,7 +406,7 @@ func playParseElem(typ string, args []string, ln int, isA2UI bool) (playElem, []
 func playParseDel(sp *playSpec, line string, ln int) []string {
 	parts := strings.Fields(strings.TrimPrefix(line, "-"))
 	if len(parts) != 2 {
-		return []string{playErrf(ln, "format: - button N | - card N | - a2ui N | - section N")}
+		return []string{playErrf(ln, "format: - cta N | - card N | - a2ui N | - section N")}
 	}
 	n, err := strconv.Atoi(parts[1])
 	if err != nil || n < 1 {
@@ -369,7 +421,7 @@ func playParseDel(sp *playSpec, line string, ln int) []string {
 	}
 
 	switch strings.ToLower(parts[0]) {
-	case "button":
+	case "cta", "button": // `button` tetap diterima sebagai alias skrip lama.
 		list := playTargetButtons(sp)
 		return drop(len(*list), func() {
 			*list = append((*list)[:n-1], (*list)[n:]...)
@@ -387,13 +439,13 @@ func playParseDel(sp *playSpec, line string, ln int) []string {
 			sp.sections = append(sp.sections[:n-1], sp.sections[n:]...)
 		})
 	default:
-		return []string{playErrf(ln, "elemen `%s` tidak bisa dihapus (button|card|a2ui|section)", parts[0])}
+		return []string{playErrf(ln, "elemen `%s` tidak bisa dihapus (cta|card|a2ui|section)", parts[0])}
 	}
 }
 
-// playTargetButtons mengembalikan daftar tombol aktif: tombol kartu terakhir
-// bila sudah ada kartu, selain itu tombol bubble. Aturannya sama dengan
-// `+ button`, supaya `+ button` dan `- button` tidak menunjuk daftar berbeda.
+// playTargetButtons mengembalikan daftar CTA aktif: CTA kartu terakhir bila
+// sudah ada kartu, selain itu CTA bubble. Aturannya sama dengan `+ cta`,
+// supaya `+ cta` dan `- cta` tidak menunjuk daftar berbeda.
 func playTargetButtons(sp *playSpec) *[]playButton {
 	if len(sp.cards) > 0 {
 		return &sp.cards[len(sp.cards)-1].buttons
@@ -472,7 +524,7 @@ func playValidateInteractive(sp *playSpec) []string {
 			errs = append(errs, fmt.Sprintf("%d kartu tidak terpakai: pakai `slot: carousel`", len(sp.cards)))
 		}
 		if len(sp.buttons) == 0 && len(sp.a2ui) == 0 {
-			errs = append(errs, "bubble interactive butuh minimal satu tombol, `+ a2ui`, atau kartu")
+			errs = append(errs, "bubble interactive butuh minimal satu CTA, `+ a2ui`, atau kartu")
 		}
 		errs = append(errs, playValidateButtons(sp.buttons, "bubble")...)
 	case "carousel":
@@ -483,7 +535,7 @@ func playValidateInteractive(sp *playSpec) []string {
 			errs = append(errs, fmt.Sprintf("%d kartu (maks %d)", len(sp.cards), playMaxCards))
 		}
 		if len(sp.buttons) > 0 {
-			errs = append(errs, fmt.Sprintf("%d tombol di luar kartu: tulis `+ button` setelah `+ card`", len(sp.buttons)))
+			errs = append(errs, fmt.Sprintf("%d CTA di luar kartu: tulis `+ cta` setelah `+ card`", len(sp.buttons)))
 		}
 		for i, c := range sp.cards {
 			label := fmt.Sprintf("kartu %d", i+1)
@@ -503,10 +555,10 @@ func playValidateInteractive(sp *playSpec) []string {
 func playValidateButtons(list []playButton, where string) []string {
 	var errs []string
 	if len(list) > playMaxButtons {
-		errs = append(errs, fmt.Sprintf("%s: %d tombol (maks %d)", where, len(list), playMaxButtons))
+		errs = append(errs, fmt.Sprintf("%s: %d CTA (maks %d)", where, len(list), playMaxButtons))
 	}
 	for i, b := range list {
-		label := fmt.Sprintf("%s tombol %d", where, i+1)
+		label := fmt.Sprintf("%s CTA %d", where, i+1)
 		if b.typ != "signup" && strings.TrimSpace(b.label) == "" {
 			errs = append(errs, label+": label wajib")
 		}
@@ -530,6 +582,12 @@ func playValidateButtons(list []playButton, where string) []string {
 			for j, r := range b.rows {
 				if strings.TrimSpace(r.title) == "" {
 					errs = append(errs, fmt.Sprintf("%s row %d: judul wajib", label, j+1))
+				}
+				if n := utf8.RuneCountInString(r.title); n > playMaxRowText {
+					errs = append(errs, fmt.Sprintf("%s row %d: judul %d rune (maks %d)", label, j+1, n, playMaxRowText))
+				}
+				if n := utf8.RuneCountInString(r.desc); n > playMaxRowText {
+					errs = append(errs, fmt.Sprintf("%s row %d: deskripsi %d rune (maks %d)", label, j+1, n, playMaxRowText))
 				}
 			}
 		}
@@ -577,15 +635,55 @@ func playValidateAirich(sp *playSpec) []string {
 
 	for i, el := range sp.sections {
 		label := fmt.Sprintf("section %d", i+1)
-		if strings.TrimSpace(el.a) == "" {
-			errs = append(errs, label+": isi wajib")
-		}
 		switch el.typ {
+		case "heading", "md", "tip", "meta":
+			if strings.TrimSpace(el.a) == "" {
+				errs = append(errs, label+": isi wajib")
+			}
+		case "code":
+			if strings.TrimSpace(el.a) == "" {
+				errs = append(errs, label+": bahasa wajib")
+			}
+			if strings.TrimSpace(el.b) == "" {
+				errs = append(errs, label+": kode wajib")
+			}
+		case "table":
+			if len(el.args) == 0 || strings.TrimSpace(el.args[0]) == "" {
+				errs = append(errs, label+": header tabel wajib")
+			}
+		case "suggest":
+			if len(el.args) == 0 {
+				errs = append(errs, label+": saran wajib minimal satu")
+			}
+		case "imagine":
+			if strings.TrimSpace(el.a) == "" {
+				errs = append(errs, label+": url gambar wajib")
+			} else {
+				errs = append(errs, playCheckURL(el.a, label)...)
+			}
+			if el.b != "" && el.b != "READY" && el.b != "GENERATING" {
+				errs = append(errs, label+": status imagine harus READY atau GENERATING")
+			}
+		case "source":
+			if len(el.args) < 3 || strings.TrimSpace(el.args[0]) == "" || strings.TrimSpace(el.args[1]) == "" || strings.TrimSpace(el.args[2]) == "" {
+				errs = append(errs, label+": judul, subjudul, dan url sumber wajib")
+			} else {
+				errs = append(errs, playCheckURL(el.args[2], label+" url")...)
+			}
 		case "image":
+			if strings.TrimSpace(el.a) == "" {
+				errs = append(errs, label+": isi wajib")
+			}
 			errs = append(errs, playCheckURL(el.a, label)...)
 		case "link":
+			if strings.TrimSpace(el.a) == "" {
+				errs = append(errs, label+": isi wajib")
+			}
 			errs = append(errs, playCheckURL(el.b, label+" url")...)
 		case "html":
+			if strings.TrimSpace(el.a) == "" {
+				errs = append(errs, label+": isi wajib")
+			}
 			if !playHTMLSourceOK(el.b) {
 				errs = append(errs, label+": sumber html harus popioo, soundtest, atau `url:https://...`")
 			}

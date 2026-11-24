@@ -7,10 +7,12 @@ import (
 	"strings"
 )
 
-// FetchTwitter mengambil media tweet via xhancer API (port cobalt.js):
-// video bitrate tertinggi + foto kualitas original, plus teks tweet.
+// FetchTwitter mengambil media tweet via Flora Gateway (primer) -> xhancer API (fallback).
 func FetchTwitter(ctx context.Context, pageURL string) (*ScrapeResult, error) {
 	return scrapeCache.GetOrLoad(ctx, pageURL, func(ctx context.Context) (*ScrapeResult, error) {
+		if res, err := FloraFetchDownloader(ctx, "twitter", pageURL); err == nil {
+			return res, nil
+		}
 		id := extractTweetID(pageURL)
 	if id == "" {
 		return nil, fmt.Errorf("xhancer: URL tweet tidak valid")

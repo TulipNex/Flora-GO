@@ -7,6 +7,7 @@ import (
 	"image"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -61,7 +62,7 @@ const (
 	sbprMaxPPBytes = 8 << 20
 )
 
-const sbprUsage = "*SBPR - Send Batch Private Relay* (khusus owner)\n" +
+const sbprUsage = "*SBPR - Send Batch Private Relay*\n" +
 	"Satu batch, satu gelembung \"menunggu pesan\".\n" +
 	"Tiap target baca isinya sendiri.\n" +
 	"\n" +
@@ -77,9 +78,9 @@ const sbprUsage = "*SBPR - Send Batch Private Relay* (khusus owner)\n" +
 	"Output : tiap target baca isinya sendiri\n" +
 	"\n" +
 	"```\n" +
-	"ID   : dari .listgrup\n" +
-	"Nomor: 628xxx → +62 8xx xxx\n" +
-	"Teks : {nama}, {nomor}\n" +
+	"ID    : dari .listgrup\n" +
+	"Nomor : 628xxx → +62 8xx xxx\n" +
+	"Teks  : {nama}, {nomor}\n" +
 	"```\n" +
 	"\n" +
 	"`Sapa`\n" +
@@ -551,6 +552,15 @@ func sbprTargetName(ctx context.Context, client *whatsmeow.Client, info *types.G
 			nomor = b.User
 		}
 	}
+	// Fallback nomor telepon dari group_members jika di info grup tersamar (LID).
+	if nomor == "" && info != nil && client != nil {
+		if gdb := store.GroupsFor(client); gdb != nil {
+			if gm, err := gdb.FindGroupMember(ctx, info.JID.String(), tgt.ToNonAD().User); err == nil && gm != nil && gm.PN != "" {
+				nomor = gm.PN
+			}
+		}
+	}
+
 	try := []types.JID{tgt}
 	if nomor != "" {
 		try = append(try, types.NewJID(nomor, types.DefaultUserServer))
@@ -567,15 +577,47 @@ func sbprTargetName(ctx context.Context, client *whatsmeow.Client, info *types.G
 			}
 		}
 	}
+
+	// Fallback ke data tersimpan di group_members (lokal)
+	if info != nil && client != nil {
+		if gdb := store.GroupsFor(client); gdb != nil {
+			if gm, err := gdb.FindGroupMember(ctx, info.JID.String(), tgt.ToNonAD().User); err == nil && gm != nil && gm.PushName != "" {
+				return gm.PushName, nomor
+			}
+		}
+	}
+
+	// Fallback ke direktori identitas global (users.db)
+	if users := store.Users(); users != nil {
+		if nomor != "" {
+			if u, err := users.FindUserByPN(ctx, nomor); err == nil && u != nil {
+				if u.PushName != "" {
+					return u.PushName, nomor
+				}
+				if u.FullName != "" {
+					return u.FullName, nomor
+				}
+			}
+		}
+		if u, err := users.FindUserByLID(ctx, tgt.ToNonAD().User); err == nil && u != nil {
+			if u.PushName != "" {
+				return u.PushName, nomor
+			}
+			if u.FullName != "" {
+				return u.FullName, nomor
+			}
+		}
+	}
+
 	if nomor != "" {
 		return nomor, nomor
 	}
 	return tgt.ToNonAD().User, ""
 }
 
-// sbprBuildPP membangun pesan gambar foto profil target. Gagal fetch/unduh/
-// upload → fallback teks personal (target tetap dapat konten; dihitung
-// terkirim, dicatat di log).
+// sbprBuildPP membangun pesan gambar foto profil target. Mengutamakan cache
+// disk lokal bot (data/pp/) bila tersedia, lalu fallback ke network server WA.
+// Gagal fetch/unduh/upload → fallback teks personal.
 func sbprBuildPP(ctx context.Context, client *whatsmeow.Client, tgt types.JID, caption, name, nomor string) (*waE2E.Message, error) {
 	fallback := func() *waE2E.Message {
 		text := caption
@@ -586,20 +628,44 @@ func sbprBuildPP(ctx context.Context, client *whatsmeow.Client, tgt types.JID, c
 			ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String(text)},
 		}
 	}
-	ppi, err := client.GetProfilePictureInfo(ctx, tgt, nil)
-	if err != nil || ppi == nil || ppi.URL == "" {
-		logfmt.Warn("SBPR: PP %s tak tersedia (%v), fallback teks\n", tgt.String(), err)
-		return fallback(), nil
+
+	var data []byte
+
+	// 1. Cek cache foto lokal dari users.db terlebih dahulu (hemat fetch & download dari server WA)
+	if users := store.Users(); users != nil {
+		var u *store.UserRecord
+		if nomor != "" {
+			u, _ = users.FindUserByPN(ctx, nomor)
+		}
+		if u == nil {
+			u, _ = users.FindUserByLID(ctx, tgt.ToNonAD().User)
+		}
+		if u != nil && u.PPStatus == "ok" && u.PPPath != "" {
+			if b, err := os.ReadFile(u.PPPath); err == nil && len(b) > 0 {
+				data = b
+			}
+		}
 	}
-	data, err := sbprDownloadBytes(ppi.URL)
-	if err != nil {
-		logfmt.Warn("SBPR: unduh PP %s gagal (%v), fallback teks\n", tgt.String(), err)
-		return fallback(), nil
+
+	// 2. Jika belum ada di lokal, fetch info dan unduh dari server WhatsApp
+	if len(data) == 0 {
+		ppi, err := client.GetProfilePictureInfo(ctx, tgt, nil)
+		if err != nil || ppi == nil || ppi.URL == "" {
+			logfmt.Warn("SBPR: PP %s tak tersedia (%v), fallback teks\n", tgt.String(), err)
+			return fallback(), nil
+		}
+		dl, err := sbprDownloadBytes(ppi.URL)
+		if err != nil {
+			logfmt.Warn("SBPR: unduh PP %s gagal (%v), fallback teks\n", tgt.String(), err)
+			return fallback(), nil
+		}
+		if err := messaging.CheckMediaBytes(dl); err != nil {
+			logfmt.Warn("SBPR: PP %s invalid (%v), fallback teks\n", tgt.String(), err)
+			return fallback(), nil
+		}
+		data = dl
 	}
-	if err := messaging.CheckMediaBytes(data); err != nil {
-		logfmt.Warn("SBPR: PP %s invalid (%v), fallback teks\n", tgt.String(), err)
-		return fallback(), nil
-	}
+
 	uploaded, err := client.Upload(ctx, data, whatsmeow.MediaImage)
 	if err != nil {
 		return nil, fmt.Errorf("upload PP: %w", err)

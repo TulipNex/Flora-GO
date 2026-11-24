@@ -161,6 +161,10 @@ func fmtMsGo(ms int64) string {
 // SearchSpotify mencari lagu via embed-token + pathfinder v2 (port
 // fallbackSearchSpotify — tanpa TOTP/clientToken yang rapuh).
 func SearchSpotify(ctx context.Context, query string, limit int) ([]SpotifyTrack, error) {
+	if tracks, err := FloraSearchSpotify(ctx, query, limit); err == nil && len(tracks) > 0 {
+		return tracks, nil
+	}
+
 	const engine = "spotify-search"
 	query = strings.TrimSpace(query)
 	if query == "" {

@@ -91,7 +91,7 @@ func InitAbsensiDB(path string) error {
 		radius_m REAL NOT NULL DEFAULT 20,
 		default_durasi_min INTEGER NOT NULL DEFAULT 60,
 		updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-	);
+	) WITHOUT ROWID;
 	CREATE TABLE IF NOT EXISTS absensi_sessions (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		chat TEXT NOT NULL,
@@ -113,7 +113,7 @@ func InitAbsensiDB(path string) error {
 		distance_m REAL NOT NULL DEFAULT 0,
 		accuracy_m REAL NOT NULL DEFAULT 0,
 		PRIMARY KEY (session_id, sender)
-	);
+	) WITHOUT ROWID;
 	CREATE TABLE IF NOT EXISTS absensi_schedules (
 		chat TEXT PRIMARY KEY,
 		days TEXT NOT NULL DEFAULT '',
@@ -121,7 +121,7 @@ func InitAbsensiDB(path string) error {
 		end_min INTEGER NOT NULL DEFAULT 0,
 		enabled INTEGER NOT NULL DEFAULT 0,
 		updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-	);
+	) WITHOUT ROWID;
 	`
 	// Migrasi DB lama (dibuat sebelum kolom radius_m / default_durasi_min
 	// ada): SQLite tak punya ADD COLUMN IF NOT EXISTS — toleransi error

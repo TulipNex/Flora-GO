@@ -56,10 +56,10 @@ func requireModGate(ctx context.Context, mctx *store.MessageContext) string {
 	if IsOwner(mctx) {
 		isBotAdmin, err := mctx.IsBotAdmin(ctx)
 		if err != nil {
-			return fmt.Sprintf("Gagal cek status admin bot: %v", err)
+			return Fail("Gagal cek status admin bot", err)
 		}
 		if !isBotAdmin {
-			return "Bot harus jadi admin dulu di grup ini supaya bisa melakukan aksi tersebut."
+			return "Bot harus jadi admin dulu di grup ini."
 		}
 		return ""
 	}
@@ -96,6 +96,39 @@ func RegisterModeration(r *Registry) {
 	})
 }
 
+func antilinkHelp(on bool) string {
+	status := "nonaktif"
+	if on {
+		status = "aktif"
+	}
+	return Help(HelpSpec{
+		Title:   "Hapus link grup lain",
+		Status:  status,
+		Cmd:     "Set",
+		Formats: []string{".antilink <state>"},
+		Contoh:  ".antilink off",
+		Params: []string{
+			"state : on atau off",
+			"on    : aktif",
+			"off   : nonaktif",
+		},
+		Note: "Link grup WhatsApp lain dihapus + warn; link grup ini sendiri tetap boleh.",
+	})
+}
+
+func warnHelp() string {
+	return Help(HelpSpec{
+		Title:   "Beri peringatan",
+		Cmd:     "Warn",
+		Formats: []string{".warn <@user/reply>"},
+		Contoh:  ".warn @gibran",
+		Params: []string{
+			"@user : tag target",
+			"reply : balas pesan target",
+		},
+	})
+}
+
 func handleAntilink(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireModGate(ctx, mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
@@ -104,24 +137,20 @@ func handleAntilink(ctx context.Context, mctx *store.MessageContext) error {
 	switch arg {
 	case "on", "aktif", "enable":
 		if err := store.GroupsFor(mctx.Client).SetAntilink(ctx, mctx.Chat.String(), true); err != nil {
-			return store.ReplyText(ctx, mctx, ErrMsg("Antilink", fmt.Sprintf("Gagal menyalakan: %v", err)))
+			return store.ReplyText(ctx, mctx, Fail("Gagal menyalakan antilink", err))
 		}
-		return store.ReplyText(ctx, mctx, Block("Antilink", Row("Status", "aktif"), "Link grup WhatsApp lain otomatis dihapus + warn (link grup ini sendiri tetap boleh)."))
+		return store.ReplyText(ctx, mctx, antilinkHelp(true))
 	case "off", "mati", "disable":
 		if err := store.GroupsFor(mctx.Client).SetAntilink(ctx, mctx.Chat.String(), false); err != nil {
-			return store.ReplyText(ctx, mctx, ErrMsg("Antilink", fmt.Sprintf("Gagal mematikan: %v", err)))
+			return store.ReplyText(ctx, mctx, Fail("Gagal mematikan antilink", err))
 		}
-		return store.ReplyText(ctx, mctx, Block("Antilink", Row("Status", "mati")))
+		return store.ReplyText(ctx, mctx, antilinkHelp(false))
 	default:
 		on, err := store.GroupsFor(mctx.Client).IsAntilinkOn(ctx, mctx.Chat.String())
 		if err != nil {
-			return store.ReplyText(ctx, mctx, ErrMsg("Antilink", fmt.Sprintf("Gagal baca status: %v", err)))
+			return store.ReplyText(ctx, mctx, Fail("Gagal baca status antilink", err))
 		}
-		status := "mati"
-		if on {
-			status = "aktif"
-		}
-		return store.ReplyText(ctx, mctx, Block("Antilink", Row("Status", status), "Ubah: `.antilink on` / `.antilink off`."))
+		return store.ReplyText(ctx, mctx, antilinkHelp(on))
 	}
 }
 
@@ -131,7 +160,7 @@ func handleWarnCmd(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	target, err := resolveTargetJID(mctx)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, Block("Warn", Row("Cara", ".warn @user / reply pesan target")))
+		return store.ReplyText(ctx, mctx, warnHelp())
 	}
 	return giveWarn(ctx, mctx.Client, mctx.Chat, mctx.Sender, target.ToNonAD(), mctx.RawEvt.Info.ID, mctx.RawEvt.Message, "manual oleh admin")
 }
@@ -142,23 +171,23 @@ func handleUnwarn(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	target, err := resolveTargetJID(mctx)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, Block("Unwarn", Row("Cara", ".unwarn @user / reply pesan target")))
+		return store.ReplyText(ctx, mctx, warnHelp())
 	}
 	bare := target.ToNonAD()
 	count, err := store.GroupsFor(mctx.Client).GetWarnCount(ctx, mctx.Chat.String(), bare.String())
 	if err != nil {
-		return store.ReplyText(ctx, mctx, ErrMsg("Unwarn", fmt.Sprintf("Gagal baca warn: %v", err)))
+		return store.ReplyText(ctx, mctx, Fail("Gagal baca warn", err))
 	}
 	if count == 0 {
 		return store.ReplyTextWithMentions(ctx, mctx,
-			Title("Unwarn")+"\n@"+bare.User+" tidak punya warn.",
+			"@"+bare.User+" tidak punya peringatan.",
 			[]types.JID{bare})
 	}
 	if err := store.GroupsFor(mctx.Client).ResetWarn(ctx, mctx.Chat.String(), bare.String()); err != nil {
-		return store.ReplyText(ctx, mctx, ErrMsg("Unwarn", fmt.Sprintf("Gagal reset warn: %v", err)))
+		return store.ReplyText(ctx, mctx, Fail("Gagal reset warn", err))
 	}
 	return store.ReplyTextWithMentions(ctx, mctx,
-		Title("Unwarn")+"\nWarn @"+bare.User+fmt.Sprintf(" direset (sebelumnya %d).", count),
+		"Peringatan @"+bare.User+" direset.",
 		[]types.JID{bare})
 }
 
@@ -168,24 +197,25 @@ func handleWarnList(ctx context.Context, mctx *store.MessageContext) error {
 	}
 	list, err := store.GroupsFor(mctx.Client).ListWarns(ctx, mctx.Chat.String())
 	if err != nil {
-		return store.ReplyText(ctx, mctx, ErrMsg("Daftar Warn", fmt.Sprintf("Gagal baca daftar: %v", err)))
+		return store.ReplyText(ctx, mctx, Fail("Gagal baca daftar", err))
 	}
 	if len(list) == 0 {
-		return store.ReplyText(ctx, mctx, Block("Daftar Warn", "Tidak ada warn di grup ini."))
+		return store.ReplyText(ctx, mctx, "Tidak ada peringatan di grup ini.")
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("*Daftar Warn* (maks %d)\n\n", MaxWarns))
+	sb.WriteString(Title("Daftar peringatan") + "\n\n")
 	mentions := make([]types.JID, 0, len(list))
-	for i, e := range list {
+	for _, e := range list {
 		bare, perr := types.ParseJID(e.UserJID)
 		if perr != nil || bare.IsEmpty() {
-			sb.WriteString(fmt.Sprintf("%d. %s — %d/%d\n", i+1, e.UserJID, e.Count, MaxWarns))
+			sb.WriteString(fmt.Sprintf("- [%d/%d] %s\n", e.Count, MaxWarns, e.UserJID))
 			continue
 		}
 		bare = bare.ToNonAD()
-		sb.WriteString(fmt.Sprintf("%d. @%s — %d/%d\n", i+1, bare.User, e.Count, MaxWarns))
+		sb.WriteString(fmt.Sprintf("- [%d/%d] @%s\n", e.Count, MaxWarns, bare.User))
 		mentions = append(mentions, bare)
 	}
+	sb.WriteString("\n" + Hint(fmt.Sprintf("Maksimal %d peringatan per member.", MaxWarns)))
 	if len(mentions) == 0 {
 		return store.ReplyText(ctx, mctx, sb.String())
 	}
@@ -218,13 +248,13 @@ func giveWarn(ctx context.Context, client *whatsmeow.Client, chat types.JID, rep
 		// admin bisa coba tendang manual.
 		if _, err := client.UpdateGroupParticipants(ctx, chat, []types.JID{target}, whatsmeow.ParticipantChangeRemove); err != nil {
 			logfmt.Warn("Gagal kick %s (warn %d): %v\n", target, count, err)
-			return sendMentionReply(Title("Warn") + fmt.Sprintf("\n@%s mencapai %d/%d warn (%s), tapi gagal dikeluarkan otomatis: %v", target.User, count, MaxWarns, reason, err))
+			return sendMentionReply(fmt.Sprintf("@%s mencapai %d dari %d peringatan, tapi gagal dikeluarkan otomatis: %v", target.User, count, MaxWarns, err))
 		}
 		_ = store.GroupsFor(client).ResetWarn(ctx, chat.String(), target.String())
-		return sendMentionReply(Title("Warn") + fmt.Sprintf("\n@%s mencapai %d/%d warn (%s) dan dikeluarkan dari grup.", target.User, count, MaxWarns, reason))
+		return sendMentionReply(fmt.Sprintf("@%s mencapai %d dari %d peringatan dan dikeluarkan dari grup.", target.User, count, MaxWarns))
 	}
 
-	return sendMentionReply(Title("Warn") + fmt.Sprintf("\n@%s diberi warn %d/%d (%s).", target.User, count, MaxWarns, reason))
+	return sendMentionReply(fmt.Sprintf("@%s mendapat peringatan %d dari %d.", target.User, count, MaxWarns))
 }
 
 // sendModerationReply mengirim balasan quote + mention tanpa butuh
@@ -290,6 +320,12 @@ func moderationReplyMessage(replier types.JID, quoteID, text string, mentioned [
 // DB/jaringan yang gagal bersifat fail-soft: log dan lewati, jangan sampai
 // salah hapus pesan orang.
 func CheckAntilink(client *whatsmeow.Client, evt *events.Message, text string) bool {
+	// Fast-path: lewati seketika bila teks sama sekali tidak memuat tautan WhatsApp,
+	// mencegah query SQLite di setiap pesan grup obrolan normal.
+	if !strings.Contains(strings.ToLower(text), "chat.whatsapp.com") {
+		return false
+	}
+
 	ctx := context.Background()
 	chat := evt.Info.Chat
 	sender := evt.Info.Sender

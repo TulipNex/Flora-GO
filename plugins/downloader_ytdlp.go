@@ -161,7 +161,7 @@ func sendDlDocument(ctx context.Context, mctx *store.MessageContext, file, capti
 		return err
 	}
 	filename := filepath.Base(file)
-	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{
+	msg := &waE2E.Message{
 		DocumentMessage: &waE2E.DocumentMessage{
 			URL:           proto.String(uploaded.URL),
 			DirectPath:    proto.String(uploaded.DirectPath),
@@ -173,12 +173,13 @@ func sendDlDocument(ctx context.Context, mctx *store.MessageContext, file, capti
 			FileName:      proto.String(filename),
 			Caption:       proto.String(caption),
 		},
-	})
+	}
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, msg)
 	if err != nil {
 		return err
 	}
 	store.LogOutgoing(mctx, "dl-document", filename)
-	store.TrackBotMessageID(resp.ID, filename)
+	store.TrackBotMedia(string(resp.ID), msg, filename)
 	return nil
 }
 

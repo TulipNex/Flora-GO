@@ -40,7 +40,13 @@ func handleInsThumb(ctx context.Context, mctx *store.MessageContext) error {
 		rawURL = insThumbQuotedURL(mctx)
 	}
 	if strings.TrimSpace(rawURL) == "" {
-		return store.ReplyText(ctx, mctx, "Format: .insthumb <url>\nContoh: .insthumb https://example.com/artikel\nAtau reply pesan berisi link lalu .insthumb")
+		return store.ReplyText(ctx, mctx, Help(HelpSpec{
+			Title:   "Metadata link",
+			Cmd:     "Insthumb",
+			Formats: []string{".insthumb <url>"},
+			Contoh:  ".insthumb https://example.com/artikel",
+			Note:    "Bisa juga reply pesan berisi link.",
+		}))
 	}
 	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
 		rawURL = "https://" + rawURL
@@ -101,12 +107,11 @@ func formatInsThumb(rawURL string, meta *external.PageMeta) string {
 		}
 		return s
 	}
-	return fmt.Sprintf(
-		"Link: %s\nTitle: %s\nDesc: %s\nThumb: %s\nFavicon: %s",
-		rawURL,
-		val(meta.Title),
-		val(meta.Description),
-		val(meta.ImageURL),
-		val(meta.FaviconURL),
+	return "*Metadata*\n\n" + Code(
+		"- Link : "+rawURL,
+		"- Judul : "+val(meta.Title),
+		"- Deskripsi : "+val(meta.Description),
+		"- Gambar : "+val(meta.ImageURL),
+		"- Favicon : "+val(meta.FaviconURL),
 	)
 }

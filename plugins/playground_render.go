@@ -217,6 +217,7 @@ func playA2UIAdd(a2 *msgbuilder.A2UIBuilder, el playElem, n int) {
 func playBuildAirich(ctx context.Context, sp playSpec) (*waE2E.Message, error) {
 	b := msgbuilder.NewAIRich()
 	if sp.title != "" {
+		b.SetTitle(sp.title)
 		b.AddHeading(sp.title)
 	}
 	if sp.body != "" {
@@ -244,12 +245,51 @@ func playBuildAirich(ctx context.Context, sp playSpec) (*waE2E.Message, error) {
 				return nil, err
 			}
 			b.AddEmbeddedHTML(el.a, html, pageURL)
+		case "code":
+			b.AddCode(el.a, el.b)
+		case "table":
+			var headers []string
+			var rows [][]string
+			if len(el.args) > 0 {
+				headers = playSplitComma(el.args[0])
+				for _, rStr := range el.args[1:] {
+					rows = append(rows, playSplitComma(rStr))
+				}
+			}
+			b.AddTable(headers, rows)
+		case "suggest":
+			b.AddSuggest(el.args...)
+		case "tip":
+			b.AddTip(el.a)
+		case "meta":
+			b.AddMetadata(el.a)
+		case "imagine":
+			status := el.b
+			if status == "" {
+				status = "READY"
+			}
+			b.AddImagine(el.a, el.a, "IMAGE", status, el.c)
+		case "source":
+			icon := ""
+			if len(el.args) > 3 {
+				icon = el.args[3]
+			}
+			b.AddSource(el.args[0], el.args[1], el.args[2], icon)
 		}
 	}
 	if len(links) > 0 {
 		b.AddFooterLinks(links...)
 	}
 	return b.Build(), nil
+}
+
+func playSplitComma(s string) []string {
+	parts := strings.Split(s, ",")
+	res := make([]string, len(parts))
+	for i, p := range parts {
+		res[i] = strings.TrimSpace(p)
+	}
+	return res
 }
 
 // playHTML mengambil sumber layar HTML: template bawaan atau URL owner.

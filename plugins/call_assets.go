@@ -14,6 +14,7 @@ import (
 
 	"github.com/purpshell/meowcaller"
 	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
 
 	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
@@ -21,7 +22,7 @@ import (
 
 // Penyimpanan ASET panggilan (suara untuk voice call, video untuk video call)
 // yang bisa dipanggil ulang via keyword (#nama) — tidak lagi terpaku
-// greeting.mp3 atau reply video tiap kali.
+// reply media tiap kali.
 //
 // Layout persistent (di dalam data/, tahan restart & tidak ikut deploy):
 //
@@ -108,34 +109,38 @@ func writeCallAssetMeta(dir, kind string, size int64) error {
 	return os.WriteFile(filepath.Join(dir, "meta.json"), b, 0600)
 }
 
-// takeRepliedMediaBytes mengunduh media dari pesan yang di-reply (audio
-// selalu; video/document bila includeVideo). data=nil berarti tidak ada media
+// takeRepliedMediaBytes mengunduh media dari pesan sendiri atau yang di-reply
+// (audio selalu; video/document bila includeVideo). data=nil berarti tidak ada media
 // yang relevan (bukan error).
 func takeRepliedMediaBytes(ctx context.Context, mctx *store.MessageContext, includeVideo bool) ([]byte, string, error) {
+	msg := store.UnwrapMessage(mctx.RawEvt.Message)
 	quoted := store.UnwrapMessage(store.ExtractQuotedMessage(mctx.RawEvt))
-	if quoted == nil {
-		return nil, "", nil
+	for _, m := range []*waE2E.Message{quoted, msg} {
+		if m == nil {
+			continue
+		}
+		var dl whatsmeow.DownloadableMessage
+		var mime string
+		switch {
+		case m.GetAudioMessage() != nil:
+			a := m.GetAudioMessage()
+			dl, mime = a, a.GetMimetype()
+		case includeVideo && m.GetVideoMessage() != nil:
+			v := m.GetVideoMessage()
+			dl, mime = v, v.GetMimetype()
+		case m.GetDocumentMessage() != nil:
+			d := m.GetDocumentMessage()
+			dl, mime = d, d.GetMimetype()
+		default:
+			continue
+		}
+		data, err := mctx.Client.Download(ctx, dl)
+		if err != nil {
+			return nil, "", err
+		}
+		return data, mime, nil
 	}
-	var dl whatsmeow.DownloadableMessage
-	var mime string
-	switch {
-	case quoted.GetAudioMessage() != nil:
-		a := quoted.GetAudioMessage()
-		dl, mime = a, a.GetMimetype()
-	case includeVideo && quoted.GetVideoMessage() != nil:
-		v := quoted.GetVideoMessage()
-		dl, mime = v, v.GetMimetype()
-	case quoted.GetDocumentMessage() != nil:
-		d := quoted.GetDocumentMessage()
-		dl, mime = d, d.GetMimetype()
-	default:
-		return nil, "", nil
-	}
-	data, err := mctx.Client.Download(ctx, dl)
-	if err != nil {
-		return nil, "", err
-	}
-	return data, mime, nil
+	return nil, "", nil
 }
 
 // openVoiceAsset membuka WAV aset suara (siap diputar meowcaller).
@@ -173,11 +178,11 @@ func loadVideoAsset(keyword string) (frames [][]byte, wavPath string, err error)
 	return frames, wavPath, nil
 }
 
-// handleVoiceAssetSave menangani ".voicecall save <keyword>": reply voice
+// handleVoiceAssetSave menangani ".voicecall save <keyword>": kirim/reply voice
 // note/audio/video → ekstrak WAV 16 kHz mono (format native meowcaller).
 func handleVoiceAssetSave(ctx context.Context, mctx *store.MessageContext) error {
 	if len(mctx.Args) < 2 {
-		return store.ReplyText(ctx, mctx, ErrMsg("Voice Call", "Reply voice note/audio/video lalu .voicecall save <keyword>."))
+		return store.ReplyText(ctx, mctx, ErrMsg("Voice Call", "Kirim/reply voice note/audio/video lalu .voicecall save <keyword>."))
 	}
 	keyword, err := normalizeAssetKeyword(mctx.Args[1])
 	if err != nil {
@@ -188,7 +193,7 @@ func handleVoiceAssetSave(ctx context.Context, mctx *store.MessageContext) error
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal unduh media: %v", err))
 	}
 	if data == nil {
-		return store.ReplyText(ctx, mctx, "Reply voice note, audio, atau video yang ingin disimpan sebagai suara call.")
+		return store.ReplyText(ctx, mctx, "Kirim/reply voice note, audio, atau video yang ingin disimpan sebagai suara call.")
 	}
 	if len(data) > videoMaxSourceBytes {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Media %.0f MB melebihi batas 100 MB.", float64(len(data))/(1<<20)))
@@ -256,8 +261,7 @@ func handleVideoAssetSave(ctx context.Context, mctx *store.MessageContext) error
 	}
 	raw := bytes.Join(aus, nil)
 
-	// Audio opsional — video tanpa trek audio tetap aset valid (call pakai
-	// greeting sebagai audio).
+	// Audio opsional — video tanpa trek audio tetap aset valid.
 	var wav []byte
 	if wavTmp, aerr := extractCallAudio(ctx, src); aerr != nil {
 		logfmt.Warn("Gagal ekstrak audio aset video #%s: %v (tanpa audio)\n", keyword, aerr)
@@ -286,7 +290,7 @@ func handleVideoAssetSave(ctx context.Context, mctx *store.MessageContext) error
 
 	audioNote := ""
 	if len(wav) == 0 {
-		audioNote = " (tanpa audio — greeting)"
+		audioNote = " (tanpa audio)"
 	}
 	logfmt.Info("Aset video #%s tersimpan: %d frame, %.1f KB.%s\n", keyword, len(aus), float64(len(raw))/1024, audioNote)
 	return store.ReplyText(ctx, mctx, fmt.Sprintf(
@@ -351,7 +355,7 @@ func handleCallAssetList(ctx context.Context, mctx *store.MessageContext, kind, 
 		lines = append(lines, fmt.Sprintf("#%s (%.1f KB)", e.Name(), float64(size)/1024))
 	}
 	if len(lines) == 0 {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Belum ada aset %s. Reply media lalu `.%s save <keyword>`.", kind, cmd))
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("Belum ada aset %s. Kirim/reply media lalu `.%s save <keyword>`.", kind, cmd))
 	}
 	sort.Strings(lines)
 	return store.ReplyText(ctx, mctx, fmt.Sprintf("Aset %s (%d):\n%s", kind, len(lines), strings.Join(lines, "\n")))

@@ -2,7 +2,6 @@ package plugins
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -15,7 +14,6 @@ import (
 	"github.com/polymorfa/hypermeow/types/events"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
-	"wabot-go/internal/logfmt"
 	"wabot-go/internal/store"
 	"wabot-go/internal/timex"
 )
@@ -24,43 +22,13 @@ func init() {
 	registerPlugin(RegisterCRM)
 }
 
-// RegisterCRM mendaftarkan toolkit arsip pesan ala FIORA/CRM — owner-only
-// (CategoryOwner + requireOwner, seperti .get/.insthumb): arsip forensik
-// bukan konsumsi publik.
-//
-//   - .lastchat [n] — N pesan terakhir chat ini (default 10, maks 100)
-//   - .crm [#rowid] — metadata + dokumen JSON pesan (reply ke pesan / rowid)
-//   - .insp [#rowid] — raw JSON pesan langsung di chat (kebesaran → dokumen)
-//
-// Diilhami struktur + perintah FIORA by Nixel (ditulis ulang penuh dalam
-// Go): yang di-port hanya tabel messages + 3 command di atas — TANPA tabel
-// nodes mentah WS (whatsmeow tidak mengeksposnya), tanpa .relay (tak ada
-// API relay di whatsmeow), tanpa tombol interaktif/AIRich (tak ada
-// infrastrukturnya di bot ini).
+// RegisterCRM mendaftarkan command .crm: metadata + dokumen JSON pesan.
 func RegisterCRM(r *Registry) {
 	r.Register(Command{
 		Name:        "crm",
-		Description: "Arsip pesan (reply/#rowid → metadata + JSON)",
+		Description: "Arsip pesan",
 		Category:    CategoryOwner,
 		Handler:     handleCRM,
-	})
-	r.Register(Command{
-		Name:        "insp",
-		Description: "Lihat raw JSON pesan arsip",
-		Category:    CategoryOwner,
-		Handler:     handleInsp,
-	})
-	r.Register(Command{
-		Name:        "lastchat",
-		Description: "Pesan terakhir chat ini (.lastchat [n])",
-		Category:    CategoryOwner,
-		Handler:     handleLastChat,
-	})
-	r.Register(Command{
-		Name:        "run",
-		Description: "Kirim ulang pesan (reply JSON/pesan asli, atau #rowid)",
-		Category:    CategoryOwner,
-		Handler:     handleRun,
 	})
 }
 
@@ -93,14 +61,14 @@ var crmRowidRe = regexp.MustCompile(`^#(\d+)$`)
 // pesan error/metadata.
 func resolveCRMTarget(mctx *store.MessageContext) (*store.CRMRow, string, error) {
 	if store.CRM() == nil {
-		return nil, "", fmt.Errorf("arsip mati (crm.db tidak terbuka)")
+		return nil, "", fmt.Errorf("Arsip mati (crm.db tidak terbuka).")
 	}
 	if len(mctx.Args) > 0 {
 		if m := crmRowidRe.FindStringSubmatch(strings.TrimSpace(mctx.Args[0])); m != nil {
 			rowid, _ := strconv.ParseInt(m[1], 10, 64)
 			row, err := store.CRM().LoadByRowid(rowid)
 			if err != nil {
-				return nil, "", fmt.Errorf("rowid #%d tidak ditemukan", rowid)
+				return nil, "", fmt.Errorf("Rowid #%d tidak ditemukan.", rowid)
 			}
 			return row, fmt.Sprintf("#%d", rowid), nil
 		}
@@ -111,32 +79,67 @@ func resolveCRMTarget(mctx *store.MessageContext) (*store.CRMRow, string, error)
 	}
 	row, err := store.CRM().LoadByID(quotedID, mctx.Chat.String())
 	if err != nil {
-		return nil, "", fmt.Errorf("pesan yang di-reply tidak ada di arsip (terlalu lama? melebihi 200 baris? atau dari sebelum fitur aktif)")
+		return nil, "", fmt.Errorf("Pesan yang di-reply tidak ada di arsip.")
 	}
-	return row, "reply", nil
+	return row, fmt.Sprintf("#%d", row.Rowid), nil
 }
 
-const crmUsage = `Format: .crm [#rowid] (reply ke pesan bila tanpa argumen)
-.insp [#rowid] — raw JSON pesan
-.run [#rowid] — kirim ulang pesan (reply JSON/pesan asli)
-.lastchat [n] — N pesan terakhir chat ini (maks 100)
+func crmUsage(total int64) string {
+	var sb strings.Builder
+	sb.WriteString("*Arsip pesan*\n\n" +
+		"`Crm`\n" +
+		"Format :\n" +
+		"- .crm #rowid\n" +
+		"- .crm <reply>\n\n" +
+		"```rowid : nomor baris arsip\n" +
+		"reply : balas pesan```\n\n" +
+		"`Lainnya`\n" +
+		"- .insp #rowid : JSON mentah pesan\n" +
+		"- .run #rowid : kirim ulang pesan\n" +
+		"- .lastchat [n] : N pesan terakhir")
+	if total >= 0 {
+		fmt.Fprintf(&sb, "\n\n> Arsip: %d/200 pesan.", total)
+	}
+	return sb.String()
+}
 
-Contoh:
-.crm (reply pesan)
-.crm #4825
-.insp (reply pesan)
-.run (reply bubble JSON .insp)
-.lastchat 20`
+func formatCRMMeta(ctx context.Context, row *store.CRMRow, tipe string, client *whatsmeow.Client, ringkasan string) string {
+	t := time.Unix(row.TS, 0).In(timex.Zone())
+	return formatCRMMetaAt(ctx, row, tipe, client, ringkasan, t)
+}
+
+func formatCRMMetaAt(ctx context.Context, row *store.CRMRow, tipe string, client *whatsmeow.Client, ringkasan string, t time.Time) string {
+	label := fmt.Sprintf("#%d", row.Rowid)
+	if row.Rowid <= 0 {
+		label = "reply"
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "*CRM %s*\n\n", label)
+	fmt.Fprintf(&sb, "```- Tipe     : %s\n", tipe)
+	fmt.Fprintf(&sb, "- Chat     : %s\n", crmChatLabel(row.Chat))
+	fmt.Fprintf(&sb, "- Pengirim : %s\n", crmSenderName(ctx, client, row.Sender))
+	fmt.Fprintf(&sb, "- Waktu    : %s\n", t.Format("02 Jan 2006"))
+	fmt.Fprintf(&sb, "- Jam      : %s\n", t.Format("15:04:05 MST"))
+	fmt.Fprintf(&sb, "- ID       : %s\n", row.ID)
+	fmt.Fprintf(&sb, "- Ukuran   : %d bytes```", len(row.Data))
+	if ringkasan != "" && ringkasan != "-" {
+		sb.WriteString("\n\n" + ringkasan)
+	}
+	return sb.String()
+}
 
 func handleCRM(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireOwner(mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
 	}
-	row, src, err := resolveCRMTarget(mctx)
+	row, _, err := resolveCRMTarget(mctx)
 	if err != nil {
 		if err.Error() == "usage" {
-			total := store.CRM().Count()
-			return store.ReplyText(ctx, mctx, crmUsage+fmt.Sprintf("\n\nArsip: %d/200 pesan", total))
+			var total int64
+			if store.CRM() != nil {
+				total = store.CRM().Count()
+			}
+			return store.ReplyText(ctx, mctx, crmUsage(total))
 		}
 		return store.ReplyText(ctx, mctx, err.Error())
 	}
@@ -145,93 +148,13 @@ func handleCRM(ctx context.Context, mctx *store.MessageContext) error {
 	if derr == nil {
 		tipe, ringkasan = store.DescribeMessage(decoded)
 	}
-	meta := fmt.Sprintf(
-		"*CRM %s*\nTipe: %s\nChat: %s\nPengirim: %s\nWaktu: %s\nID: %s\nUkuran: %d bytes\nIsi: %s",
-		src, tipe, crmChatLabel(row.Chat), crmSenderName(ctx, mctx.Client, row.Sender),
-		formatCRMTime(row.TS), row.ID, len(row.Data),
-		truncateCRMLine(ringkasan, 150),
-	)
+	meta := formatCRMMeta(ctx, row, tipe, mctx.Client, ringkasan)
 	payload, err := protojson.MarshalOptions{Multiline: true}.Marshal(decoded)
 	if err != nil || derr != nil {
 		// Decode/marshal gagal (baris corrupt): metadata tetap berguna.
 		return store.ReplyText(ctx, mctx, meta+"\n\n(raw: gagal decode)")
 	}
 	return crmSendDoc(ctx, mctx, fmt.Sprintf("crm-%s-%d.json", tipe, row.Rowid), "application/json", string(payload), meta)
-}
-
-func handleInsp(ctx context.Context, mctx *store.MessageContext) error {
-	if msg := requireOwner(mctx); msg != "" {
-		return store.ReplyText(ctx, mctx, msg)
-	}
-	row, src, err := resolveCRMTarget(mctx)
-	if err != nil {
-		if err.Error() == "usage" {
-			return store.ReplyText(ctx, mctx, crmUsage)
-		}
-		return store.ReplyText(ctx, mctx, err.Error())
-	}
-	decoded, derr := row.Message()
-	if derr != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal decode %s: %v", src, derr))
-	}
-	payload, err := protojson.MarshalOptions{Multiline: true}.Marshal(decoded)
-	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal marshal %s: %v", src, err))
-	}
-	// Bubble WA bukan tempat JSON raksasa (preceden maxGetTextChars .get):
-	// kebesaran → dokumen + caption ringkas.
-	if len(payload) > 20000 {
-		tipe, _ := store.DescribeMessage(decoded)
-		return crmSendDoc(ctx, mctx, fmt.Sprintf("insp-%s-%d.json", tipe, row.Rowid), "application/json",
-			string(payload), fmt.Sprintf("Raw %s (%s, %d bytes — kebesaran untuk bubble)", src, tipe, len(payload)))
-	}
-	return store.ReplyText(ctx, mctx, string(payload))
-}
-
-func handleLastChat(ctx context.Context, mctx *store.MessageContext) error {
-	if msg := requireOwner(mctx); msg != "" {
-		return store.ReplyText(ctx, mctx, msg)
-	}
-	n := 10
-	if len(mctx.Args) > 0 {
-		if v, err := strconv.Atoi(strings.TrimSpace(mctx.Args[0])); err == nil {
-			n = v
-		}
-	}
-	if store.CRM() == nil {
-		return store.ReplyText(ctx, mctx, "Arsip mati (crm.db tidak terbuka).")
-	}
-	rows, err := store.CRM().RecentByChat(mctx.Chat.String(), n)
-	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca arsip: %v", err))
-	}
-	if len(rows) == 0 {
-		return store.ReplyText(ctx, mctx, "Belum ada pesan terarsip di chat ini.")
-	}
-	// Terbaru-dulu dari DB → balik kronologis seperti tampilan chat.
-	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
-		rows[i], rows[j] = rows[j], rows[i]
-	}
-	// Resolve LID→PN di-cache per pengirim (bisa sampai 100 baris).
-	labels := make(map[string]string)
-	var sb strings.Builder
-	for i, row := range rows {
-		if i > 0 {
-			sb.WriteString("\n\n")
-		}
-		tipe, preview := "-", "-"
-		if decoded, derr := row.Message(); derr == nil {
-			tipe, preview = store.DescribeMessage(decoded)
-		} else {
-			preview = "(gagal decode)"
-		}
-		fmt.Fprintf(&sb, "`[%02d] #%d | %s`\n%s • %s\n",
-			i+1, row.Rowid, formatCRMTime(row.TS),
-			crmSenderCached(ctx, mctx.Client, row.Sender, labels),
-			tipe)
-		sb.WriteString(crmItalicLine(truncateCRMLine(preview, 150)))
-	}
-	return store.ReplyText(ctx, mctx, sb.String())
 }
 
 // crmSenderName menampilkan identitas pengirim baris arsip: "Bot" untuk
@@ -284,9 +207,7 @@ func crmItalicLine(s string) string {
 
 // formatCRMTime menulis epoch ke "HH:MM:SS" zona aktif bot (BOT_TIMEZONE,
 // via env BOT_TIMEZONE, lihat internal/timex) — konsisten dengan jam
-// penjadwalan .voicecall dan label zona lain di bot. Sebelumnya fungsi ini
-// mengunci Asia/Jakarta (WIB) sehingga arsip .lastchat/.crm/.insp
-// menyimpang saat bot diset WITA/WIT.
+// penjadwalan .voicecall dan label zona lain di bot.
 func formatCRMTime(ts int64) string {
 	if ts <= 0 {
 		return "--:--:--"
@@ -307,10 +228,6 @@ func truncateCRMLine(s string, max int) string {
 }
 
 // crmSendDoc mengupload + mengirim byte sebagai dokumen dengan caption.
-// Varian bytes dari pola sendDlDocument downloader (file-based) — arsip
-// tak pernah menyentuh disk untuk ekspor. Mime WAJIB sesuai isi (json vs
-// xlsx): klien WA menampilkan tipe dari label ini, bukan dari ekstensi
-// nama file — salah label = file xlsx terbaca sebagai JSON.
 func crmSendDoc(ctx context.Context, mctx *store.MessageContext, filename, mime, content, caption string) error {
 	data := []byte(content)
 	uploaded, err := mctx.Client.Upload(ctx, data, whatsmeow.MediaDocument)
@@ -336,229 +253,4 @@ func crmSendDoc(ctx context.Context, mctx *store.MessageContext, filename, mime,
 	store.LogOutgoing(mctx, "document", filename)
 	store.TrackBotMessageID(string(resp.ID), filename)
 	return nil
-}
-
-const runUsage = `Format: .run [#rowid] (atau reply ke bubble JSON .insp / pesan asli)
-Mengirim salinan konten ke chat ini.
-
-Contoh:
-.run (reply bubble JSON hasil .insp)
-.run (reply pesan yang mau diduplikat)
-.run #4825
-
-Catatan: file dokumen hasil .crm/.insp tak bisa dipakai via reply
-(byte-nya tak tersedia di quote) — pakai #rowid untuk itu.`
-
-func handleRun(ctx context.Context, mctx *store.MessageContext) error {
-	if msg := requireOwner(mctx); msg != "" {
-		return store.ReplyText(ctx, mctx, msg)
-	}
-	src, srclabel, err := resolveRunSource(mctx)
-	if err != nil {
-		if err.Error() == "usage" {
-			return store.ReplyText(ctx, mctx, runUsage)
-		}
-		return store.ReplyText(ctx, mctx, err.Error())
-	}
-	out, tipe, err := sanitizeRunMessage(src)
-	if err != nil {
-		return store.ReplyText(ctx, mctx, err.Error())
-	}
-	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, out)
-	if err != nil {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal kirim ulang (%s): %v", tipe, err))
-	}
-	store.LogOutgoing(mctx, "run", tipe)
-	store.TrackBotMessageID(string(resp.ID), "run: "+tipe)
-	return store.ReplyText(ctx, mctx, fmt.Sprintf("Terkirim ulang sebagai %s (dari %s).", tipe, srclabel))
-}
-
-// resolveRunSource menentukan pesan sumber untuk .run, prioritas:
-//  1. "#rowid" → byte exact arsip (paling robust, tanpa parsing JSON).
-//  2. Teks bubble yang di-reply diparse sebagai JSON waE2E.Message —
-//     mencakup reply ke output .insp bubble pendek + tempelan JSON mentah.
-//  3. Arsip via StanzaID reply (reply ke pesan asli).
-func resolveRunSource(mctx *store.MessageContext) (*waE2E.Message, string, error) {
-	if store.CRM() == nil {
-		return nil, "", fmt.Errorf("arsip mati (crm.db tidak terbuka)")
-	}
-	if len(mctx.Args) > 0 {
-		if m := crmRowidRe.FindStringSubmatch(strings.TrimSpace(mctx.Args[0])); m != nil {
-			rowid, _ := strconv.ParseInt(m[1], 10, 64)
-			row, err := store.CRM().LoadByRowid(rowid)
-			if err != nil {
-				return nil, "", fmt.Errorf("rowid #%d tidak ditemukan", rowid)
-			}
-			msg, derr := row.Message()
-			if derr != nil {
-				return nil, "", fmt.Errorf("rowid #%d corrupt: %v", rowid, derr)
-			}
-			return msg, fmt.Sprintf("#%d", rowid), nil
-		}
-	}
-	quoted := store.UnwrapMessage(store.ExtractQuotedMessage(mctx.RawEvt))
-	// Teks quote dicoba parse dulu (reply ke bubble JSON .insp / tempelan
-	// JSON). Gagal/ tak ada body quote (WA sering hanya mengirim StanzaID
-	// tanpa isi quoted) = lanjut ke arsip di bawah, bukan error.
-	if quoted != nil {
-		if txt := quotedTextOf(quoted); strings.TrimSpace(txt) != "" {
-			var jm waE2E.Message
-			if err := protojson.Unmarshal([]byte(strings.TrimSpace(txt)), &jm); err == nil && hasRunContent(&jm) {
-				return &jm, "json", nil
-			}
-		}
-	}
-	quotedID := store.ExtractStanzaID(mctx.RawEvt)
-	if quotedID == "" {
-		return nil, "", fmt.Errorf("usage")
-	}
-	row, err := store.CRM().LoadByID(quotedID, mctx.Chat.String())
-	if err != nil {
-		return nil, "", fmt.Errorf("sumber tak dikenal: bukan JSON valid dan tak ada di arsip — reply ke bubble JSON .insp, pesan aslinya, atau pakai #rowid")
-	}
-	msg, derr := row.Message()
-	if derr != nil {
-		return nil, "", fmt.Errorf("baris arsip corrupt: %v", derr)
-	}
-	// Bubble teks bot sendiri yang memuat JSON (output .insp): jangan
-	// kirim ulang sebagai teks — parse isinya. Hasil parse diserahkan ke
-	// sanitize: konten allowlist terkirim, sisanya (acara/dll) DITOLAK
-	// eksplisit dengan nama tipenya, bukan teks bisu (pelajaran kasus
-	// .run atas JSON acara & view-once).
-	if row.Sender == "bot" {
-		if txt := strings.TrimSpace(quotedTextOf(msg)); strings.HasPrefix(txt, "{") {
-			var jm waE2E.Message
-			if err := protojson.Unmarshal([]byte(txt), &jm); err == nil {
-				return &jm, "json-arsip", nil
-			} else {
-				logfmt.Warn("run: teks bot terlihat seperti JSON tapi gagal parse (%v)\n", err)
-			}
-		}
-	}
-	// File hasil .crm/.insp sendiri tak berguna dikirim ulang — arahkan.
-	if doc := msg.GetDocumentMessage(); doc != nil && row.Sender == "bot" {
-		if fn := doc.GetFileName(); strings.HasPrefix(fn, "crm-") || strings.HasPrefix(fn, "insp-") {
-			return nil, "", fmt.Errorf("itu file hasil .crm/.insp — reply ke bubble JSON-nya, pesan aslinya, atau pakai #rowid")
-		}
-	}
-	return msg, "arsip", nil
-}
-
-// quotedTextOf mengambil teks bubble (conversation / extended-text) untuk
-// dicoba parse sebagai JSON pesan.
-func quotedTextOf(msg *waE2E.Message) string {
-	if msg == nil {
-		return ""
-	}
-	if s := msg.GetConversation(); s != "" {
-		return s
-	}
-	if ext := msg.GetExtendedTextMessage(); ext != nil {
-		return ext.GetText()
-	}
-	return ""
-}
-
-// hasRunContent true bila pesan hasil parse JSON memuat minimal satu field
-// yang dimengerti .run — protojson.Unmarshal("{}") sukses dengan pesan
-// kosong, dan itu harus ditolak (bukan diteruskan membingungkan).
-// Wrapper sekali-lihat/sementara ikut diterima karena sanitizeRunMessage
-// meng-unwrap-nya dulu (UnwrapMessage menangani Ephemeral + ViewOnce);
-// EditedMessage/album-parent sengaja TIDAK (dukungan unwrap tak pasti —
-// biar ditolak eksplisit, itu jujur).
-func hasRunContent(msg *waE2E.Message) bool {
-	if msg == nil {
-		return false
-	}
-	return msg.Conversation != nil ||
-		msg.ExtendedTextMessage != nil ||
-		msg.ImageMessage != nil ||
-		msg.VideoMessage != nil ||
-		msg.AudioMessage != nil ||
-		msg.DocumentMessage != nil ||
-		msg.StickerMessage != nil ||
-		msg.LocationMessage != nil ||
-		msg.ContactMessage != nil ||
-		msg.ContactsArrayMessage != nil ||
-		msg.PollCreationMessage != nil ||
-		msg.EphemeralMessage != nil ||
-		msg.ViewOnceMessage != nil ||
-		msg.ViewOnceMessageV2 != nil ||
-		msg.ViewOnceMessageV2Extension != nil
-}
-
-// sanitizeRunMessage membangun salinan kirim-ulang dari pesan sumber:
-// unwrap ephemeral/viewonce, ambil HANYA field konten (allowlist), buang
-// sisanya. YANG WAJIB DIBUANG: senderKeyDistributionMessage (session key
-// orang lain — dikirim ulang = error/rusak) dan messageContextInfo
-// (stanzaID basi, quote basi, secret lama). Tipe di luar allowlist ditolak
-// eksplisit (protocol/reaction/vote-terenkripsi/event/dll bukan konten
-// yang layak diduplikat).
-func sanitizeRunMessage(src *waE2E.Message) (*waE2E.Message, string, error) {
-	m := store.UnwrapMessage(src)
-	if m == nil {
-		return nil, "", fmt.Errorf("pesan sumber kosong/tak terbaca")
-	}
-	switch {
-	case m.Conversation != nil:
-		return &waE2E.Message{Conversation: m.Conversation}, "teks", nil
-	case m.ExtendedTextMessage != nil:
-		e := proto.Clone(m.ExtendedTextMessage).(*waE2E.ExtendedTextMessage)
-		e.ContextInfo = nil
-		return &waE2E.Message{ExtendedTextMessage: e}, "teks", nil
-	case m.ImageMessage != nil:
-		img := proto.Clone(m.ImageMessage).(*waE2E.ImageMessage)
-		img.ContextInfo = nil
-		return &waE2E.Message{ImageMessage: img}, "gambar", nil
-	case m.VideoMessage != nil:
-		vid := proto.Clone(m.VideoMessage).(*waE2E.VideoMessage)
-		vid.ContextInfo = nil
-		return &waE2E.Message{VideoMessage: vid}, "video", nil
-	case m.AudioMessage != nil:
-		aud := proto.Clone(m.AudioMessage).(*waE2E.AudioMessage)
-		aud.ContextInfo = nil
-		kind := "audio"
-		if aud.GetPTT() {
-			kind = "voice note"
-		}
-		return &waE2E.Message{AudioMessage: aud}, kind, nil
-	case m.DocumentMessage != nil:
-		doc := proto.Clone(m.DocumentMessage).(*waE2E.DocumentMessage)
-		doc.ContextInfo = nil
-		return &waE2E.Message{DocumentMessage: doc}, "dokumen", nil
-	case m.StickerMessage != nil:
-		stk := proto.Clone(m.StickerMessage).(*waE2E.StickerMessage)
-		stk.ContextInfo = nil
-		return &waE2E.Message{StickerMessage: stk}, "stiker", nil
-	case m.LocationMessage != nil:
-		loc := proto.Clone(m.LocationMessage).(*waE2E.LocationMessage)
-		loc.ContextInfo = nil
-		return &waE2E.Message{LocationMessage: loc}, "lokasi", nil
-	case m.ContactMessage != nil:
-		return &waE2E.Message{ContactMessage: &waE2E.ContactMessage{
-			DisplayName: proto.String(m.ContactMessage.GetDisplayName()),
-			Vcard:       proto.String(m.ContactMessage.GetVcard()),
-		}}, "kontak", nil
-	case m.ContactsArrayMessage != nil:
-		return &waE2E.Message{ContactsArrayMessage: &waE2E.ContactsArrayMessage{
-			DisplayName: proto.String(m.ContactsArrayMessage.GetDisplayName()),
-			Contacts:    m.ContactsArrayMessage.GetContacts(),
-		}}, "kontak", nil
-	case m.PollCreationMessage != nil:
-		p := proto.Clone(m.PollCreationMessage).(*waE2E.PollCreationMessage)
-		p.ContextInfo = nil
-		// Secret FRESH (32-byte acak) supaya vote ke pesan baru ini bisa
-		// didekripsi — secret lama milik pesan asal tak berlaku.
-		secret := make([]byte, 32)
-		if _, err := rand.Read(secret); err != nil {
-			return nil, "", fmt.Errorf("gagal siapkan polling: %v", err)
-		}
-		return &waE2E.Message{
-			PollCreationMessage: p,
-			MessageContextInfo:  &waE2E.MessageContextInfo{MessageSecret: secret},
-		}, "polling", nil
-	default:
-		tipe, _ := store.DescribeMessage(m)
-		return nil, "", fmt.Errorf(".run belum mendukung tipe %s (protocol/reaction/vote/event/dll bukan konten duplikat)", tipe)
-	}
 }

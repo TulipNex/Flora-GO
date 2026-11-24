@@ -116,6 +116,60 @@ func (u *UsersDB) UpsertUserIdentity(ctx context.Context, in UserIdentity) (int6
 	if u == nil || u.db == nil {
 		return 0, fmt.Errorf("users.db mati")
 	}
+	now := time.Now().Unix()
+	tx, err := u.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	id, _, err := u.upsertUserIdentityTx(ctx, tx, in, now)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+// UserUpsertResult adalah hasil upsert untuk satu identitas dalam batch.
+type UserUpsertResult struct {
+	ID    int64
+	IsNew bool
+}
+
+// UpsertUserIdentitiesBatch menyimpan/memperbarui banyak identitas user sekaligus
+// dalam satu transaksi SQLite tunggal untuk performa tinggi pada sinkronisasi grup besar.
+func (u *UsersDB) UpsertUserIdentitiesBatch(ctx context.Context, list []UserIdentity) ([]UserUpsertResult, error) {
+	if u == nil || u.db == nil {
+		return nil, fmt.Errorf("users.db mati")
+	}
+	if len(list) == 0 {
+		return nil, nil
+	}
+	now := time.Now().Unix()
+	tx, err := u.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	results := make([]UserUpsertResult, len(list))
+	for i, in := range list {
+		id, isNew, err := u.upsertUserIdentityTx(ctx, tx, in, now)
+		if err != nil {
+			return nil, err
+		}
+		results[i] = UserUpsertResult{ID: id, IsNew: isNew}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+func (u *UsersDB) upsertUserIdentityTx(ctx context.Context, tx *sql.Tx, in UserIdentity, now int64) (int64, bool, error) {
 	// Lengkapi pasangan LID↔PN lewat peta whatsmeow (fail-closed).
 	lid := strings.TrimSpace(in.LID)
 	pn := strings.TrimSpace(in.PN)
@@ -148,13 +202,6 @@ func (u *UsersDB) UpsertUserIdentity(ctx context.Context, in UserIdentity) (int6
 	firstName := strings.TrimSpace(in.FirstName)
 	username := strings.TrimSpace(in.Username)
 	redacted := strings.TrimSpace(in.RedactedPhone)
-	now := time.Now().Unix()
-
-	tx, err := u.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
 
 	// Cari baris yang cocok (LID atau PN atau JID).
 	rows, err := tx.QueryContext(ctx, `
@@ -165,7 +212,7 @@ func (u *UsersDB) UpsertUserIdentity(ctx context.Context, in UserIdentity) (int6
 		   OR (jid <> '' AND jid = ?)
 	`, nullable(lid), nullable(pn), jid)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	type hit struct {
 		id                                                              int64
@@ -177,7 +224,7 @@ func (u *UsersDB) UpsertUserIdentity(ctx context.Context, in UserIdentity) (int6
 		var nl, np sql.NullString
 		if err := rows.Scan(&h.id, &nl, &np, &h.jid, &h.pushname, &h.fullName, &h.firstName, &h.username, &h.redacted); err != nil {
 			rows.Close()
-			return 0, err
+			return 0, false, err
 		}
 		if nl.Valid {
 			h.lid = nl.String
@@ -189,10 +236,10 @@ func (u *UsersDB) UpsertUserIdentity(ctx context.Context, in UserIdentity) (int6
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 
-	// 0 baris → INSERT.
+	// 0 baris → INSERT (baru).
 	if len(hits) == 0 {
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO users (lid, pn, jid, pushname, full_name, first_name, username, redacted_phone,
@@ -200,16 +247,13 @@ func (u *UsersDB) UpsertUserIdentity(ctx context.Context, in UserIdentity) (int6
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 		`, nullable(lid), nullable(pn), jid, pushname, fullName, firstName, username, redacted, now, now, now, now)
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
 		id, err := res.LastInsertId()
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
-		if err := tx.Commit(); err != nil {
-			return 0, err
-		}
-		return id, nil
+		return id, true, nil
 	}
 
 	// Pilih baris yang dipertahankan (id terkecil), merge field dari yang lain.
@@ -278,7 +322,7 @@ func (u *UsersDB) UpsertUserIdentity(ctx context.Context, in UserIdentity) (int6
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, h.id); err != nil {
-			return 0, err
+			return 0, false, err
 		}
 	}
 
@@ -291,12 +335,9 @@ func (u *UsersDB) UpsertUserIdentity(ctx context.Context, in UserIdentity) (int6
 		WHERE id = ?
 	`, nullable(keep.lid), nullable(keep.pn), keep.jid, keep.pushname, keep.fullName,
 		keep.firstName, keep.username, keep.redacted, now, now, keep.id); err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return keep.id, nil
+	return keep.id, false, nil
 }
 
 // GetUser mengambil satu user via id.

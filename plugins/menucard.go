@@ -106,6 +106,32 @@ func handleFaviconCmd(ctx context.Context, mctx *store.MessageContext) error {
 // eksplisit (reset → URL → bantuan) dulu, baru gambar (kirim/reply), lalu
 // status. Argumen menang atas gambar supaya reply gambar + ".thumbnail reset"
 // tidak malah menyimpan gambar.
+func menuAssetUsage(a menuAsset) string {
+	return Help(HelpSpec{
+		Title: "Gambar kartu menu",
+		Cmd:   a.label,
+		Formats: []string{
+			fmt.Sprintf(".%s <reply>", a.kind),
+			fmt.Sprintf(".%s <url1,url2>", a.kind),
+			fmt.Sprintf(".%s reset", a.kind),
+		},
+		Note: "Blob menang atas URL; `reset` kembali ke `.env`.",
+	})
+}
+
+func formatMenuAssetResult(label, sumber string, kb int, width, height int) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "*%s*\n\n", label)
+	fmt.Fprintf(&sb, "```- Sumber  : %s\n", sumber)
+	fmt.Fprintf(&sb, "- Ukuran  : %d KB\n", kb)
+	if width > 0 && height > 0 {
+		fmt.Fprintf(&sb, "- Resolusi: %dx%d```", width, height)
+	} else {
+		sb.WriteString("- Resolusi: -```")
+	}
+	return sb.String()
+}
+
 func handleMenuAssetCmd(ctx context.Context, mctx *store.MessageContext, a menuAsset) error {
 	arg := ""
 	if len(mctx.Args) > 0 {
@@ -147,10 +173,6 @@ func handleMenuAssetCmd(ctx context.Context, mctx *store.MessageContext, a menuA
 			return store.ReplyText(ctx, mctx, fmt.Sprintf("Link bukan gambar: %s. Nilai lama dipertahankan.",
 				strings.Join(rejected, "; ")))
 		}
-		note := ""
-		if uncertain > 0 {
-			note = fmt.Sprintf(" (catatan: %d link tidak menjawab HEAD, belum tentu gambar — cek via .menu)", uncertain)
-		}
 		// Gambar tersimpan dihapus supaya URL baru benar-benar dipakai.
 		if err := a.setBlob(ctx, nil); err != nil {
 			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal bersihkan gambar lama: %v", err))
@@ -158,15 +180,13 @@ func handleMenuAssetCmd(ctx context.Context, mctx *store.MessageContext, a menuA
 		if err := a.setURL(ctx, strings.Join(sources, ",")); err != nil {
 			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal simpan %s: %v", strings.ToLower(a.label), err))
 		}
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("%s diganti.%s Cek via .menu", a.label, note))
+		return store.ReplyText(ctx, mctx, formatMenuAssetResult(a.label, "url", 0, 0, 0))
 	}
 
 	// Argumen lain yang bukan URL/reset: tunjukkan cara pakai (fail-closed,
 	// nilai lama tidak disentuh).
 	if arg != "" {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf(
-			"Kirim gambar dengan caption .%s, atau .%s <link> (contoh: https://contoh/gambar.jpg), atau .%s reset",
-			a.kind, a.kind, a.kind))
+		return store.ReplyText(ctx, mctx, menuAssetUsage(a))
 	}
 
 	// Jalur 3: gambar dikirim langsung / di-reply. Disimpan apa adanya di
@@ -191,31 +211,26 @@ func handleMenuAssetCmd(ctx context.Context, mctx *store.MessageContext, a menuA
 		if err := a.setURL(ctx, ""); err != nil {
 			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal bersihkan URL lama: %v", err))
 		}
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("%s disimpan dari gambar (%dx%d, %d KB). Cek via .menu",
-			a.label, cfg.Width, cfg.Height, len(data)/1024))
+		return store.ReplyText(ctx, mctx, formatMenuAssetResult(a.label, "gambar", len(data)/1024, cfg.Width, cfg.Height))
 	}
 
-	// Jalur 4: tanpa argumen & tanpa gambar = tampilkan nilai aktif + sumber.
+	// Jalur 4: tanpa argumen & tanpa gambar = tampilkan nilai aktif + sumber atau bantuan.
 	blob, err := a.getBlob(ctx)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca %s: %v", strings.ToLower(a.label), err))
 	}
 	if len(blob) > 0 {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf(
-			"%s aktif: gambar tersimpan (%d KB). Ganti: kirim gambar dengan caption .%s, atau .%s <link>. Reset: .%s reset",
-			a.label, len(blob)/1024, a.kind, a.kind, a.kind))
+		cfg, _, _ := image.DecodeConfig(bytes.NewReader(blob))
+		return store.ReplyText(ctx, mctx, formatMenuAssetResult(a.label, "gambar", len(blob)/1024, cfg.Width, cfg.Height))
 	}
 	current, err := a.getURL(ctx)
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca %s: %v", strings.ToLower(a.label), err))
 	}
 	if current != "" {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("%s aktif: %s (kustom). Reset: .%s reset", a.label, current, a.kind))
+		return store.ReplyText(ctx, mctx, formatMenuAssetResult(a.label, "url", 0, 0, 0))
 	}
-	if a.fallback == "" {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("%s aktif: default otomatis. Set: kirim gambar dengan caption .%s atau .%s <link>", a.label, a.kind, a.kind))
-	}
-	return store.ReplyText(ctx, mctx, fmt.Sprintf("%s aktif: %s (.env). Set: kirim gambar dengan caption .%s atau .%s <link>", a.label, a.fallback, a.kind, a.kind))
+	return store.ReplyText(ctx, mctx, menuAssetUsage(a))
 }
 
 // isHTTPURL true kalau s adalah URL http(s) (dipakai untuk membedakan

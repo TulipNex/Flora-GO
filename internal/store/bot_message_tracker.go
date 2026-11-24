@@ -1,6 +1,10 @@
 package store
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/polymorfa/hypermeow/proto/waE2E"
+)
 
 // botMessages menyimpan ID pesan yang baru-baru ini dikirim bot BESERTA
 // teks isinya, dipakai untuk dua keperluan:
@@ -44,6 +48,16 @@ func TrackBotMessageID(id, text string) {
 		oldest := botMessageOrder[0]
 		botMessageOrder = botMessageOrder[1:]
 		delete(botMessages, oldest)
+	}
+}
+
+// TrackBotMedia mencatat ID pesan keluar ke pelacak pesan BESERTA deskriptor medianya
+// ke MediaCache (bila pesan memuat media), sehingga jika user me-reply media buatan bot
+// dengan command (mis. .sticker, .tomp3), bot tetap memiliki DirectPath & MediaKey-nya.
+func TrackBotMedia(id string, msg *waE2E.Message, text string) {
+	TrackBotMessageID(id, text)
+	if msg != nil {
+		CacheOutgoingMedia(id, msg)
 	}
 }
 

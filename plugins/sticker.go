@@ -48,20 +48,20 @@ func RegisterSticker(r *Registry) {
 			}
 			if err != nil {
 				logfmt.Warn("sticker: download gagal (%v)\n", err)
-				return store.ReplyText(ctx, mctx, ErrMsg("Stiker", "Gagal unduh media, coba lagi sebentar."))
+				return store.ReplyText(ctx, mctx, "Gagal mengunduh media, coba lagi sebentar.")
 			}
 
 			webpBytes, err := convertToStickerWebp(ctx, mediaBytes, isVideo)
 			if err != nil {
 				logfmt.Warn("sticker: convert gagal (%v)\n", err)
-				return store.ReplyText(ctx, mctx, ErrMsg("Stiker", "Gagal convert ke stiker, coba file lain."))
+				return store.ReplyText(ctx, mctx, "Gagal convert ke stiker, coba file lain.")
 			}
 
 			author := config.ResolveStickerAuthor(mctx.SenderPushName())
 			webpBytes, err = store.WriteStickerExif(webpBytes, config.ResolveStickerPackname(), author)
 			if err != nil {
 				logfmt.Warn("sticker: exif gagal (%v)\n", err)
-				return store.ReplyText(ctx, mctx, ErrMsg("Stiker", "Gagal siapkan stiker, coba lagi."))
+				return store.ReplyText(ctx, mctx, "Gagal siapkan stiker, coba lagi.")
 			}
 
 			label := "image->sticker"
@@ -70,7 +70,7 @@ func RegisterSticker(r *Registry) {
 			}
 			if err := sendStickerWebp(ctx, mctx, webpBytes, "sticker", label); err != nil {
 				logfmt.Warn("sticker: kirim gagal (%v)\n", err)
-				return store.ReplyText(ctx, mctx, ErrMsg("Stiker", "Gagal kirim stiker, coba lagi."))
+				return store.ReplyText(ctx, mctx, "Gagal kirim stiker, coba lagi.")
 			}
 			return nil
 		},
@@ -154,7 +154,7 @@ func sendStickerWebp(ctx context.Context, mctx *store.MessageContext, webp []byt
 	// latar hitam solid alih-alih transparan, walau file webp-nya sendiri
 	// sudah benar. Canvas selalu 512x512 oleh convertToStickerWebp (pad
 	// transparan), jadi tidak perlu dibaca dinamis dari file.
-	_, err = mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{
+	msg := &waE2E.Message{
 		StickerMessage: &waE2E.StickerMessage{
 			URL:           proto.String(uploaded.URL),
 			DirectPath:    proto.String(uploaded.DirectPath),
@@ -166,12 +166,14 @@ func sendStickerWebp(ctx context.Context, mctx *store.MessageContext, webp []byt
 			Width:         proto.Uint32(512),
 			Height:        proto.Uint32(512),
 		},
-	})
+	}
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, msg)
 	if err != nil {
 		return fmt.Errorf("kirim: %w", err)
 	}
 
 	store.LogOutgoing(mctx, logType, logLabel)
+	store.TrackBotMedia(string(resp.ID), msg, logLabel)
 	return nil
 }
 

@@ -201,3 +201,27 @@ func TestCountShort(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestMemlogUsageFormat(t *testing.T) {
+	u := memlogUsage()
+	if !strings.Contains(u, "*Riwayat memori*") {
+		t.Fatalf("usage harus memuat judul bantuan baku: %q", u)
+	}
+	if !strings.Contains(u, "`Memlog`\nFormat :") {
+		t.Fatalf("usage harus memuat blok format baku: %q", u)
+	}
+	if !strings.Contains(u, "now      : memori terkini") {
+		t.Fatalf("usage harus memuat parameter terdefinisi: %q", u)
+	}
+}
+
+func TestMemlogSubBlockFormat(t *testing.T) {
+	got := memlogSubBlock("RSS", [][2]string{
+		{"Terkini", "180 MB"},
+		{"Puncak", "210 MB"},
+	})
+	want := "- *RSS*\n```  - Terkini : 180 MB\n  - Puncak  : 210 MB```"
+	if got != want {
+		t.Fatalf("memlogSubBlock mismatch.\nGot:\n%s\nWant:\n%s", got, want)
+	}
+}

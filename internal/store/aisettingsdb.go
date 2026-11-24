@@ -62,7 +62,7 @@ func InitAISettingsDB() error {
 		name     TEXT PRIMARY KEY,
 		endpoint TEXT NOT NULL DEFAULT '',
 		pos      INTEGER NOT NULL DEFAULT 0
-	)`); err != nil {
+	) WITHOUT ROWID`); err != nil {
 		return fmt.Errorf("gagal membuat tabel ai_providers: %w", err)
 	}
 	if _, err := aiDB.db.Exec(`CREATE TABLE IF NOT EXISTS ai_models (
@@ -70,7 +70,7 @@ func InitAISettingsDB() error {
 		model    TEXT NOT NULL,
 		pos      INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY (provider, model)
-	)`); err != nil {
+	) WITHOUT ROWID`); err != nil {
 		return fmt.Errorf("gagal membuat tabel ai_models: %w", err)
 	}
 	if _, err := aiDB.db.Exec(`ALTER TABLE ai_settings ADD COLUMN active_model TEXT NOT NULL DEFAULT ''`); err != nil && !isDuplicateColumnError(err) {

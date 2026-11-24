@@ -70,21 +70,43 @@ func handleAgentCommand(ctx context.Context, mctx *store.MessageContext) error {
 
 // agentUsage adalah teks bantuan untuk ".agent" polos / subcommand salah.
 func agentUsage() string {
-	return "Flora Agent:\n" +
-		".agent model [nomor/nama]\n" +
-		".agent model add <nama>\n" +
-		".agent model del <nomor/nama>[,<nomor/nama>…]\n" +
-		".agent provider [nomor/nama]\n" +
-		".agent provider add <nama> <endpoint> | del <nama>\n" +
-		".agent status\n" +
-		".agent tools\n" +
-		".agent trust @user\n" +
-		".agent untrust @user\n" +
-		".agent trustlist\n" +
-		".agent reset\n" +
-		".agent reset -memory [@user/nomor]\n" +
-		".agent voice [on/off]\n" +
-		"Ngobrol: sebut nama Flora / reply pesannya."
+	var sb strings.Builder
+	sb.WriteString("*Flora Agent*\n\n")
+
+	sb.WriteString("`model`\n")
+	sb.WriteString("- .agent model [nomor/nama]\n")
+	sb.WriteString("- .agent model add <nama>\n")
+	sb.WriteString("- .agent model del <nomor/nama>\n")
+	sb.WriteString("> bisa menghapus multi model dengan pemisah tanda koma.\n\n")
+
+	sb.WriteString("`provider`\n")
+	sb.WriteString("- .agent provider [nomor/nama]\n")
+	sb.WriteString("- .agent provider add <nama> <url>\n")
+	sb.WriteString("- .agent provider del <nama>\n\n")
+
+	sb.WriteString("`trusted`\n")
+	sb.WriteString("- .agent trust @user\n")
+	sb.WriteString("- .agent untrust @user\n")
+	sb.WriteString("- .agent trustlist\n\n")
+
+	sb.WriteString("`memory`\n")
+	sb.WriteString("- .agent reset\n")
+	sb.WriteString("- .agent reset -memory [@user/nomor]\n\n")
+
+	sb.WriteString("`other`\n")
+	sb.WriteString("- .agent status\n")
+	sb.WriteString("- .agent tools\n")
+	sb.WriteString("- .agent voice [on/off]\n\n")
+
+	sb.WriteString("```model    : list/set model\n")
+	sb.WriteString("provider : list/set prov.\n")
+	sb.WriteString("status   : status agent\n")
+	sb.WriteString("tools    : list tool\n")
+	sb.WriteString("trust    : izin akses\n")
+	sb.WriteString("reset    : hapus histori\n")
+	sb.WriteString("voice    : mode voice```")
+
+	return sb.String()
 }
 
 // handleResetSubcommand menangani ".agent reset" (reset histori sesi
@@ -103,7 +125,7 @@ func handleResetSubcommand(ctx context.Context, mctx *store.MessageContext) erro
 		return handleResetMemory(ctx, mctx)
 	}
 	ai.GlobalSession.Reset(sessionKey)
-	return store.ReplyText(ctx, mctx, "Oke, sesi percakapan sudah direset.")
+	return store.ReplyText(ctx, mctx, "Sesi percakapan sudah direset.")
 }
 
 // handleResetMemory menangani ".agent reset -memory [target]" (KHUSUS
@@ -323,6 +345,21 @@ func modelDeleteSummary(res ai.DelModelsResult) string {
 	return sb.String()
 }
 
+func voiceHelp(on bool) string {
+	status := "nonaktif"
+	if on {
+		status = "aktif"
+	}
+	return Help(HelpSpec{
+		Title:   "Mode suara",
+		Status:  status,
+		Cmd:     "Set",
+		Formats: []string{".agent voice <state>"},
+		Contoh:  ".agent voice off",
+		Note:    "Balasan Flora dikirim sebagai voice note.",
+	})
+}
+
 // handleVoiceSubcommand menangani ".agent voice on/off" (mode suara Flora:
 // balasan AI dikirim sebagai SATU voice note, bukan teks) dan
 // ".agent voice" polos (tampilkan status). KHUSUS owner — tiap balasan
@@ -334,21 +371,21 @@ func handleVoiceSubcommand(ctx context.Context, mctx *store.MessageContext) erro
 	arg := strings.ToLower(strings.TrimSpace(strings.Join(mctx.Args[1:], " ")))
 
 	if arg == "" {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Mode suara Flora: *%s*\n\nPakai `.agent voice on` / `.agent voice off` untuk mengubah.", voiceOnOffText(ctx)))
+		return store.ReplyText(ctx, mctx, voiceHelp(ai.IsVoiceReplyOn(ctx)))
 	}
 	switch arg {
 	case "on", "aktif", "enable", "nyala":
 		if err := ai.SetVoiceReply(ctx, true); err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal menyalakan mode suara: %v", err))
+			return store.ReplyText(ctx, mctx, Fail("Gagal menyalakan mode suara", err))
 		}
-		return store.ReplyText(ctx, mctx, "Mode suara Flora: *ON* — balasan Flora dikirim sebagai voice note.")
+		return store.ReplyText(ctx, mctx, voiceHelp(true))
 	case "off", "mati", "disable", "padam":
 		if err := ai.SetVoiceReply(ctx, false); err != nil {
-			return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal mematikan mode suara: %v", err))
+			return store.ReplyText(ctx, mctx, Fail("Gagal mematikan mode suara", err))
 		}
-		return store.ReplyText(ctx, mctx, "Mode suara Flora: *OFF* — balasan Flora dikirim sebagai teks seperti biasa.")
+		return store.ReplyText(ctx, mctx, voiceHelp(false))
 	default:
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Argumen tidak dikenal. Pakai `.agent voice on` / `.agent voice off`.\nStatus sekarang: *%s*", voiceOnOffText(ctx)))
+		return store.ReplyText(ctx, mctx, voiceHelp(ai.IsVoiceReplyOn(ctx)))
 	}
 }
 
@@ -373,21 +410,30 @@ func handleStatusSubcommand(ctx context.Context, mctx *store.MessageContext) err
 	if err != nil {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("Gagal baca status lock: %v", err))
 	}
-	lockText := "aktif (trigger natural menyala)"
+	lockStatus := "tidak terkunci"
 	if locked {
-		lockText = "TERKUNCI (trigger natural mati)"
+		lockStatus = "terkunci"
 	}
 
 	sessionKey := ai.BuildSessionKey(mctx.IsGroup(), mctx.Chat.String(), mctx.Sender.String())
-	sessionText := "idle (sapa Flora untuk mulai)"
+	sessionText := "idle"
 	if ai.GlobalSession.HasActive(sessionKey) {
 		sessionText = "aktif"
 	}
 
-	return store.ReplyText(ctx, mctx, fmt.Sprintf(
-		"Status Flora:\n- Lock: %s\n- Provider: %s\n- Model: %s\n- Voice: %s\n- Sesi chat ini: %s",
-		lockText, ai.GetActiveProviderName(ctx), ai.GetActiveModelName(ctx), voiceOnOffText(ctx), sessionText,
-	))
+	voiceStatus := "nonaktif"
+	if ai.IsVoiceReplyOn(ctx) {
+		voiceStatus = "aktif"
+	}
+
+	body := Title("Status Flora") + "\n\n" + Code(
+		"- Lock : "+lockStatus,
+		"- Provider : "+ai.GetActiveProviderName(ctx),
+		"- Model : "+ai.GetActiveModelName(ctx),
+		"- Voice : "+voiceStatus,
+		"- Sesi chat ini : "+sessionText,
+	)
+	return store.ReplyText(ctx, mctx, body)
 }
 
 // agentToolOrder adalah urutan kurasi tampil ".agent tools", dikelompokkan
@@ -416,6 +462,7 @@ var agentToolCategory = map[string]string{
 	"group_close": "Grup (di dalam grup)", "group_open": "Grup (di dalam grup)",
 	"make_call": "Telepon & Media", "make_sticker": "Telepon & Media", "buat_excel": "Telepon & Media",
 	"bot_mode": "Sistem", "system_info": "Sistem",
+	"web_search": "Pencarian",
 }
 
 // agentToolTrusted menandai tool yang bisa dipakai user terpercaya
@@ -426,12 +473,14 @@ var agentToolTrusted = map[string]bool{
 	"set_group_name": true, "tag_all": true, "group_link": true,
 	"group_close": true, "group_open": true,
 	"make_sticker": true, "buat_excel": true, "system_info": true,
+	"web_search": true,
 }
 
 // agentToolExample adalah contoh kalimat natural pemicu tiap tool (tool
 // dipanggil model dari obrolan biasa, bukan dari command). Tool yang belum
 // punya entri tampil dengan teks fallback — lihat handleToolsSubcommand.
 var agentToolExample = map[string]string{
+	"web_search":      "Flora, cari berita tentang gempa hari ini",
 	"catat_keuangan":  "Flora, catat bensin 50rb dari rekening",
 	"baca_keuangan":   "Flora, tampilkan 10 pengeluaran terakhirku",
 	"cek_saldo":       "Flora, saldo kas berapa?",
@@ -486,8 +535,8 @@ func handleToolsSubcommand(ctx context.Context, mctx *store.MessageContext) erro
 	ordered = append(ordered, rest...)
 
 	var sb strings.Builder
-	sb.WriteString("Kemampuan Flora via ngobrol (bukan diketik sebagai command).\n" +
-		"Bisa dipakai owner; bertanda Ⓣ juga bisa dipakai user terpercaya.")
+	sb.WriteString(Title("Kemampuan Flora") + "\n\n")
+	sb.WriteString("Tool dipanggil lewat obrolan, bukan command. Tanda `Ⓣ` bisa dipakai user terpercaya.")
 	lastCat := ""
 	for _, name := range ordered {
 		cat, ok := agentToolCategory[name]
@@ -495,21 +544,18 @@ func handleToolsSubcommand(ctx context.Context, mctx *store.MessageContext) erro
 			cat = "Lainnya"
 		}
 		if cat != lastCat {
-			sb.WriteString("\n\n" + cat + ":")
-			if strings.HasPrefix(cat, "Grup") {
-				sb.WriteString(" (Ⓣ perlu jadi admin)")
-			}
+			sb.WriteString("\n\n`" + cat + "`")
 			lastCat = cat
 		}
-		display := name
+		display := "*" + name + "*"
 		if agentToolTrusted[name] {
-			display += " Ⓣ"
+			display = "*" + name + "* Ⓣ"
 		}
 		example, ok := agentToolExample[name]
 		if !ok {
-			example = "(contoh menyusul)"
+			example = "Flora, " + name
 		}
-		fmt.Fprintf(&sb, "\n• %s\n> %s", display, example)
+		fmt.Fprintf(&sb, "\n- %s : \n> %s", display, example)
 	}
 	return store.ReplyText(ctx, mctx, strings.TrimRight(sb.String(), "\n"))
 }

@@ -826,10 +826,27 @@ func RegisterConvert(r *Registry) {
 	})
 }
 
+func convertHelp() string {
+	return Help(HelpSpec{
+		Title:   "Konversi media",
+		Cmd:     "Convert",
+		Formats: []string{".convert <reply>"},
+		Params: []string{
+			"gambar   : jpg, png, webp",
+			"audio    : mp3, ogg",
+			"video    : mp4",
+			"dokumen  : pdf",
+		},
+	})
+}
+
 func handleConvert(ctx context.Context, mctx *store.MessageContext) error {
 	target := convertResolveMediaTarget(mctx)
 	if target == nil {
-		return store.ReplyText(ctx, mctx, "`Media Diperlukan`\nkirim atau balas media terlebih dahulu, lalu ketik .convert")
+		if len(mctx.Args) == 0 {
+			return store.ReplyText(ctx, mctx, convertHelp())
+		}
+		return store.ReplyText(ctx, mctx, "Kirim atau balas media terlebih dahulu, lalu ketik .convert.")
 	}
 
 	mime := strings.ToLower(target.Mime)
@@ -840,16 +857,16 @@ func handleConvert(ctx context.Context, mctx *store.MessageContext) error {
 			strings.HasPrefix(mime, "audio/") ||
 			strings.HasPrefix(mime, "video/")
 		if !ok {
-			return store.ReplyText(ctx, mctx, "`Format Tidak Didukung`\nkirim gambar, dokumen, audio, atau video.")
+			return store.ReplyText(ctx, mctx, "Format tidak didukung, kirim gambar, dokumen, audio, atau video.")
 		}
 	}
 
 	buffer, err := target.Download(ctx)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, "`Unduhan Gagal`\n"+err.Error())
+		return store.ReplyText(ctx, mctx, Fail("Unduhan gagal", err))
 	}
 	if len(buffer) == 0 {
-		return store.ReplyText(ctx, mctx, "`Unduhan Gagal`\nmedia sumber kosong atau tidak dapat diunduh.")
+		return store.ReplyText(ctx, mctx, "Media sumber kosong atau tidak dapat diunduh.")
 	}
 	if len(buffer) > convertMaxInputBytes {
 		return store.ReplyText(ctx, mctx, fmt.Sprintf("File %.0f MB melebihi batas %d MB.", float64(len(buffer))/(1<<20), convertMaxInputBytes/(1<<20)))
@@ -864,7 +881,7 @@ func handleConvert(ctx context.Context, mctx *store.MessageContext) error {
 		inputExt = convertExtensionFromMime(detected)
 	}
 	if inputExt == "" {
-		return store.ReplyText(ctx, mctx, "`Format Tidak Dikenali`\ngagal membaca format media sumber.")
+		return store.ReplyText(ctx, mctx, "Gagal membaca format media sumber.")
 	}
 
 	avail, err := convertGetTargets(ctx, inputExt)
@@ -949,7 +966,7 @@ func convertSendDocument(ctx context.Context, mctx *store.MessageContext, data [
 	if err != nil {
 		return fmt.Errorf("gagal upload dokumen: %v", err)
 	}
-	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{
+	msg := &waE2E.Message{
 		DocumentMessage: &waE2E.DocumentMessage{
 			URL:           proto.String(uploaded.URL),
 			DirectPath:    proto.String(uploaded.DirectPath),
@@ -961,12 +978,13 @@ func convertSendDocument(ctx context.Context, mctx *store.MessageContext, data [
 			FileName:      proto.String(filename),
 			Caption:       proto.String(caption),
 		},
-	})
+	}
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, msg)
 	if err != nil {
 		return fmt.Errorf("gagal kirim dokumen: %v", err)
 	}
 	store.LogOutgoing(mctx, "convert-document", filename)
-	store.TrackBotMessageID(resp.ID, filename)
+	store.TrackBotMedia(string(resp.ID), msg, filename)
 	return nil
 }
 

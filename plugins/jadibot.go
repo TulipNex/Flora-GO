@@ -55,6 +55,18 @@ func RegisterJadibot(r *Registry) {
 	})
 }
 
+var jadibotUsage = Help(HelpSpec{
+	Title: "Bot tambahan (clone)",
+	Cmd:   "Jadibot",
+	Formats: []string{
+		".jadibot qr <nomor>",
+		".jadibot list",
+		".jadibot start <nomor>",
+		".jadibot stop <nomor>",
+		".jadibot hapus <nomor>",
+	},
+})
+
 func handleJadibot(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireOwner(mctx); msg != "" {
 		return store.ReplyText(ctx, mctx, msg)
@@ -63,7 +75,7 @@ func handleJadibot(ctx context.Context, mctx *store.MessageContext) error {
 		return store.ReplyText(ctx, mctx, "Perintah ini hanya tersedia di bot utama.")
 	}
 	if len(mctx.Args) == 0 {
-		return store.ReplyText(ctx, mctx, "Pakai: .jadibot qr <nomor> | .jadibot list | .jadibot stop <nomor> | .jadibot start <nomor> | .jadibot hapus <nomor>")
+		return store.ReplyText(ctx, mctx, jadibotUsage)
 	}
 	switch strings.ToLower(strings.TrimSpace(mctx.Args[0])) {
 	case "qr":
@@ -77,7 +89,7 @@ func handleJadibot(ctx context.Context, mctx *store.MessageContext) error {
 	case "hapus":
 		return handleJadibotDrop(ctx, mctx)
 	default:
-		return store.ReplyText(ctx, mctx, "Pakai: .jadibot qr <nomor> | .jadibot list | .jadibot stop <nomor> | .jadibot start <nomor> | .jadibot hapus <nomor>")
+		return store.ReplyText(ctx, mctx, jadibotUsage)
 	}
 }
 
@@ -115,18 +127,18 @@ func handleJadibotList(ctx context.Context, mctx *store.MessageContext) error {
 	var sb strings.Builder
 	sb.WriteString("*Daftar Clone*\n\n")
 	for _, e := range entries {
-		status := "mati"
+		status := "nonaktif"
 		if c := store.CloneClient(e.Phone); c != nil {
 			switch {
 			case c.IsConnected() && c.Store.ID != nil:
-				status = "online"
+				status = "aktif"
 			case c.Store.ID == nil:
 				status = "menunggu pairing"
 			}
 		} else if e.Status == store.CloneStopped {
-			status = "mati (stopped)"
+			status = "nonaktif"
 		}
-		fmt.Fprintf(&sb, "• %s — %s\n", e.Phone, status)
+		fmt.Fprintf(&sb, "- %s : %s\n", e.Phone, status)
 	}
 	return store.ReplyText(ctx, mctx, sb.String())
 }

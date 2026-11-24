@@ -24,7 +24,7 @@ func TestIDReport(t *testing.T) {
 	ctx := context.Background()
 	// Tanpa client: PN tetap dikenali langsung, LID tak bisa resolve.
 	out := idReport(ctx, nil, "Input", types.NewJID("6285324023198", types.DefaultUserServer), types.JID{})
-	for _, want := range []string{"*Identitas Input*", "PN      : 6285324023198", "Kanonik : 6285324023198"} {
+	for _, want := range []string{"*Identitas Input*", "- PN : 6285324023198", "- Kanonik : 6285324023198"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report tidak memuat %q:\n%s", want, out)
 		}

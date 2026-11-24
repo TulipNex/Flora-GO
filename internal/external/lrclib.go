@@ -37,6 +37,10 @@ func (s LrclibSong) Synced() string { return strings.TrimSpace(s.SyncedLyrics) }
 
 // SearchLrclib mencari lagu + lirik via lrclib.net (port internet-lrc.js).
 func SearchLrclib(ctx context.Context, query string, limit int) ([]LrclibSong, error) {
+	if songs, err := FloraSearchLyrics(ctx, query, limit, "all"); err == nil && len(songs) > 0 {
+		return songs, nil
+	}
+
 	const engine = "lrclib"
 	query = strings.TrimSpace(query)
 	if query == "" {

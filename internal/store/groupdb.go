@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
@@ -12,7 +13,13 @@ import (
 // Terpisah dari data/session.db (punya whatsmeow) supaya tidak saling
 // mengganggu — file ini sepenuhnya milik bot sendiri.
 type GroupDB struct {
-	db *sql.DB
+	db           *sql.DB
+	cacheMu      sync.RWMutex
+	cacheLoaded  bool
+	botMode      string
+	bannedUsers  map[string]string // jid -> user_part
+	trustedUsers map[string]string // jid -> user_part
+	bannedGroups map[string]struct{}
 }
 
 // groupDB adalah instance global, diisi sekali lewat InitGroupDB di main.go,
@@ -27,8 +34,17 @@ func InitGroupDB(path string) error {
 		return err
 	}
 
-	groupDB = &GroupDB{db: db}
+	groupDB = newGroupDB(db)
 	return nil
+}
+
+func newGroupDB(db *sql.DB) *GroupDB {
+	return &GroupDB{
+		db:           db,
+		bannedUsers:  make(map[string]string),
+		trustedUsers: make(map[string]string),
+		bannedGroups: make(map[string]struct{}),
+	}
 }
 
 // openGroupDBFile membuka file SQLite + memastikan schema. Dipakai InitGroupDB
@@ -47,34 +63,34 @@ func openGroupDBFile(path string) (*sql.DB, error) {
 		name        TEXT NOT NULL DEFAULT '',
 		description TEXT NOT NULL DEFAULT '',
 		updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-	);
+	) WITHOUT ROWID;
 	CREATE TABLE IF NOT EXISTS banned_users (
 		user_jid   TEXT PRIMARY KEY,
 		user_part  TEXT NOT NULL DEFAULT '',
 		created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-	);
+	) WITHOUT ROWID;
 	CREATE TABLE IF NOT EXISTS banned_groups (
 		chat_jid   TEXT PRIMARY KEY,
 		created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-	);
+	) WITHOUT ROWID;
 	CREATE TABLE IF NOT EXISTS bot_settings (
 		key   TEXT PRIMARY KEY,
 		value TEXT NOT NULL DEFAULT ''
-	);
+	) WITHOUT ROWID;
 	CREATE TABLE IF NOT EXISTS group_moderation (
 		chat_jid   TEXT PRIMARY KEY,
 		antilink   INTEGER NOT NULL DEFAULT 0,
 		antistatus INTEGER NOT NULL DEFAULT 0,
 		invite_code TEXT NOT NULL DEFAULT '',
 		updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-	);
+	) WITHOUT ROWID;
 	CREATE TABLE IF NOT EXISTS user_warnings (
 		chat_jid   TEXT NOT NULL,
 		user_jid   TEXT NOT NULL,
 		warn_count INTEGER NOT NULL DEFAULT 0,
 		updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
 		PRIMARY KEY (chat_jid, user_jid)
-	);
+	) WITHOUT ROWID;
 	CREATE TABLE IF NOT EXISTS group_greetings (
 		chat_jid    TEXT PRIMARY KEY,
 		welcome     INTEGER NOT NULL DEFAULT 1,
@@ -82,7 +98,7 @@ func openGroupDBFile(path string) (*sql.DB, error) {
 		welcome_msg TEXT NOT NULL DEFAULT '',
 		bye_msg     TEXT NOT NULL DEFAULT '',
 		updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-	);
+	) WITHOUT ROWID;
 	CREATE TABLE IF NOT EXISTS scheduled_calls (
 		id           INTEGER PRIMARY KEY AUTOINCREMENT,
 		target_phone TEXT NOT NULL,
@@ -106,17 +122,17 @@ func openGroupDBFile(path string) (*sql.DB, error) {
 		chat_jid   TEXT PRIMARY KEY,
 		enabled    INTEGER NOT NULL DEFAULT 0,
 		updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-	);
+	) WITHOUT ROWID;
 	CREATE TABLE IF NOT EXISTS trusted_users (
 		user_jid   TEXT PRIMARY KEY,
 		user_part  TEXT NOT NULL DEFAULT '',
 		created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-	);
+	) WITHOUT ROWID;
 	CREATE TABLE IF NOT EXISTS clones (
 		phone      TEXT PRIMARY KEY,
 		status     TEXT NOT NULL DEFAULT 'active',
 		created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-	);
+	) WITHOUT ROWID;
 	CREATE TABLE IF NOT EXISTS group_members (
 		chat_jid      TEXT NOT NULL,
 		user_id       INTEGER NOT NULL,
@@ -173,6 +189,12 @@ func Groups() *GroupDB {
 	if groupDB == nil {
 		panic("store.Groups() dipanggil sebelum store.InitGroupDB() — cek urutan di main.go")
 	}
+	return groupDB
+}
+
+// GroupsSafe mengembalikan instance GroupDB global, atau nil bila belum diinisialisasi
+// (tanpa panic, fail-soft untuk jalur opsional/fallback seperti resolver identitas).
+func GroupsSafe() *GroupDB {
 	return groupDB
 }
 

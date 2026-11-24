@@ -11,35 +11,54 @@ import (
 	"time"
 )
 
-// FetchTikTok mengambil media TikTok via rantai: faa → tikwm → tiktokdl →
-// musically. FAA utama (SD ringan, hemat CPU); sisanya fallback.
-// Port dari tiktok.js + tikwm.js + tiktokdl.js + musically.js.
+// resolveTikTokURL mengikuti redirect shortlink (vt.tiktok.com / vm.tiktok.com)
+// ke URL lengkap canonical sebelum dikirim ke scraper/API.
+func resolveTikTokURL(ctx context.Context, u string) string {
+	if !strings.Contains(u, "vt.tiktok.com") && !strings.Contains(u, "vm.tiktok.com") {
+		return u
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return u
+	}
+	req.Header.Set("User-Agent", scraperUA)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return u
+	}
+	defer resp.Body.Close()
+	final := resp.Request.URL.String()
+	if final != "" && !strings.Contains(final, "/?_r=") {
+		return final
+	}
+	return u
+}
+
+// FetchTikTok mengambil media TikTok via rantai: Flora Gateway -> tikwm -> faa -> tiktokdl -> musically.
+// Flora Gateway utama; sisanya fallback internal.
 func FetchTikTok(ctx context.Context, pageURL string) (*ScrapeResult, error) {
 	return scrapeCache.GetOrLoad(ctx, pageURL, func(ctx context.Context) (*ScrapeResult, error) {
-		if res, err := faaTikTokFetch(ctx, pageURL); err == nil {
-		res.Source = "faa"
-		return res, nil
-	} else {
-		err0 := err
-		if res, err := tikwmFetch(ctx, pageURL); err == nil {
+		cleanURL := resolveTikTokURL(ctx, pageURL)
+		if res, err := FloraFetchDownloader(ctx, "tiktok", cleanURL); err == nil {
+			return res, nil
+		}
+		if res, err := tikwmFetch(ctx, cleanURL); err == nil {
 			res.Source = "tikwm"
 			return res, nil
-		} else {
-			err1 := err
-			if res, err := tiktokdlFetch(ctx, pageURL); err == nil {
-				res.Source = "tiktokdl"
-				return res, nil
-			} else {
-				err2 := err
-				if res, err := musicallyFetch(ctx, pageURL); err == nil {
-					res.Source = "musically"
-					return res, nil
-				} else {
-					return nil, fmt.Errorf("tiktok gagal semua: faa: %v | tikwm: %v | tiktokdl: %v | musically: %v", err0, err1, err2, err)
-				}
-			}
 		}
-	}
+		if res, err := faaTikTokFetch(ctx, cleanURL); err == nil {
+			res.Source = "faa"
+			return res, nil
+		}
+		if res, err := tiktokdlFetch(ctx, cleanURL); err == nil {
+			res.Source = "tiktokdl"
+			return res, nil
+		}
+		if res, err := musicallyFetch(ctx, cleanURL); err == nil {
+			res.Source = "musically"
+			return res, nil
+		}
+		return nil, fmt.Errorf("tiktok gagal semua: tidak ada engine yang berhasil mengekstrak media")
 	})
 }
 
@@ -272,13 +291,18 @@ func musicallyFetch(ctx context.Context, pageURL string) (*ScrapeResult, error) 
 	if len(links) == 0 {
 		return nil, fmt.Errorf("%s: tidak ada link download", engine)
 	}
-	best := links[0]
+	var best musicalLink
+	hasVideo := false
 	for _, l := range links {
 		lt := strings.ToLower(l.typ + " " + l.quality)
 		if strings.Contains(lt, "mp4") && !strings.Contains(lt, "watermark") {
 			best = l
+			hasVideo = true
 			break
 		}
+	}
+	if !hasVideo || best.url == "" {
+		return nil, fmt.Errorf("%s: tidak ada video mp4", engine)
 	}
 	return &ScrapeResult{
 		Title: desc,

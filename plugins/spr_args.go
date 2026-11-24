@@ -57,6 +57,31 @@ func sprCanonicalJID(info *types.GroupInfo, jid types.JID) (types.JID, bool) {
 			return pt.JID, true
 		}
 	}
+	// Fallback untuk grup mode LID saat WhatsApp menyembunyikan PhoneNumber dari info.Participants:
+	// cocokkan nomor target terhadap catatan identitas lokal (group_members / users.db).
+	if info != nil && info.JID.Server == types.GroupServer && jid.User != "" {
+		ctx := context.Background()
+		var matchedLID string
+		if gdb := store.GroupsSafe(); gdb != nil {
+			if gm, err := gdb.FindGroupMember(ctx, info.JID.String(), jid.User); err == nil && gm != nil && gm.LID != "" {
+				matchedLID = gm.LID
+			}
+		}
+		if matchedLID == "" {
+			if udb := store.Users(); udb != nil {
+				if u, err := udb.FindUserByPN(ctx, jid.User); err == nil && u != nil && u.LID != "" {
+					matchedLID = u.LID
+				}
+			}
+		}
+		if matchedLID != "" {
+			for _, pt := range info.Participants {
+				if pt.JID.User == matchedLID || (!pt.LID.IsEmpty() && pt.LID.User == matchedLID) {
+					return pt.JID, true
+				}
+			}
+		}
+	}
 	return types.JID{}, false
 }
 

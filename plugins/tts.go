@@ -80,23 +80,32 @@ func RegisterTTS(r *Registry) {
 	})
 }
 
+func ttsHelp() string {
+	return Help(HelpSpec{
+		Title:   "Teks jadi voice note",
+		Cmd:     "tts",
+		Formats: []string{".tts <teks/reply>"},
+		Contoh:  ".tts halo apa kabar",
+	})
+}
+
 // handleTTS memvalidasi input lalu mensintesis di goroutine terpisah (pola
 // .brat/downloader): TTS + convert bisa belasan detik, event loop hypermeow
 // tidak boleh diblokir.
 func handleTTS(ctx context.Context, mctx *store.MessageContext) error {
 	text, voice := ttsParseInput(mctx)
 	if strings.TrimSpace(text) == "" {
-		return store.ReplyText(ctx, mctx, "Tulis teksnya: .tts halo apa kabar (atau reply pesan teks).")
+		return store.ReplyText(ctx, mctx, ttsHelp())
 	}
 	if utf8.RuneCountInString(text) > ttsMaxChars {
-		return store.ReplyText(ctx, mctx, fmt.Sprintf("Teks kepanjangan (maks %d karakter).", ttsMaxChars))
+		return store.ReplyText(ctx, mctx, "Teks terlalu panjang, maksimal 500 karakter.")
 	}
 
 	go func() {
 		bg := context.Background()
 		if err := ttsGenerate(bg, mctx, text, voice); err != nil {
 			logfmt.Warn("tts: %v\n", err)
-			_ = store.ReplyText(bg, mctx, "Gagal bikin voice note: "+err.Error())
+			_ = store.ReplyText(bg, mctx, Fail("Gagal bikin voice note", err))
 		}
 	}()
 	return nil

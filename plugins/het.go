@@ -43,18 +43,16 @@ const hetDays = 7
 
 func handleHET(ctx context.Context, mctx *store.MessageContext) error {
 	if len(mctx.Args) == 0 {
-		return store.ReplyText(ctx, mctx,
-			"*HET SULTRA*\n"+
-				"\n"+
-				"Ambil data harga pangan dari BI :\n"+
-				"*.het*\n"+
-				"> tampilkan menu ini\n"+
-				"*.het -7*\n"+
-				"> 7 hari terakhir\n"+
-				"*.het -30*\n"+
-				"> 30 hari terakhir\n"+
-				"*.het 01/09/2026-30/09/2026*\n"+
-				"> rentang tanggal tertentu (DD/MM/YYYY-DD/MM/YYYY)")
+		return store.ReplyText(ctx, mctx, Help(HelpSpec{
+			Title: "Harga eceran tertinggi Sultra",
+			Cmd:   "Het",
+			Formats: []string{
+				".het",
+				".het -n",
+				".het 01/09/2026-30/09/2026",
+			},
+			Note: "-n menunjukkan n hari terakhir, n merupakan bilangan bulat",
+		}))
 	}
 	from, to, err := parseHETRange(mctx.Args)
 	if err != nil {

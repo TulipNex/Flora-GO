@@ -42,6 +42,18 @@ func RegisterSetPP(r *Registry) {
 	})
 }
 
+func setppHelp() string {
+	return Help(HelpSpec{
+		Title:   "Ganti foto grup",
+		Cmd:     "Setpp",
+		Formats: []string{".setpp <reply/caption>"},
+		Params: []string{
+			"reply   : reply foto",
+			"caption : kirim foto dengan caption",
+		},
+	})
+}
+
 // handleSetPP mengganti foto grup dari gambar (reply / kirim langsung /
 // URL). Adaptasi script referensi (sharp → ffmpeg, conn.query →
 // SetGroupPhoto). Perbedaan sadar dari script: output SELALU JPEG karena
@@ -57,23 +69,28 @@ func handleSetPP(ctx context.Context, mctx *store.MessageContext) error {
 
 	mediaBytes, err := setppSourceBytes(ctx, mctx)
 	if err != nil {
+		if errors.Is(err, errSetppNoMedia) {
+			return store.ReplyText(ctx, mctx, setppHelp())
+		}
 		return store.ReplyText(ctx, mctx, err.Error())
 	}
 
 	jpegBytes, err := setppPrepareJPEG(ctx, mediaBytes)
 	if err != nil {
-		return store.ReplyText(ctx, mctx, "Gagal siapkan foto: "+err.Error())
+		return store.ReplyText(ctx, mctx, Fail("Gagal siapkan foto", err))
 	}
 
 	if _, err := mctx.Client.SetGroupPhoto(ctx, mctx.Chat, jpegBytes); err != nil {
 		if errors.Is(err, whatsmeow.ErrInvalidImageFormat) {
-			return store.ReplyText(ctx, mctx, "Gambar tidak valid untuk foto grup (pakai JPG/PNG).")
+			return store.ReplyText(ctx, mctx, "Gambar tidak valid, pakai JPG atau PNG.")
 		}
-		return store.ReplyText(ctx, mctx, "Gagal ganti foto grup: "+err.Error())
+		return store.ReplyText(ctx, mctx, Fail("Gagal ganti foto grup", err))
 	}
 
-	return store.ReplyText(ctx, mctx, "Foto grup berhasil diganti!")
+	return store.ReplyText(ctx, mctx, "Foto grup berhasil diganti.")
 }
+
+var errSetppNoMedia = errors.New("no media")
 
 // setppSourceBytes mengambil byte gambar dari 3 jalur: argumen URL,
 // kirim gambar langsung dengan caption, atau reply gambar. Video ditolak
@@ -97,10 +114,10 @@ func setppSourceBytes(ctx context.Context, mctx *store.MessageContext) ([]byte, 
 	// sudah unwrap Ephemeral/ViewOnce + kedua jalur ContextInfo).
 	img, vid, err := extractStickerMedia(mctx)
 	if err != nil {
-		return nil, fmt.Errorf("reply/kirim gambar, atau tempel URL: .setpp <url>")
+		return nil, errSetppNoMedia
 	}
 	if vid != nil {
-		return nil, fmt.Errorf("video tidak bisa jadi foto grup, pakai gambar")
+		return nil, errors.New("video tidak bisa jadi foto grup, pakai gambar")
 	}
 	data, err := mctx.Client.Download(ctx, img)
 	if err != nil {

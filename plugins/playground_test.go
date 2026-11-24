@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 const playTestScript = `#playground
@@ -12,8 +13,8 @@ title: Promo Kopi
 body: Diskon 20% untuk semua menu hari ini.
 footer: Flora • Promo
 image: https://contoh.com/promo.jpg
-+ button url | Beli Sekarang | https://contoh.com/beli
-+ button reply | Tanya Admin
++ cta url | Beli Sekarang | https://contoh.com/beli
++ cta reply | Tanya Admin
 `
 
 func TestPlaygroundParseInteractive(t *testing.T) {
@@ -65,9 +66,9 @@ func TestPlaygroundParseErrors(t *testing.T) {
 		{"tanpa marker", "title: x", "Baris pertama"},
 		{"kunci asing", playMarker + "\nbodyy: x", "kunci `bodyy`"},
 		{"baris asing", playMarker + "\nhalo dunia", "baris tidak dikenal"},
-		{"tipe tombol asing", playMarker + "\n+ button nope | X", "tipe tombol"},
+		{"tipe cta asing", playMarker + "\n+ cta nope | X", "tipe CTA"},
 		{"row tanpa select", playMarker + "\n+ row | A", "harus ditulis setelah"},
-		{"hapus berlebihan", playMarker + "\n- button 2", "tidak ada"},
+		{"hapus berlebihan", playMarker + "\n- cta 2", "tidak ada"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,7 +85,7 @@ func TestPlaygroundParseErrors(t *testing.T) {
 }
 
 func TestPlaygroundDeleteButton(t *testing.T) {
-	sp, errs := playParse(playMarker + "\nbody: x\n+ button reply | A\n+ button reply | B\n+ button reply | C\n- button 2")
+	sp, errs := playParse(playMarker + "\nbody: x\n+ cta reply | A\n+ cta reply | B\n+ cta reply | C\n- cta 2")
 	if len(errs) != 0 {
 		t.Fatalf("parse error: %v", errs)
 	}
@@ -106,18 +107,35 @@ func TestPlaygroundSplitEscaped(t *testing.T) {
 	}
 }
 
+// TestPlaygroundButtonAlias memastikan skrip lama (`+ button` / `- button N`)
+// tetap diterima setelah istilahnya diganti menjadi `cta`.
+func TestPlaygroundButtonAlias(t *testing.T) {
+	sp, errs := playParse(playMarker + "\nbody: x\n+ button reply | Lama\n+ cta reply | Baru\n- button 2")
+	if len(errs) != 0 {
+		t.Fatalf("parse error: %v", errs)
+	}
+	if errs := playValidate(&sp); len(errs) != 0 {
+		t.Fatalf("validate error: %v", errs)
+	}
+	if len(sp.buttons) != 1 || sp.buttons[0].label != "Lama" {
+		t.Fatalf("campuran cta/button tidak seperti mau: %+v", sp.buttons)
+	}
+}
+
 func TestPlaygroundValidate(t *testing.T) {
 	cases := []struct {
 		name   string
 		script string
 		want   string
 	}{
-		{"body kosong", playMarker + "\n+ button reply | A", "`body:` wajib"},
+		{"body kosong", playMarker + "\n+ cta reply | A", "`body:` wajib"},
 		{"carousel tanpa kartu", playMarker + "\nbody: x\nslot: carousel", "minimal satu `+ card`"},
-		{"tombol di luar kartu", playMarker + "\nbody: x\n+ button reply | A\n+ card | C | B", "di luar kartu"},
+		{"cta di luar kartu", playMarker + "\nbody: x\n+ cta reply | A\n+ card | C | B", "di luar kartu"},
 		{"kartu dengan slot buttons", playMarker + "\nbody: x\nslot: buttons\n+ card | C | B", "tidak terpakai"},
-		{"label panjang", playMarker + "\nbody: x\n+ button url | " + strings.Repeat("A", 21) + " | https://x", "label 21 rune"},
-		{"url salah", playMarker + "\nbody: x\n+ button url | A | ftp://x", "harus diawali http"},
+		{"label panjang", playMarker + "\nbody: x\n+ cta url | " + strings.Repeat("A", 1001) + " | https://x", "label 1001 rune"},
+		{"row judul panjang", playMarker + "\nbody: x\n+ cta select | Pilih\n+ row | " + strings.Repeat("B", 1001) + " | isi", "judul 1001 rune"},
+		{"row deskripsi panjang", playMarker + "\nbody: x\n+ cta select | Pilih\n+ row | Opsi | " + strings.Repeat("C", 1001), "deskripsi 1001 rune"},
+		{"url salah", playMarker + "\nbody: x\n+ cta url | A | ftp://x", "harus diawali http"},
 		{"airich footer", playMarker + "\nkind: airich\nbody: x\nfooter: y", "tidak memakai `footer:`"},
 		{"event tanpa judul", playMarker + "\nkind: event", "butuh `title:`"},
 		{"phone dengan field", playMarker + "\nkind: phone\ntitle: x", "tidak memakai field lain"},
@@ -134,6 +152,28 @@ func TestPlaygroundValidate(t *testing.T) {
 				t.Fatalf("error %q tidak memuat %q", joined, tc.want)
 			}
 		})
+	}
+}
+
+func TestPlaygroundLongTextAccepted(t *testing.T) {
+	long := strings.Repeat("A", playMaxLabel)
+	script := playMarker + "\nbody: x\n+ cta reply | " + long +
+		"\n+ cta select | Pilih\n+ row | " + long + " | " + long
+	sp, errs := playParse(script)
+	if len(errs) != 0 {
+		t.Fatalf("parse error: %v", errs)
+	}
+	if errs := playValidate(&sp); len(errs) != 0 {
+		t.Fatalf("label/teks row %d rune harus lolos, dapat: %v", playMaxLabel, errs)
+	}
+	if got := utf8.RuneCountInString(sp.buttons[0].label); got != playMaxLabel {
+		t.Fatalf("panjang label = %d, mau %d", got, playMaxLabel)
+	}
+	if got := utf8.RuneCountInString(sp.buttons[1].rows[0].title); got != playMaxRowText {
+		t.Fatalf("panjang judul row = %d, mau %d", got, playMaxRowText)
+	}
+	if got := utf8.RuneCountInString(sp.buttons[1].rows[0].desc); got != playMaxRowText {
+		t.Fatalf("panjang deskripsi row = %d, mau %d", got, playMaxRowText)
 	}
 }
 
@@ -181,9 +221,9 @@ func TestPlaygroundBuildCarousel(t *testing.T) {
 slot: carousel
 body: Pilih paket.
 + card | Basic | Akses standar.
-+ button url | Detail | https://contoh.com/basic
++ cta url | Detail | https://contoh.com/basic
 + card | Premium | Semua fitur.
-+ button url | Detail | https://contoh.com/premium
++ cta url | Detail | https://contoh.com/premium
 `
 	sp, errs := playParse(script)
 	if len(errs) != 0 {
@@ -215,7 +255,7 @@ func TestPlaygroundBuildA2UI(t *testing.T) {
 body: Ringkasan.
 + a2ui heading | Dashboard
 + a2ui card | Memori | Alloc 18 MB
-+ button url | Monitor | https://contoh.com
++ cta url | Monitor | https://contoh.com
 `
 	sp, errs := playParse(script)
 	if len(errs) != 0 {
@@ -267,6 +307,53 @@ title: Portal
 	}
 }
 
+func TestPlaygroundBuildAirichV47Sections(t *testing.T) {
+	script := playMarker + `
+kind: airich
+title: AI Tour
+body: Ringkasan tur.
++ section code | python | def greet(): return 'hello'
++ section table | Nama,Peran | Nixel,Dev | Flora,Bot
++ section suggest | Lanjutkan | Selesai
++ section tip | Tips menggunakan fitur ini
++ section meta | Versi 4.7
++ section imagine | https://contoh.com/img.jpg | GENERATING | Menyiapkan gambar...
++ section source | Dokumentasi | Panduan | https://contoh.com/docs | https://contoh.com/icon.png
+`
+	sp, errs := playParse(script)
+	if len(errs) != 0 {
+		t.Fatalf("parse error: %v", errs)
+	}
+	if errs := playValidate(&sp); len(errs) != 0 {
+		t.Fatalf("validate error: %v", errs)
+	}
+	msg, err := playBuild(context.Background(), sp, nil, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	rich := msg.GetBotForwardedMessage().GetMessage().GetRichResponseMessage()
+	if rich == nil {
+		t.Fatal("RichResponseMessage nil")
+	}
+	data := string(rich.GetUnifiedResponse().GetData())
+	for _, expected := range []string{
+		"GenAICodeUXPrimitive",
+		"GenATableUXPrimitive",
+		"GenAIFollowUpSuggestionPillPrimitive",
+		"GenAIMetadataTextPrimitive",
+		"GenAIImaginePrimitive",
+		"GenAISearchCitationItem",
+		"Menyiapkan gambar...",
+	} {
+		if !strings.Contains(data, expected) {
+			t.Errorf("data tidak memuat %q: %s", expected, data)
+		}
+	}
+	if len(rich.GetSubmessages()) < 4 {
+		t.Fatalf("submessages kurang: %d", len(rich.GetSubmessages()))
+	}
+}
+
 func TestPlaygroundBuildEventPhone(t *testing.T) {
 	ev, err := playBuild(context.Background(), playSpec{kind: playKindEvent, title: "Meetup"}, nil, []byte{0xFF, 0xD8})
 	if err != nil {
@@ -290,16 +377,16 @@ func TestPlaygroundBuildEventPhone(t *testing.T) {
 
 func TestPlaygroundUsage(t *testing.T) {
 	all := playUsage("")
-	for _, want := range []string{playMarker, "*Alur*", "*Umum*", "*Tombol*", "*Carousel*", "*A2UI*", "*Airich*", "*Event*", "*Contoh*"} {
+	for _, want := range []string{playMarker, "*Alur*", "*Umum*", "*CTA*", "*Carousel*", "*A2UI*", "*Airich*", "*Event*", "*Contoh*"} {
 		if !strings.Contains(all, want) {
 			t.Fatalf("referensi tidak memuat %q", want)
 		}
 	}
-	filtered := playUsage("tombol")
-	if !strings.Contains(filtered, "*Tombol*") {
-		t.Fatal("filter tombol tidak menampilkan seksi tombol")
+	filtered := playUsage("cta")
+	if !strings.Contains(filtered, "*CTA*") {
+		t.Fatal("filter cta tidak menampilkan seksi CTA")
 	}
 	if strings.Contains(filtered, "*Carousel*") {
-		t.Fatal("filter tombol masih menampilkan seksi carousel")
+		t.Fatal("filter cta masih menampilkan seksi carousel")
 	}
 }

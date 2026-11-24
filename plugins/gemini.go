@@ -241,21 +241,29 @@ func geminiSplitFirst(s string) (first, rest string) {
 }
 
 func geminiHelpBlock() string {
-	return Block("Gemini",
-		Opt("Mulai / lanjut", "gemini <pertanyaan>"),
-		Opt("Lanjutkan", "balas bubble bot"),
-		Opt("Aktifkan", ".gemini on"),
-		Opt("Matikan", ".gemini off"),
-		Opt("Riwayat baru", ".gemini new"),
-		Opt("Prompt sistem", ".gemini sistem <teks>"),
-		Opt("Lokasi acuan", ".gemini lokasi <kota/daerah>"),
-		Opt("Status", ".gemini status"),
-		Opt("Diagnosa", ".gemini diag"),
-		"",
-		"Mode tamu, tanpa login. Bot mengingat percakapan; bila server mendukung,",
-		"konteks juga disimpan di sisi server. Sesi dibuang setelah",
-		fmt.Sprintf("%d menit tanpa pesan.", int(geminiSessionTTL.Minutes())),
-	)
+	var b strings.Builder
+	b.WriteString("*Chat Gemini*\n\n")
+	b.WriteString(fmt.Sprintf("Mode tamu, tanpa login. Sesi dibuang setelah %d menit tanpa pesan.\n\n", int(geminiSessionTTL.Minutes())))
+	b.WriteString("`Mulai`\n")
+	b.WriteString("Format : gemini <pertanyaan>\n")
+	b.WriteString("Contoh : gemini toko roti terdekat\n\n")
+	b.WriteString("> Setelah sesi hidup, reply bubble bot juga memicu jawaban.\n\n")
+	b.WriteString("`Sesi`\n")
+	b.WriteString("Format :\n")
+	b.WriteString("- .gemini on\n")
+	b.WriteString("- .gemini off\n")
+	b.WriteString("- .gemini new\n")
+	b.WriteString("- .gemini sistem <teks>\n")
+	b.WriteString("- .gemini lokasi <kota>\n")
+	b.WriteString("- .gemini status\n")
+	b.WriteString("- .gemini diag\n\n")
+	b.WriteString("```on/off    : saklar sesi\n")
+	b.WriteString("new       : sesi baru\n")
+	b.WriteString("sistem    : prompt sistem\n")
+	b.WriteString("lokasi    : acuan lokasi\n")
+	b.WriteString("status    : info status\n")
+	b.WriteString("diag      : diagnosa```")
+	return b.String()
 }
 
 // --- keadaan sesi (memori saja) ---
@@ -659,20 +667,22 @@ func geminiEnable(ctx context.Context, mctx *store.MessageContext) error {
 	turns, _, active := geminiSessionInfo(key)
 	geminiSessionEnsure(key)
 
-	rows := []string{
-		Row("Mode", "aktif"),
-		Row("Riwayat", geminiTurnsText(turns)),
-	}
+	mode := "aktif"
 	if active {
-		rows[0] = Row("Mode", "sudah aktif")
+		mode = "sudah aktif"
 	}
 	state, err := geminiProbe(ctx)
 	if err != nil {
 		logfmt.Warn("gemini probe: %v\n", err)
 	}
-	rows = append(rows, Row("Koneksi", state))
-	rows = append(rows, "", "Kirim *gemini <pertanyaan>* atau balas bubble bot.")
-	return store.ReplyText(ctx, mctx, Block("Gemini", rows...))
+
+	var sb strings.Builder
+	sb.WriteString("Gemini\n\n")
+	sb.WriteString("```Mode    : " + mode + "\n")
+	sb.WriteString("Riwayat : " + geminiTurnsText(turns) + "\n")
+	sb.WriteString("Koneksi : " + state + "```\n\n")
+	sb.WriteString("Kirim gemini <pertanyaan> lalu balas bubble chat bot.")
+	return store.ReplyText(ctx, mctx, sb.String())
 }
 
 func geminiDisable(ctx context.Context, mctx *store.MessageContext) error {
@@ -685,12 +695,13 @@ func geminiDisable(ctx context.Context, mctx *store.MessageContext) error {
 	if !geminiSessionDrop(key) && !hadDisk {
 		return store.ReplyText(ctx, mctx, ErrMsg("Gemini", "Sesi memang sedang nonaktif."))
 	}
-	return store.ReplyText(ctx, mctx, Block("Gemini",
-		Row("Mode", "nonaktif"),
-		Row("Riwayat", "dibuang"),
-		"",
-		"Sesi baru dibuka oleh *gemini <pertanyaan>* berikutnya.",
-	))
+
+	var sb strings.Builder
+	sb.WriteString("Gemini\n\n")
+	sb.WriteString("```Mode    : nonaktif\n")
+	sb.WriteString("Riwayat : dibuang```\n\n")
+	sb.WriteString("Sesi baru dibuka dengan gemini <pertanyaan> berikutnya.")
+	return store.ReplyText(ctx, mctx, sb.String())
 }
 
 func geminiNewChat(ctx context.Context, mctx *store.MessageContext) error {
@@ -701,19 +712,20 @@ func geminiNewChat(ctx context.Context, mctx *store.MessageContext) error {
 	geminiDeleteState(mctx.Client, key)
 	if !geminiSessionClear(key) && !hadDisk {
 		geminiSessionEnsure(key)
-		return store.ReplyText(ctx, mctx, Block("Gemini",
-			Row("Mode", "aktif"),
-			Row("Riwayat", "kosong"),
-			"",
-			"Belum ada riwayat untuk dibuang; pesan berikutnya memulai percakapan.",
-		))
+		var sb strings.Builder
+		sb.WriteString("*Gemini*\n\n")
+		sb.WriteString("```Mode    : aktif\n")
+		sb.WriteString("Riwayat : kosong```\n\n")
+		sb.WriteString("Belum ada riwayat untuk dibuang; pesan berikutnya memulai percakapan.")
+		return store.ReplyText(ctx, mctx, sb.String())
 	}
-	return store.ReplyText(ctx, mctx, Block("Gemini",
-		Row("Mode", "aktif"),
-		Row("Riwayat", "dibersihkan"),
-		"",
-		"Pesan berikutnya memulai percakapan tanpa konteks lama.",
-	))
+
+	var sb strings.Builder
+	sb.WriteString("*Gemini*\n\n")
+	sb.WriteString("```Mode    : aktif\n")
+	sb.WriteString("Riwayat : dibersihkan```\n\n")
+	sb.WriteString("Pesan berikutnya memulai percakapan tanpa konteks lama.")
+	return store.ReplyText(ctx, mctx, sb.String())
 }
 
 func geminiStatus(ctx context.Context, mctx *store.MessageContext) error {
@@ -735,27 +747,20 @@ func geminiStatus(ctx context.Context, mctx *store.MessageContext) error {
 		}
 	}
 
-	// Konteks: tiket percakapan (server yang mengingat) atau riwayat di prompt.
-	// Bila server sudah menolak tiket, atau cookie tamu sudah berganti (tiket
-	// pasti ditolak `1097`), tulis apa adanya supaya tidak terlihat berhasil
-	// padahal konteks dibawa lewat riwayat.
+	// Konteks: server/bot
 	api := geminiAPI()
-	contextText := "dari riwayat bot"
-	if api.TicketRejected() {
-		contextText = "dari riwayat bot (server menolak)"
-	}
-	storageText := "memori bot"
-	if len(geminiLoadHistory(mctx.Client, key)) > 0 {
-		storageText = "memori + database"
-	}
+	contextText := "bot"
 	if api.TicketEnabled() {
 		if resume, _ := geminiSessionResume(key); !resume.Empty() {
 			if geminiTicketMatchesCookie(resume) {
-				contextText = "diingat server"
-			} else {
-				contextText = "dari riwayat bot (sesi tamu berganti)"
+				contextText = "server"
 			}
 		}
+	}
+
+	storageText := "memori bot"
+	if len(geminiLoadHistory(mctx.Client, key)) > 0 {
+		storageText = "memori + database"
 	}
 
 	locationText := "belum disetel"
@@ -763,20 +768,18 @@ func geminiStatus(ctx context.Context, mctx *store.MessageContext) error {
 		locationText = loc
 	}
 
-	rows := []string{
-		Row("Mode", mode),
-		Row("Sistem", sysText),
-		Row("Lokasi", locationText),
-		Row("Riwayat", geminiTurnsText(turns)),
-		Row("Konteks", contextText),
-		Row("Kedaluwarsa", geminiLeftText(active, left)),
-		Row("Koneksi", state),
-		Row("Penyimpanan", storageText),
-	}
-	if !active {
-		rows = append(rows, "", "Sesi dibuka otomatis oleh *gemini <pertanyaan>*.")
-	}
-	return store.ReplyText(ctx, mctx, Block("Gemini", rows...))
+	var sb strings.Builder
+	sb.WriteString("*Status Gemini*\n\n")
+	sb.WriteString("```Mode        : " + mode + "\n")
+	sb.WriteString("Sistem      : " + sysText + "\n")
+	sb.WriteString("Lokasi      : " + locationText + "\n")
+	sb.WriteString("Riwayat     : " + geminiTurnsText(turns) + "\n")
+	sb.WriteString("Konteks     : " + contextText + "\n")
+	sb.WriteString("Kedaluwarsa : " + geminiLeftText(active, left) + "\n")
+	sb.WriteString("Koneksi     : " + state + "\n")
+	sb.WriteString("Penyimpanan : " + storageText + "```\n\n")
+	sb.WriteString("> Sesi dibuka otomatis dengan mengirim gemini <pertanyaan>.")
+	return store.ReplyText(ctx, mctx, sb.String())
 }
 
 // geminiSystemAction menentukan jenis aksi dari sisa argumen subcommand .gemini sistem:
@@ -874,28 +877,17 @@ func geminiLocationCmd(ctx context.Context, mctx *store.MessageContext, rest str
 
 	switch {
 	case value == "":
-		shown := "belum disetel"
-		if current != "" {
-			shown = current
+		if current == "" {
+			return store.ReplyText(ctx, mctx, "*Gemini lokasi*\n\n• Status : belum disetel\n\nKetik *.gemini lokasi <kota>* untuk menyetel lokasi acuan jawaban.")
 		}
-		return store.ReplyText(ctx, mctx, Block("Gemini lokasi",
-			Row("Lokasi", shown),
-			"",
-			"Setel dengan *.gemini lokasi <kota/daerah>*.",
-			"Berlaku pada pesan berikutnya, tanpa perlu *.gemini new*.",
-			"*.gemini lokasi reset* mengosongkan.",
-		))
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("*Gemini lokasi*\n\n```Lokasi : %s```\n\nKetik *.gemini lokasi reset* untuk menghapus acuan lokasi.", current))
 
 	case strings.EqualFold(value, "reset"), strings.EqualFold(value, "hapus"):
 		if err := geminiLocationSet(ctx, mctx.Client, ""); err != nil {
 			logfmt.Warn("gemini hapus lokasi: %v\n", err)
 			return store.ReplyText(ctx, mctx, ErrMsg("Gemini", "Gagal menghapus lokasi."))
 		}
-		return store.ReplyText(ctx, mctx, Block("Gemini lokasi",
-			Row("Lokasi", "dikosongkan"),
-			"",
-			"Gemini akan menanyakan kota/daerah bila jawaban bergantung pada lokasi.",
-		))
+		return store.ReplyText(ctx, mctx, "*Gemini lokasi*\n\n```Status : dikosongkan```\n\nGemini akan menanyakan kota/daerah bila jawaban bergantung pada lokasi.")
 
 	default:
 		if count := utf8.RuneCountInString(value); count > geminiMaxLocationRunes {
@@ -906,11 +898,7 @@ func geminiLocationCmd(ctx context.Context, mctx *store.MessageContext, rest str
 			logfmt.Warn("gemini simpan lokasi: %v\n", err)
 			return store.ReplyText(ctx, mctx, ErrMsg("Gemini", "Gagal menyimpan lokasi."))
 		}
-		return store.ReplyText(ctx, mctx, Block("Gemini lokasi",
-			Row("Lokasi", value),
-			"",
-			"Berlaku pada pesan berikutnya, tanpa perlu *.gemini new*.",
-		))
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("*Gemini lokasi*\n\n```Lokasi : %s```\n\nBerlaku pada pesan berikutnya, tanpa perlu .gemini new.", value))
 	}
 }
 
@@ -941,30 +929,16 @@ func geminiSystemCmd(ctx context.Context, mctx *store.MessageContext, rest strin
 		}
 		curr = strings.TrimSpace(curr)
 		if curr == "" {
-			return store.ReplyText(ctx, mctx, Block("Gemini sistem",
-				Row("Status", "belum disetel"),
-				"",
-				"Ketik *.gemini sistem <teks>* untuk menyetel (maks 4000 karakter).",
-			))
+			return store.ReplyText(ctx, mctx, "*Gemini sistem*\n\n• Status : belum disetel\n\nKetik *.gemini sistem <teks>* untuk menyetel prompt sistem yang akan dikirim saat request pertama, maksimal 4000 karakter.")
 		}
-		return store.ReplyText(ctx, mctx, Block("Gemini sistem",
-			Row("Panjang", fmt.Sprintf("%d karakter", utf8.RuneCountInString(curr))),
-			"",
-			curr,
-			"",
-			"Ketik *.gemini sistem reset* untuk menghapus.",
-		))
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("*Gemini sistem*\n\n```Panjang : %d karakter```\n\n%s\n\nKetik *.gemini sistem reset* untuk menghapus.", utf8.RuneCountInString(curr), curr))
 
 	case "reset":
 		if err := gdb.SetGeminiSystemPrompt(ctx, ""); err != nil {
 			logfmt.Warn("gemini hapus prompt sistem: %v\n", err)
 			return store.ReplyText(ctx, mctx, ErrMsg("Gemini", "Gagal menghapus prompt sistem."))
 		}
-		return store.ReplyText(ctx, mctx, Block("Gemini sistem",
-			Row("Status", "dihapus"),
-			"",
-			"Prompt sistem dihapus. Jalankan *.gemini new* bila ingin langsung berlaku ke sesi aktif.",
-		))
+		return store.ReplyText(ctx, mctx, "*Gemini sistem*\n\n```Status : dihapus```\n\nPrompt sistem dihapus. Jalankan *.gemini new* bila ingin langsung berlaku ke sesi aktif.")
 
 	case "set":
 		text := strings.TrimSpace(rest)
@@ -976,13 +950,7 @@ func geminiSystemCmd(ctx context.Context, mctx *store.MessageContext, rest strin
 			logfmt.Warn("gemini simpan prompt sistem: %v\n", err)
 			return store.ReplyText(ctx, mctx, ErrMsg("Gemini", "Gagal menyimpan prompt sistem."))
 		}
-		return store.ReplyText(ctx, mctx, Block("Gemini sistem",
-			Row("Status", "tersimpan"),
-			Row("Panjang", fmt.Sprintf("%d karakter", utf8.RuneCountInString(text))),
-			"",
-			"Prompt sistem akan disertakan pada sesi baru.",
-			"Jalankan *.gemini new* bila ingin langsung menerapkannya ke sesi aktif saat ini.",
-		))
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("*Gemini sistem*\n\n```Status  : tersimpan\nPanjang : %d karakter```\n\nPrompt sistem akan disertakan pada sesi baru.\nJalankan *.gemini new* bila ingin langsung menerapkannya ke sesi aktif saat ini.", utf8.RuneCountInString(text)))
 	}
 	return nil
 }
@@ -1022,46 +990,50 @@ func geminiDiag(ctx context.Context, mctx *store.MessageContext) error {
 	defer cancel()
 	d := geminiAPI().Diag(cctx)
 
-	rows := []string{
-		Row("Cookie", geminiStageText(d.Cookie)),
-		Row("Halaman", geminiStageText(d.Meta)),
-		Row("Chat", geminiStageText(d.Chat)),
+	var sb strings.Builder
+	sb.WriteString("*Diagnosa Gemini*\n\n")
+
+	cookieStatus := "gagal"
+	if d.Cookie.OK {
+		cookieStatus = "ok"
 	}
-	// Nama cookie (tanpa nilainya) ditampilkan karena hilangnya `NID` adalah
-	// penyebab nyata percakapan lanjutan ditolak `1097`: server menganggap
-	// setiap permintaan sebagai sesi tamu baru.
+	halamanStatus := "gagal"
+	if d.Meta.OK {
+		halamanStatus = "sid valid"
+	}
+	chatStatus := "gagal"
+	if d.Chat.OK {
+		chatStatus = "ok"
+	}
+
+	sb.WriteString("```Cookie     : " + cookieStatus + "\n")
+	sb.WriteString("Halaman    : " + halamanStatus + "\n")
+	sb.WriteString("Chat       : " + chatStatus)
+
 	if names := geminiAPI().CookieNames(); len(names) > 0 {
-		rows = append(rows, Row("Isi cookie", strings.Join(names, ", ")))
+		sb.WriteString("\nIsi cookie : " + strings.Join(names, ", "))
 	}
-	// Durasi ditampilkan juga saat chat gagal: beda antara "berhenti di 30,0
-	// dtk" (batas transport) dan "gagal dalam 0,2 dtk" (ditolak server) adalah
-	// petunjuk utama saat mendiagnosis jalur tamu.
 	if d.Latency > 0 {
-		rows = append(rows, Row("Durasi", d.Latency.Round(time.Millisecond).String()))
+		sb.WriteString("\nDurasi     : " + d.Latency.Round(time.Millisecond).String())
 	}
 	if d.Shape != "" {
-		rows = append(rows, Row("Bentuk", d.Shape))
+		sb.WriteString("\nBentuk     : " + d.Shape)
 	}
-	if d.Chat.OK {
-		ticketText := "tidak ada (riwayat prompt)"
-		if !d.Ticket.Empty() {
-			ticketText = "ya · " + d.Ticket.ConversationID
-		}
-		rows = append(rows, Row("Tiket", ticketText))
-		// Tiket yang baru diterima diagnosa belum tentu dipakai: bila server
-		// sudah menolak tiket sebelumnya, status itu ditulis apa adanya.
-		if geminiAPI().TicketRejected() {
-			rows = append(rows, Row("Pemakaian", "dimatikan · server menolak tiket, pakai riwayat"))
-		}
+	tiketText := "tidak"
+	if !d.Ticket.Empty() {
+		tiketText = "ya"
 	}
+	sb.WriteString("\nTiket      : " + tiketText)
+
 	if d.Answer != "" {
-		rows = append(rows, Row("Jawaban", geminiTruncateText(d.Answer, 120)))
+		sb.WriteString("\nJawaban    : " + geminiTruncateText(d.Answer, 120))
 	}
 	if d.Dump != "" {
-		rows = append(rows, Row("Dump", filepath.Base(d.Dump)))
+		sb.WriteString("\nDump       : " + filepath.Base(d.Dump))
 	}
-	rows = append(rows, "", geminiDiagVerdict(d))
-	return store.ReplyText(ctx, mctx, Block("Gemini diag", rows...))
+	sb.WriteString("```\n\n")
+	sb.WriteString(geminiDiagVerdict(d))
+	return store.ReplyText(ctx, mctx, sb.String())
 }
 
 func geminiStageText(s geminiapi.Stage) string {

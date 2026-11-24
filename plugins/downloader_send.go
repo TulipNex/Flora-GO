@@ -91,7 +91,7 @@ func sendDlBytesVideoAlbum(ctx context.Context, mctx *store.MessageContext, data
 		return err
 	}
 	store.LogOutgoing(mctx, "dl-video", caption)
-	store.TrackBotMessageID(resp.ID, caption)
+	store.TrackBotMedia(string(resp.ID), msg, caption)
 	return nil
 }
 
@@ -111,7 +111,7 @@ func sendDlBytesAudio(ctx context.Context, mctx *store.MessageContext, data []by
 	if err != nil {
 		return err
 	}
-	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, &waE2E.Message{
+	msg := &waE2E.Message{
 		AudioMessage: &waE2E.AudioMessage{
 			URL:           proto.String(uploaded.URL),
 			DirectPath:    proto.String(uploaded.DirectPath),
@@ -122,12 +122,13 @@ func sendDlBytesAudio(ctx context.Context, mctx *store.MessageContext, data []by
 			FileLength:    proto.Uint64(uploaded.FileLength),
 			PTT:           proto.Bool(false),
 		},
-	})
+	}
+	resp, err := mctx.Client.SendMessage(ctx, mctx.Chat, msg)
 	if err != nil {
 		return err
 	}
 	store.LogOutgoing(mctx, "dl-audio", label)
-	store.TrackBotMessageID(resp.ID, label)
+	store.TrackBotMedia(string(resp.ID), msg, label)
 	return nil
 }
 
@@ -162,7 +163,7 @@ func sendDlBytesImageAlbum(ctx context.Context, mctx *store.MessageContext, data
 		return err
 	}
 	store.LogOutgoing(mctx, "dl-image", caption)
-	store.TrackBotMessageID(resp.ID, caption)
+	store.TrackBotMedia(string(resp.ID), msg, caption)
 	return nil
 }
 
@@ -360,6 +361,13 @@ func firstSupportedURL(text string) (string, *dlPlatform) {
 // fungsi ini kembali seketika. Kegagalan DIBALAS ke chat (keputusan owner:
 // jangan bikin user menunggu tanpa kabar).
 func CheckAutodownload(client *whatsmeow.Client, evt *events.Message, text string) bool {
+	// Fast-path: bila teks tidak mengandung URL yang didukung sama sekali,
+	// lewati seketika tanpa menyentuh database SQLite.
+	rawURL, p := firstSupportedURL(text)
+	if rawURL == "" || p == nil {
+		return false
+	}
+
 	ctx := context.Background()
 	chatJID := evt.Info.Chat.String()
 	on, err := store.GroupsFor(client).IsAutodownloadOn(ctx, chatJID)
@@ -368,10 +376,6 @@ func CheckAutodownload(client *whatsmeow.Client, evt *events.Message, text strin
 		return false
 	}
 	if !on {
-		return false
-	}
-	rawURL, p := firstSupportedURL(text)
-	if rawURL == "" || p == nil {
 		return false
 	}
 	// YouTube dikecualikan dari autodownload (keputusan owner): berat

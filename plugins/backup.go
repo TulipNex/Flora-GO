@@ -60,20 +60,23 @@ func RegisterBackup(r *Registry) {
 	})
 }
 
-const backupUsage = `*DATABASE BACKUP*
-Panel cadangan & ekspor database SQLite.
-
-*Perintah:*
-• *.backup*
-> Unduh seluruh database (arsip .zip)
-• *.backup list*
-> Lihat daftar file database & nomor urut
-• *.backup <nomor>*
-> Ekspor database terpilih ke Excel (.xlsx)
-• *.backup <nomor> -db*
-> Unduh file database asli (.db)
-• *.backup jadwal <interval|off>*
-> Atur backup otomatis (contoh: 30m, 6h, 1d)`
+var backupUsage = Help(HelpSpec{
+	Title: "Backup database",
+	Cmd:   "Backup",
+	Formats: []string{
+		".backup",
+		".backup list",
+		".backup <nomor>",
+		".backup <nomor> -db",
+		".backup jadwal <interval/off>",
+	},
+	Params: []string{
+		"list   : list database",
+		"nomor  : ekspor ke xlsx",
+		"-db    : unduh SQLite",
+		"jadwal : 30m, 6h, 1d",
+	},
+})
 
 func handleBackup(ctx context.Context, mctx *store.MessageContext) error {
 	if msg := requireOwner(mctx); msg != "" {
@@ -156,24 +159,21 @@ func backupList(ctx context.Context, mctx *store.MessageContext) error {
 	if err != nil || len(paths) == 0 {
 		return store.ReplyText(ctx, mctx, "Tidak ada file database ditemukan.")
 	}
-	var total int64
-	for _, p := range paths {
-		if fi, err := os.Stat(p); err == nil {
-			total += fi.Size()
-		}
-	}
+	return store.ReplyText(ctx, mctx, formatBackupList(paths))
+}
+
+func formatBackupList(paths []string) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "*DAFTAR DATABASE*\nTotal: %d file (%s)\n\n", len(paths), humanBytes(total))
+	sb.WriteString("*Daftar Database*\n\n")
 	for i, p := range paths {
 		var size int64
 		if fi, err := os.Stat(p); err == nil {
 			size = fi.Size()
 		}
-		fmt.Fprintf(&sb, "%d. *%s* (%s)\n", i+1, filepath.Base(p), humanBytes(size))
+		fmt.Fprintf(&sb, "- *%d. %s* • %s\n", i+1, filepath.Base(p), humanBytes(size))
 	}
-	sb.WriteString("\n_Ketik *.backup <no>* untuk unduh Excel (.xlsx)_\n")
-	sb.WriteString("_Ketik *.backup <no> -db* untuk file SQLite (.db)_")
-	return store.ReplyText(ctx, mctx, sb.String())
+	sb.WriteString("\n> Ketik `.backup <no>` untuk Excel, tambah `-db` untuk SQLite.")
+	return sb.String()
 }
 
 // backupByNumber snapshot satu file DB berdasarkan nomor urut di listDBFiles.
@@ -230,8 +230,7 @@ func backupByNumber(ctx context.Context, mctx *store.MessageContext) error {
 			return store.ReplyText(ctx, mctx, "Gagal membaca snapshot: "+err.Error())
 		}
 		outName := baseNoExt + "-" + stamp + ".db"
-		caption := fmt.Sprintf("*SNAPSHOT DATABASE SQLITE*\n• *File:* %s\n• *Ukuran:* %s\n• *Waktu:* %s",
-			want, humanBytes(int64(len(data))), time.Now().In(timex.Zone()).Format("02 Jan 2006, 15:04 MST"))
+		caption := backupSQLiteCaption(want, int64(len(data)))
 		return sendDocBytes(ctx, mctx.Client, mctx.Chat, outName, "application/vnd.sqlite3", data, caption)
 	}
 
@@ -247,8 +246,7 @@ func backupByNumber(ctx context.Context, mctx *store.MessageContext) error {
 	}
 
 	outName := baseNoExt + "-" + stamp + ".xlsx"
-	caption := fmt.Sprintf("*EXPORT DATABASE EXCEL*\n• *File:* %s\n• *Tabel:* %d sheet\n• *Total Baris:* %d baris\n• *Ukuran:* %s\n• *Waktu:* %s",
-		want, len(rep.Tables), rep.TotalRows, humanBytes(int64(len(xlsxBytes))), time.Now().In(timex.Zone()).Format("02 Jan 2006, 15:04 MST"))
+	caption := backupExcelCaption(baseNoExt, len(rep.Tables), rep.TotalRows, int64(len(xlsxBytes)))
 	return sendDocBytes(ctx, mctx.Client, mctx.Chat, outName, xlsxMIME, xlsxBytes, caption)
 }
 
@@ -289,8 +287,7 @@ func backupGet(ctx context.Context, mctx *store.MessageContext) error {
 	if err != nil {
 		return store.ReplyText(ctx, mctx, "Gagal membaca snapshot: "+err.Error())
 	}
-	caption := fmt.Sprintf("*SNAPSHOT DATABASE SQLITE*\n• *File:* %s\n• *Ukuran:* %s\n• *Waktu:* %s",
-		want, humanBytes(int64(len(data))), time.Now().In(timex.Zone()).Format("02 Jan 2006, 15:04 MST"))
+	caption := backupSQLiteCaption(want, int64(len(data)))
 	return sendDocBytes(ctx, mctx.Client, mctx.Chat, outName, "application/vnd.sqlite3", data, caption)
 }
 
@@ -444,14 +441,36 @@ func addFileToZip(zw *zip.Writer, path, name string) error {
 }
 
 func backupZipCaption(name string, dbPaths []string) string {
+	return backupZipCaptionAt(dbPaths, time.Now().In(timex.Zone()))
+}
+
+func backupZipCaptionAt(dbPaths []string, now time.Time) string {
 	var total int64
 	for _, p := range dbPaths {
 		if fi, err := os.Stat(p); err == nil {
 			total += fi.Size()
 		}
 	}
-	return fmt.Sprintf("*FULL DATABASE BACKUP*\n• *Arsip:* %s\n• *Jumlah:* %d file database (.db)\n• *Total Ukuran:* %s\n• *Waktu:* %s",
-		name, len(dbPaths), humanBytes(total), time.Now().In(timex.Zone()).Format("02 Jan 2006, 15:04 MST"))
+	return fmt.Sprintf("*FULL DATABASE BACKUP*\n\n```- Jumlah: %d file database \n- Ukuran: %s\n- Waktu : %s\n- Jam   : %s```",
+		len(dbPaths), humanBytes(total), now.Format("02 Jan 2006"), now.Format("15:04 MST"))
+}
+
+func backupExcelCaption(baseNoExt string, tablesCount, totalRows int, sizeBytes int64) string {
+	return backupExcelCaptionAt(baseNoExt, tablesCount, totalRows, sizeBytes, time.Now().In(timex.Zone()))
+}
+
+func backupExcelCaptionAt(baseNoExt string, tablesCount, totalRows int, sizeBytes int64, now time.Time) string {
+	return fmt.Sprintf("*EXPORT DATABASE EXCEL*\n\n```- File  : %s.xlsx\n- Tabel : %d sheet\n- Baris : %d baris\n- Ukuran: %s\n- Waktu : %s\n- Jam   : %s```",
+		baseNoExt, tablesCount, totalRows, humanBytes(sizeBytes), now.Format("02 Jan 2006"), now.Format("15:04 MST"))
+}
+
+func backupSQLiteCaption(want string, sizeBytes int64) string {
+	return backupSQLiteCaptionAt(want, sizeBytes, time.Now().In(timex.Zone()))
+}
+
+func backupSQLiteCaptionAt(want string, sizeBytes int64, now time.Time) string {
+	return fmt.Sprintf("*SNAPSHOT DATABASE SQLITE*\n\n```- File  : %s\n- Ukuran: %s\n- Waktu : %s\n- Jam   : %s```",
+		want, humanBytes(sizeBytes), now.Format("02 Jan 2006"), now.Format("15:04 MST"))
 }
 
 // sendDocBytes mengunggah byte dan mengirimnya sebagai dokumen WhatsApp.

@@ -99,8 +99,8 @@ func matchDlPlatform(host string) *dlPlatform {
 	return nil
 }
 
-// RegisterDownloader mendaftarkan 5 command downloader kategori Alat,
-// semuanya boleh dipakai semua user. Satu engine dipakai berlima — tiap
+// RegisterDownloader mendaftarkan command downloader kategori Unduh,
+// semuanya boleh dipakai semua user. Satu engine dipakai bersama — tiap
 // command hanya validasi domain + registrasi.
 func RegisterDownloader(r *Registry) {
 	for _, p := range dlPlatforms {
@@ -115,57 +115,67 @@ func RegisterDownloader(r *Registry) {
 			},
 		})
 	}
-	r.Register(Command{
-		Name:        "autodownload",
-		Description: "Download otomatis link medsos di chat ini (.autodownload on/off)",
-		Category:    CategoryUmum,
-		Handler:     handleAutodownload,
-	})
 }
 
-// handleAutodownload mengatur saklar autodownload per chat. Di grup hanya
-// admin/owner yang boleh (pakai gate moderasi yang sama dengan antilink);
-// di private chat pengetiknya = pemilik chat, jadi selalu lolos.
-func handleAutodownload(ctx context.Context, mctx *store.MessageContext) error {
-	if mctx.IsGroup() {
-		if msg := requireModGate(ctx, mctx); msg != "" {
-			return store.ReplyText(ctx, mctx, msg)
-		}
-	}
-	arg := ""
-	if len(mctx.Args) > 0 {
-		arg = strings.ToLower(strings.TrimSpace(mctx.Args[0]))
-	}
-	switch arg {
-	case "on", "aktif", "enable":
-		if err := store.GroupsFor(mctx.Client).SetAutodownload(ctx, mctx.Chat.String(), true); err != nil {
-			return store.ReplyText(ctx, mctx, ErrMsg("Autodownload", fmt.Sprintf("Gagal menyalakan: %v", err)))
-		}
-		return store.ReplyText(ctx, mctx, Block("Autodownload", Row("Status", "aktif"), "Link medsos yang didukung otomatis didownload + dikirim."))
-	case "off", "mati", "disable":
-		if err := store.GroupsFor(mctx.Client).SetAutodownload(ctx, mctx.Chat.String(), false); err != nil {
-			return store.ReplyText(ctx, mctx, ErrMsg("Autodownload", fmt.Sprintf("Gagal mematikan: %v", err)))
-		}
-		return store.ReplyText(ctx, mctx, Block("Autodownload", Row("Status", "mati")))
+func dlPlatformTitle(cmd string) string {
+	switch cmd {
+	case "tiktok":
+		return "TikTok"
+	case "youtube":
+		return "YouTube"
+	case "youtubemp3":
+		return "YouTube MP3"
+	case "instagram":
+		return "Instagram"
+	case "twitter":
+		return "Twitter / X"
+	case "facebook":
+		return "Facebook"
+	case "pinterest":
+		return "Pinterest"
+	case "spotify":
+		return "Spotify"
 	default:
-		on, err := store.GroupsFor(mctx.Client).IsAutodownloadOn(ctx, mctx.Chat.String())
-		if err != nil {
-			return store.ReplyText(ctx, mctx, ErrMsg("Autodownload", fmt.Sprintf("Gagal baca status: %v", err)))
+		r := []rune(cmd)
+		if len(r) > 0 && r[0] >= 'a' && r[0] <= 'z' {
+			r[0] = r[0] - ('a' - 'A')
 		}
-		status := "mati"
-		if on {
-			status = "aktif"
-		}
-		return store.ReplyText(ctx, mctx, Block("Autodownload", Row("Status", status), "Ubah: `.autodownload on` / `.autodownload off`."))
+		return string(r)
 	}
+}
+
+func dlHelp(p dlPlatform) string {
+	cmdTitle := dlPlatformTitle(p.command)
+	if p.command == "spotify" {
+		return Help(HelpSpec{
+			Title:   "Unduh lagu Spotify",
+			Cmd:     "Spotify",
+			Formats: []string{".sp <url|judul>"},
+			Contoh:  ".sp about you",
+			Note:    "Input judul akan menampilkan 5 hasil pencarian teratas.",
+		})
+	}
+
+	title := "Unduh video " + cmdTitle
+	if p.audio {
+		title = "Unduh audio " + cmdTitle
+	}
+	sampleURL := "https://www." + p.hosts[0] + "/..."
+	if p.command == "tiktok" {
+		sampleURL = "https://www.tiktok.com/@user/video/123"
+	}
+	return Help(HelpSpec{
+		Title:   title,
+		Cmd:     cmdTitle,
+		Formats: []string{"." + p.command + " <url>"},
+		Contoh:  "." + p.command + " " + sampleURL,
+		Note:    "Sumber: " + strings.Join(p.hosts, ", ") + ".",
+	})
 }
 
 func handleDownload(ctx context.Context, mctx *store.MessageContext, p dlPlatform) error {
 	if len(mctx.Args) == 0 {
-		if p.command == "spotify" {
-			return store.ReplyText(ctx, mctx, Block("Spotify", "Sertakan URL atau judul lagu.", "Contoh: .sp https://open.spotify.com/... atau .sp about you"))
-		}
-		return store.ReplyText(ctx, mctx, Block("Downloader", Row("Cara", "."+p.command+" <url>"), Row("Sumber", strings.Join(p.hosts, ", "))))
+		return store.ReplyText(ctx, mctx, dlHelp(p))
 	}
 	// Spotify: tiga jalur — pilih angka pending, URL langsung, atau pencarian judul.
 	if p.command == "spotify" {
@@ -187,7 +197,7 @@ func handleDownload(ctx context.Context, mctx *store.MessageContext, p dlPlatfor
 	}
 	rawURL := mctx.Args[0]
 	if err := validateDlURL(ctx, rawURL, p.hosts); err != nil {
-		return store.ReplyText(ctx, mctx, Block("Downloader", "Status: "+err.Error(), "Contoh: ."+p.command+" https://..."))
+		return store.ReplyText(ctx, mctx, fmt.Sprintf("URL tidak cocok dengan platform ini, contoh: .%s https://...", p.command))
 	}
 
 	// Varian audio YouTube: `.yt <url> --mp3`.
@@ -268,8 +278,13 @@ func dlURLHost(rawURL string) string {
 // terakhir adalah penanda selesainya.
 func downloadAndSend(ctx context.Context, mctx *store.MessageContext, rawURL string, p *dlPlatform, audioOnly bool, status types.MessageID) error {
 	if p.command == "youtube" || p.command == "youtubemp3" {
-		// YouTube HANYA via yt-dlp (keputusan owner — tanpa fallback
-		// scraper). Gagal = error langsung dibalas ke user oleh pemanggil.
+		// Coba Flora Gateway API terlebih dahulu untuk menghemat CPU & RAM bot container
+		if res, err := external.FloraFetchYouTube(ctx, rawURL, audioOnly); err == nil && len(res.Items) > 0 {
+			if serr := sendScrapeResult(ctx, mctx, res, status); serr == nil {
+				return nil
+			}
+		}
+		// Fallback ke yt-dlp internal bila Flora Gateway gagal
 		return downloadViaYtdlp(ctx, mctx, rawURL, audioOnly, status)
 	}
 	if p.command == "spotify" {
